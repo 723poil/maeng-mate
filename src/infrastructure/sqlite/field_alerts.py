@@ -107,6 +107,17 @@ def includes_item(source: SourceMapping, item: WorkItem, user: str | None) -> bo
     return user is not None and canonical_identity(user) in map(canonical_identity, people)
 
 
+def observed_baselines(connection: sqlite3.Connection, run: SyncRun, scope: str) -> dict[str, str]:
+    """스테이징의 관측 ID로 한 규칙의 이전 값만 읽으며 재등장한 항목도 포함한다."""
+    rows = connection.execute(
+        """SELECT item_id,value_hash FROM source_alert_baselines
+        WHERE source_id=? AND scope=? AND item_id IN
+        (SELECT item_id FROM sync_staging WHERE run_id=?)""",
+        (run.source_id, scope, run.id),
+    )
+    return {row["item_id"]: row["value_hash"] for row in rows}
+
+
 def record_field_alerts(
     connection: sqlite3.Connection,
     run: SyncRun,
@@ -119,24 +130,29 @@ def record_field_alerts(
     if source is None:
         return
     scopes = currently_saved_scopes(connection, source, user)
-    existing = connection.execute(
-        "SELECT scope,item_id,value_hash FROM source_alert_baselines WHERE source_id=?",
-        (source.source_id,),
-    ).fetchall()
+    baseline_counts = {
+        row["scope"]: row["total"]
+        for row in connection.execute(
+            "SELECT scope,COUNT(*) AS total FROM source_alert_baselines WHERE source_id=? GROUP BY scope",
+            (source.source_id,),
+        )
+    }
     now = datetime.fromisoformat(completed_at).timestamp()
-    if not scopes and not existing:
-        return  # 적용할 규칙과 정리할 기준값이 모두 없으면 행마다 담당자를 검사할 필요가 없다.
-    previous = {(row["scope"], row["item_id"]): row["value_hash"] for row in existing}
-    seen: set[tuple[str, str]] = set()
-    eligible = tuple(item for item in items if includes_item(source, item, user))
+    if not scopes and not baseline_counts:
+        return
+    removed_scopes = baseline_counts.keys() - scopes.keys()
+    needs_cleanup = bool(removed_scopes)
+    eligible = tuple(item for item in items if includes_item(source, item, user)) if scopes else ()
     for scope, rule in scopes.items():
+        previous = observed_baselines(connection, run, scope) if scope in baseline_counts else {}
+        # 기존 기준이 모두 이번 수집에 있으면 누락된 항목의 예약을 찾을 필요가 없다.
+        if len(previous) < baseline_counts.get(scope, 0):
+            needs_cleanup = True
         for item in eligible:
             digest = item.alert_values.get(rule.id)
             if digest is None:
                 continue
-            key = (scope, item.id)
-            seen.add(key)
-            before = previous.get(key)
+            before = previous.pop(item.id, None)
             if before == digest:
                 continue
             connection.execute(
@@ -149,15 +165,41 @@ def record_field_alerts(
             invalidate_field_alert(connection, source.source_id, scope, item.id)
             if rule.accepts(digest):
                 enqueue_field_alert(connection, run, item, scope, rule, digest, now)
-    observed = {item.id for item in items}
-    for scope, item_id in previous.keys() - seen:
-        invalidate_field_alert(connection, source.source_id, scope, item_id)
-        if scope not in scopes or item_id in observed:
-            # 목록에 잠시 빠진 항목은 확정 삭제된 것이 아니므로 마지막 값을 유지한다.
+        # 관측했지만 사람 범위에서 빠지거나 비교값이 사라진 항목만 기준에서 제거한다.
+        for item_id in previous:
+            invalidate_field_alert(connection, source.source_id, scope, item_id)
             connection.execute(
                 "DELETE FROM source_alert_baselines WHERE source_id=? AND scope=? AND item_id=?",
                 (source.source_id, scope, item_id),
             )
+    if needs_cleanup:
+        retire_unobserved_field_alerts(connection, run, scopes)
+        connection.executemany(
+            "DELETE FROM source_alert_baselines WHERE source_id=? AND scope=?",
+            ((source.source_id, scope) for scope in removed_scopes),
+        )
+
+
+def retire_unobserved_field_alerts(
+    connection: sqlite3.Connection, run: SyncRun, scopes: dict[str, SourceAlertRule]
+) -> None:
+    """이번 실행에 없거나 규칙이 해제된 항목은 미전달 예약만 한 번에 취소한다."""
+    # 임시 누락은 기준값을 지우지 않는다. 이번 수집에서 새로 예약한 항목은 관측 ID에 있다.
+    connection.execute(
+        """UPDATE notification_jobs AS job SET state='obsolete'
+        WHERE kind='source_change' AND state IN ('pending','delivering')
+        AND EXISTS (
+            SELECT 1 FROM source_alert_events AS event
+            JOIN source_alert_baselines AS baseline
+              ON baseline.source_id=event.source_id AND baseline.scope=job.source_key
+              AND baseline.item_id=event.item_id
+            WHERE event.job_id=job.id AND event.source_id=?
+              AND (job.source_key NOT IN (SELECT value FROM json_each(?))
+                   OR NOT EXISTS (SELECT 1 FROM sync_staging AS observed
+                       WHERE observed.run_id=? AND observed.item_id=event.item_id))
+        )""",
+        (run.source_id, json.dumps(list(scopes)), run.id),
+    )
 
 
 def invalidate_field_alert(

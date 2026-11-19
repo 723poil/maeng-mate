@@ -262,3 +262,54 @@ async def test_date_event_notification_expires_at_final_seoul_midnight(db: Datab
     await store.complete_run(run, [item], observed)
     clock.value = datetime(2026, 11, 17, 0, tzinfo=SEOUL).timestamp()
     assert await SQLiteNotifications(db, now=clock.now).claim() == ()
+
+
+async def test_field_alerts_keep_missing_baseline_and_retire_pending_jobs(db: Database) -> None:
+    """일시 누락·규칙 해제·담당 해제에서 기준과 미전달 예약의 수명을 구분한다."""
+    from src.domain.models import SourceMapping, Task
+    from src.domain.source_alerts import SourceAlertRule, alert_value_key
+    from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
+    from tests.fixtures.notion import OBSERVED, SOURCE
+
+    rule = SourceAlertRule("fixture-rule", "상태 변경", "s", "status")
+    source = replace(SOURCE, alert_rules=(rule,))
+    other = replace(source, source_id="other-source")
+    store = SQLiteSnapshots(db, clock=Clock(), notification_user_id="me")
+    item = Task(
+        "same-id",
+        source.source_id,
+        "https://example.com",
+        OBSERVED,
+        OBSERVED,
+        "가상 업무",
+        ("me",),
+        "진행",
+        None,
+        alert_values={rule.id: alert_value_key("진행")},
+    )
+    changed = replace(item, alert_values={rule.id: alert_value_key("검토")})
+
+    async def publish(mapping: SourceMapping, items: list[Task]) -> None:
+        """실제 확정 경로로 한 번의 가상 소스 수집을 저장한다."""
+        await store.complete_run(await store.begin_run(mapping, OBSERVED), items, OBSERVED)
+
+    for mapping in (source, other):
+        await publish(mapping, [replace(item, source_id=mapping.source_id)])
+        await publish(mapping, [replace(changed, source_id=mapping.source_id)])
+    await publish(source, [])
+    query = """SELECT job.state FROM notification_jobs job JOIN source_alert_events event
+               ON event.job_id=job.id WHERE event.source_id=? ORDER BY job.id"""
+    assert await db.fetch(query, (source.source_id,)) == [{"state": "obsolete"}]
+    assert await db.fetch(query, (other.source_id,)) == [{"state": "pending"}]
+
+    # 재등장할 때 값이 바뀌면 이전 값을 기준으로 새 알림이 정확히 한 번 생겨야 한다.
+    await publish(source, [item])
+    await publish(source, [item])
+    assert sorted(row["state"] for row in await db.fetch(query, (source.source_id,))) == [
+        "obsolete",
+        "pending",
+    ]
+    await publish(source, [replace(item, assignee_ids=())])
+    await publish(replace(other, alert_rules=()), [])
+    assert await db.fetch("SELECT item_id FROM source_alert_baselines") == []
+    assert await db.fetch("SELECT DISTINCT state FROM notification_jobs") == [{"state": "obsolete"}]

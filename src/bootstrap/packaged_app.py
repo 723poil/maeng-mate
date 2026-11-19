@@ -9,11 +9,10 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
-from src.bootstrap.app_settings import data_environment, save_bootstrap
+from src.bootstrap.app_settings import application_environment, save_bootstrap
 from src.bootstrap.environment import ConfigError, required
 from src.bootstrap.executable import bundle_contents
 from src.bootstrap.instance import application_directory
-from src.bootstrap.keychain import KeychainAccount
 from src.bootstrap.work_settings import initialize_work_settings
 from src.domain.runtime_settings import RuntimeSettings
 from src.infrastructure.private_files import write_private_file
@@ -35,19 +34,8 @@ def prepare_connection() -> dict[str, str]:
     """중지 전에 연결 값과 명시적 Keychain 접근만 확인하며 DB를 변경하지 않는다."""
     if application_directory().is_symlink():
         raise ConfigError("앱 지원 폴더의 실제 경로를 확인하세요.")
-    values = data_environment({})
-    from src.application.credentials import CredentialError
-
-    for account in KeychainAccount:
-        store = account.store()
-        try:
-            store.read()
-        except CredentialError:
-            # Python에서 만든 항목의 접근 승인은 처음 앱을 실행한 사용자가 결정한다.
-            store.read(allow_prompt=True)
-    from src.bootstrap.app_settings import application_environment
-
-    values = application_environment(values, create_admin=True)
+    # 설치에 꼭 필요한 내부 키만 승인하고 연동 키는 각 설정 화면에서 요청한다.
+    values = application_environment({}, create_admin=True, allow_prompt=True)
     save_bootstrap(values)
     return values
 

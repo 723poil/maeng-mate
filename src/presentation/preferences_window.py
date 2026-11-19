@@ -84,7 +84,7 @@ class PreferencesActions(NSObject):
             self.owner._selected_page == SettingsPage.SLACK
             and self.owner._slack_controller is not None
         ):
-            self.owner._slack_controller.reload()
+            self.owner._slack_controller.reload(allow_prompt=True)
         elif (
             self.owner._selected_page == SettingsPage.MCP and self.owner._mcp_controller is not None
         ):
@@ -100,7 +100,7 @@ class PreferencesActions(NSObject):
             self.owner._selected_page == SettingsPage.NOTION
             and self.owner._credentials_controller is not None
         ):
-            self.owner._credentials_controller.reload()
+            self.owner._credentials_controller.reload(allow_prompt=True)
         if (
             self.owner._selected_page == SettingsPage.NOTION
             and self.owner._page_links_controller is not None

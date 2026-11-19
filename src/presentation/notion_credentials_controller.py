@@ -45,22 +45,22 @@ class NotionCredentialsController:
             and not self._read_retry.waiting
         )
 
-    def reload(self) -> None:
+    def reload(self, *, allow_prompt: bool = False) -> None:
         """명시적 다시 읽기에서 입력을 폐기하고 확정 메타데이터만 가져온다."""
         if self._closed or self.busy:
             return
         self.input_dirty = False
         self.clear_generation += 1
         self._read_retry.reset()
-        self._read()
+        self._read(allow_prompt=allow_prompt)
 
-    def _read(self) -> None:
+    def _read(self, *, allow_prompt: bool = False) -> None:
         """기본 토큰 입력 없이 상태만 다시 조회한다."""
         self.operation = "read"
         self.error, self.error_code = None, None
         self.blocked = False
         self._read_retry.cancel()
-        self._pending = self._executor.submit(self._client.read)
+        self._pending = self._executor.submit(self._client.read, allow_prompt=allow_prompt)
 
     def edited(self, has_input: bool) -> None:
         """보안 입력 문자열은 보관하지 않고 입력 여부만 기록한다."""
@@ -110,7 +110,7 @@ class NotionCredentialsController:
             self.error = {
                 "unauthorized": "토큰 인증에 실패했습니다.",
                 "permission": "수집 소스 접근 권한을 확인하세요.",
-                "keychain": "Keychain 잠금 상태와 접근 권한을 확인하세요.",
+                "keychain": "‘다시 불러오기’를 눌러 키체인 접근을 허용하세요.",
                 "conflict": "인증 정보가 바뀌었습니다. 다시 불러오세요.",
                 "busy": "다른 인증 작업이 진행 중입니다.",
                 "invalid": "토큰 형식을 확인하세요.",
@@ -119,7 +119,10 @@ class NotionCredentialsController:
                 "rate_limited": "요청이 많습니다. 잠시 후 다시 확인하세요.",
             }.get(error.code, "토큰 상태를 확인하지 못했습니다.")
             if self.operation == "read":
-                self._read_retry.schedule()
+                # 키체인 승인에는 사용자 동작이 필요하므로 재조회 버튼을 기다린다.
+                self.blocked = error.code == "keychain"
+                if not self.blocked:
+                    self._read_retry.schedule()
             else:
                 # 확인은 읽기 작업이므로 실패 후 다시 누를 수 있다. 불명확한 쓰기만 잠근다.
                 self.blocked = error.code in {"conflict", "keychain"} or (

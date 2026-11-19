@@ -44,7 +44,7 @@ class CredentialError(Exception):
 class CredentialStore(Protocol):
     """프로바이더의 보안 저장소를 교체할 수 있는 계약이다."""
 
-    def read(self) -> CredentialRecord | None:
+    def read(self, *, allow_prompt: bool = False) -> CredentialRecord | None:
         """진짜 미등록만 None으로 반환하고 접근 실패는 구분한다."""
         ...
 

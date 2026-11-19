@@ -23,7 +23,7 @@ MESSAGES = {
     "delivery_unknown": "발송 여부를 확인하지 못했습니다. Slack DM을 먼저 확인하세요.",
     "invalid": "멤버 ID 또는 봇 토큰 형식을 확인하세요.",
     "conflict": "설정이 변경됐습니다. 다시 불러와 주세요.",
-    "keychain": "Keychain 접근을 확인하세요.",
+    "keychain": "‘다시 불러오기’를 눌러 키체인 접근을 허용하세요.",
     "unauthorized": "토큰이 유효하지 않거나 만료됐습니다.",
     "permission": "봇 토큰과 앱 권한을 확인하세요.",
     "timeout": "Slack 응답 시간이 초과됐습니다.",
@@ -86,7 +86,7 @@ class SlackSettingsController:
             and not self._read_retry.waiting
         )
 
-    def reload(self) -> None:
+    def reload(self, *, allow_prompt: bool = False) -> None:
         """명시적 재조회에서만 초안과 불명확한 쓰기 잠금을 초기화한다."""
         if self._closed or self.busy:
             return
@@ -101,7 +101,7 @@ class SlackSettingsController:
         self.blocked = False
         self._read_retry.cancel()
         self._operation = "read"
-        self._pending = self._executor.submit(self._client.read)
+        self._pending = self._executor.submit(self._client.read, allow_prompt=allow_prompt)
 
     def edited(self, *, token: bool) -> None:
         """탭 이동에서도 자동 저장 없이 입력 초안을 유지한다."""
@@ -247,7 +247,10 @@ class SlackSettingsController:
             if operation == "read":
                 if code == "unavailable":
                     self.error = "잠시 후 Slack 설정을 다시 불러옵니다."
-                self._read_retry.schedule()
+                # 사용자가 거절했거나 키체인이 잠겼을 때에는 수동 재조회로 복구한다.
+                self.blocked = code == "keychain"
+                if not self.blocked:
+                    self._read_retry.schedule()
             elif operation != "check":
                 self.blocked = code not in {
                     "invalid",

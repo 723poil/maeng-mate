@@ -203,7 +203,10 @@ async def test_encoded_alias_reuses_complete_property_and_preserves_snapshot(db:
             200,
             json={
                 "object": "list",
-                "results": [{"type": "people", "people": {"id": name, "name": name}}],
+                "results": [
+                    {"type": "people", "people": {"id": person, "name": person}}
+                    for person in (name + "2", name + "1")
+                ],
                 "has_more": cursor is None,
                 "next_cursor": "next" if cursor is None else None,
             },
@@ -220,7 +223,9 @@ async def test_encoded_alias_reuses_complete_property_and_preserves_snapshot(db:
         payload = previous[0]["payload"]
         assert isinstance(payload, str)
         stored = json.loads(payload)
-        assert stored["assignee_ids"] == ["A", "B"] and stored["display_values"] == {"p?": "A, B"}
+        # 페이지 내부 순서와 페이지 간 순서 모두 저장된 표시값에 반영된다.
+        assert stored["display_values"] == {"p?": "A2, A1, B2, B1"}
+        assert stored["assignee_ids"] == ["A1", "A2", "B1", "B2"]
 
         fail_last_page = True
         result = await synchronize(mapping, adapter, store, lambda: datetime.now(UTC))

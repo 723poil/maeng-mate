@@ -96,8 +96,12 @@ class NotionReadApi:
                 payload = await self.request(f"{path}?{query}", None)
             if payload.get("object") != "list" or type(payload.get("has_more")) is not bool:
                 raise SourceError("invalid_response")
-            for value in array(payload.get("results")):
-                yield value
+            # 이 요청이 소유한 배열을 뒤에서 꺼내면 원래 순서를 지키면서 처리한 행의
+            # 참조를 놓을 수 있다. 행에 추가 조회한 상세 값도 다음 페이지까지 남지 않는다.
+            results = array(payload.get("results"))
+            results.reverse()
+            while results:
+                yield results.pop()
             if not payload["has_more"]:
                 return
             cursor = text(payload.get("next_cursor"))

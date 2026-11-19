@@ -70,6 +70,7 @@ def create_app(
     mcp_server: FastMCP | None = None,
     mcp_query_client: AbstractAsyncContextManager[object] | None = None,
     on_mcp_ready: Callable[[bool], None] | None = None,
+    restore_committed: Callable[[], bool] | None = None,
     work_records_service: WorkRecordsService | None = None,
     work_rules_service: WorkRulesClient | None = None,
     source_settings_service: SourceSettingsClient | None = None,
@@ -108,6 +109,13 @@ def create_app(
         response: Response
         if not header.startswith("Bearer ") or len(header) > 4096:
             response = JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        elif (
+            restore_committed is not None
+            and not restore_committed()
+            and not (internal and request.method == "GET" and request.url.path == "/v1/status")
+        ):
+            # 복원 확정 전에는 내부 준비 검사만 허용한다. MCP 인증도 최근 사용을 기록한다.
+            response = JSONResponse({"detail": "데이터 복원 중입니다."}, status_code=503)
         elif internal and not mcp_path:
             response = await call_next(request)
         elif internal:

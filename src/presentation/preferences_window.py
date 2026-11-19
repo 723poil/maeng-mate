@@ -24,11 +24,13 @@ from AppKit import (
 from Foundation import NSNotification, NSObject
 
 from src.application.credentials import CredentialError, validated_secret
+from src.application.data_backup import DataBackupActions
 from src.application.notifications import NotificationChannel
 from src.application.source_settings import SourceSettingsClient, SourceSettingsError
 from src.application.work_rules_settings import WorkRulesDocument
 from src.domain.preferences import NOTIFICATION_TYPES, SECTIONS, SectionPreference
 from src.presentation.category_settings_form import CategorySettingsForm
+from src.presentation.data_backup_view import DataBackupView
 from src.presentation.glass_panel import KeyablePanel
 from src.presentation.mcp_settings_controller import McpSettingsController
 from src.presentation.mcp_settings_view import McpSettingsView
@@ -186,6 +188,7 @@ class PreferencesWindow:
         pending_work_edits: Callable[[], bool] | None = None,
         source_editor: SourceEditor | None = None,
         source_client: SourceSettingsClient | None = None,
+        data_backup: DataBackupActions | None = None,
     ) -> None:
         """설정 작업자와 설치된 채널만 주입받는다."""
         self._render_state: object = None
@@ -193,6 +196,7 @@ class PreferencesWindow:
         self._source_form: SourceSettingsForm | None = None
         self._category_form: CategorySettingsForm | None = None
         self._collection_page = SettingsPage.SOURCES
+        self._backup_view: DataBackupView | None = None
         self._work_rules = work_rules
         self._work_rules_form: WorkRulesForm | None = None
         self._slack_controller = slack_controller
@@ -259,7 +263,13 @@ class PreferencesWindow:
             pages += (SettingsPage.WORK_RULES,)
         if source_editor is not None and source_client is not None:
             pages += (SettingsPage.SOURCES, SettingsPage.CATEGORIES)
+        if data_backup is not None:
+            pages += (SettingsPage.BACKUP,)
         self._pages = {page: self._page(content, viewport) for page in pages}
+        if data_backup is not None:
+            self._backup_view = DataBackupView(
+                self._pages[SettingsPage.BACKUP], viewport, data_backup, self._backup_edits_pending
+            )
         self._build_screen_page(self._pages[SettingsPage.SCREEN], viewport)
         self._build_notification_page(self._pages[SettingsPage.NOTIFICATIONS], viewport, channels)
         if runtime_controller is not None:
@@ -394,6 +404,7 @@ class PreferencesWindow:
         )
         self._runtime_save.setHidden_(not runtime_page or selected == SettingsPage.CATEGORIES)
         self._runtime_restart.setHidden_(not runtime_page)
+        self._reload.setHidden_(selected == SettingsPage.BACKUP)
         self._reload.setFrame_(frame(438 if runtime_page else 624, 18.5, 110, 26))
         place_label(self._status, 188, 22, 238 if runtime_page else 402, 19)
         self._render_state = None
@@ -616,6 +627,14 @@ class PreferencesWindow:
             or (self._mcp_view and self._mcp_view.is_editing)
         )
 
+    def _backup_edits_pending(self) -> bool:
+        """복원 재시작으로 다른 화면의 편집 중인 설정과 기록을 잃지 않게 한다."""
+        return (
+            self._source_restart_blocked()
+            or self.source_edits_pending()
+            or bool(self._identity_view and self._identity_view.dirty)
+        )
+
     def _render_work_rules(self, controller: WorkRulesEditor) -> None:
         """공통 하단 버튼과 상태를 현재 근무 규칙 편집에 연결한다."""
         if self._work_rules_form is not None:
@@ -653,13 +672,18 @@ class PreferencesWindow:
 
     def dispose(self) -> None:
         """앱 종료에서만 작업자 수명을 마친다."""
+        if self._backup_view is not None:
+            self._backup_view.close()
         if self._source_form is not None:
             self._source_form.close()
         self.close()
 
     def tick(self) -> None:
         """닫힌 창에서는 완료된 작업만 회수하고 화면은 다시 열 때 갱신한다."""
-        if self._window.isVisible():
+        visible = self._window.isVisible()
+        if self._backup_view is not None:
+            self._backup_view.tick(visible=visible and self._selected_page == SettingsPage.BACKUP)
+        if visible:
             self.render()
             return
         if self._category_form is not None:
@@ -677,6 +701,10 @@ class PreferencesWindow:
             alert_settings_pending = self._category_form.awaiting_alert_preferences
         if self._identity_view is not None:
             self._identity_view.render()
+        if self._selected_page == SettingsPage.BACKUP and self._backup_view is not None:
+            self._status.setStringValue_(self._backup_view.message)
+            self._status.setToolTip_(self._backup_view.message or None)
+            return
         if self._selected_page == SettingsPage.SOURCES and self._source_form is not None:
             self._render_sources(self._source_form)
             return

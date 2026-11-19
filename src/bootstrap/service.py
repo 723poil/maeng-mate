@@ -179,6 +179,9 @@ def _run_service(action: str) -> None:
     expected: dict[Role, int] = {}
     try:
         if action in {"install", "start", "restart"}:
+            from src.bootstrap.backup_restore import recover_before_start
+
+            recover_before_start(manager, root)
             values = preflight(create_admin=action == "install")
         elif action == "status":
             try:

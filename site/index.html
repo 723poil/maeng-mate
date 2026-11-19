@@ -25,7 +25,7 @@
     <div class="hero-surface"><section class="hero wrap" aria-labelledby="hero-title">
       <div class="hero-copy">
         <h1 id="hero-title">메뉴바 업무 수첩</h1>
-        <p>Notion에서 오늘 할 일과 회의를 가져옵니다.<br>출퇴근은 Mac 메뉴바에서 기록하세요.</p>
+        <p>내 Notion 표에서 메뉴바에 표시할 열을 고르세요.<br>출퇴근도 메뉴바에서 기록합니다.</p>
         <div class="actions"><a class="button" href="https://github.com/723poil/maeng-mate/releases/download/v0.5.0/Maeng-Mate-0.5.0-macOS-arm64.dmg"><svg aria-hidden="true"><use href="#download"/></svg>Mac용 다운로드</a></div>
         <small>Apple Silicon · macOS 26 이상</small>
       </div>
@@ -46,16 +46,16 @@
         <article><button class="screen calendar-screen" popovertarget="zoom-calendar" aria-label="캘린더 실제 화면 확대"><img class="glass-window" src="assets/calendar-ui.webp" width="1080" height="700" loading="lazy" alt="월간 달력 왼쪽에 표시할 항목, 오른쪽에 선택한 날짜의 회의와 업무가 표시된 캘린더"><span class="zoom-icon"><svg aria-hidden="true"><use href="#zoom"/></svg></span></button>
           <h2>업무 달력</h2><p>마감일이나 회의를 누르면 Notion 원본이 열립니다.</p></article>
         <article><button class="screen attendance-screen" popovertarget="zoom-attendance" aria-label="출퇴근 기록 실제 화면 확대"><img class="glass-window" src="assets/attendance-ui.webp" width="900" height="660" loading="lazy" alt="월별 출퇴근 기록과 선택한 날의 출근·휴가·퇴근 예정 및 수정 이력"><span class="zoom-icon"><svg aria-hidden="true"><use href="#zoom"/></svg></span></button>
-          <h2>출퇴근 기록</h2><p>휴게 시간과 반차를 반영해 퇴근 시간을 계산합니다. 지난 기록도 날짜별로 수정할 수 있습니다.</p></article>
+          <h2>출퇴근 기록</h2><p>설정한 근무 규칙에 따라 퇴근 예정 시각을 계산합니다. 지난 기록도 날짜별로 수정할 수 있습니다.</p></article>
       </div>
-      <div class="integrations"><div><svg aria-hidden="true"><use href="#bell"/></svg><div><h3>회의·퇴근 알림</h3><p>회의 10분 전과 퇴근 전에 Mac 알림이나 Slack DM을 받습니다.</p></div></div><div><svg aria-hidden="true"><use href="#chat"/></svg><div><h3>Codex · Claude Code</h3><p>읽기 전용 MCP로 내 업무와 회의 일정을 조회합니다.</p></div></div></div>
+      <div class="integrations"><div><svg aria-hidden="true"><use href="#bell"/></svg><div><h3>알림 설정</h3><p>카테고리별로 알림 조건을 정하고, Mac 알림과 Slack DM 중 받을 곳을 고르세요.</p></div></div><div><svg aria-hidden="true"><use href="#chat"/></svg><div><h3>Codex · Claude Code</h3><p>읽기 전용 MCP로 내 업무와 회의 일정을 조회합니다.</p></div></div></div>
     </section>
     <section class="install wrap" id="install" aria-labelledby="install-title">
       <div class="install-lead"><img src="assets/app-icon.svg" width="72" height="72" alt=""><h2 id="install-title">Mac에 설치하기</h2><p>Apple Silicon Mac · macOS 26 이상</p><a class="button" href="https://github.com/723poil/maeng-mate/releases/download/v0.5.0/Maeng-Mate-0.5.0-macOS-arm64.dmg"><svg aria-hidden="true"><use href="#download"/></svg>v0.5.0 DMG 다운로드</a></div>
       <div><ol>
         <li>DMG를 열고 <strong>Maeng Mate.app</strong>을 응용 프로그램 폴더로 옮기세요.</li>
         <li>앱을 실행하고 메뉴바의 수첩 아이콘을 누르세요.</li>
-        <li><strong>설정 → 연동 → Notion</strong>에 토큰과 사용자 ID를 입력한 뒤, ‘수집 소스’에서 가져올 표와 열을 고르세요.</li>
+        <li><strong>설정 → 연동 → Notion</strong>에 토큰과 사용자 ID를 입력하세요. ‘카테고리’에서 카드를 만든 뒤 ‘수집 소스’에서 표와 열을 연결하세요.</li>
       </ol>
         <details class="install-note"><summary>처음 실행할 때 보안 경고가 뜬다면</summary><p>현재 버전은 Apple 공증을 받지 않았습니다. DMG와 체크섬은 <a href="https://github.com/723poil/maeng-mate/releases/tag/v0.5.0">공식 릴리스</a>에서 확인하세요. <a href="https://support.apple.com/ko-kr/102445">Apple의 보안 경고 안내</a></p></details>
       </div>

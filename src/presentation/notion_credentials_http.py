@@ -61,6 +61,18 @@ def create_notion_credentials_router(service: NotionCredentialsClient | None) ->
         """등록 상태만 반환하고 저장된 토큰을 반환하지 않는다."""
         return await perform(None, "read")
 
+    @router.post("/v1/notion/credentials/authorize")
+    async def authorize() -> dict[str, object]:
+        """사용자가 설정에서 요청한 경우에만 키체인 승인 창을 허용한다."""
+        if service is None:
+            raise HTTPException(503, {"code": "unavailable"})
+        try:
+            return credential_state_payload(
+                await asyncio.to_thread(service.read, allow_prompt=True)
+            )
+        except CredentialError as error:
+            raise HTTPException(503, {"code": error.code}) from None
+
     @router.post("/v1/notion/credentials/check")
     async def check(request: Request) -> dict[str, object]:
         """현재 저장된 토큰의 연결만 확인한다."""

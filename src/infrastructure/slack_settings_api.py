@@ -20,7 +20,9 @@ class SlackSettingsApi:
     ) -> SlackSettingsState:
         """모호한 쓰기를 반복하지 않고 비밀값 없는 오류만 전달한다."""
         try:
-            with local_client(self._address, self._token, timeout=15) as client:
+            with local_client(
+                self._address, self._token, timeout=120 if action == "authorize" else 15
+            ) as client:
                 response = (
                     client.get("/v1/slack/settings")
                     if action is None
@@ -45,8 +47,10 @@ class SlackSettingsApi:
         except (httpx.HTTPError, ValueError):
             raise StatusReadError("Slack 설정 연결을 확인하세요.") from None
 
-    def read(self) -> SlackSettingsState:
+    def read(self, *, allow_prompt: bool = False) -> SlackSettingsState:
         """등록·수신자·확인 상태만 읽는다."""
+        if allow_prompt:
+            return self._request("authorize", {})
         return self._request()
 
     def save_member(self, revision: int, user_id: str | None) -> SlackSettingsState:

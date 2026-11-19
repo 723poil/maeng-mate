@@ -77,7 +77,7 @@ def validated_app_token(value: object) -> CredentialSecret:
 class SlackSettingsClient(Protocol):
     """화면에서 비밀값을 다시 읽지 않고 설정을 관리하는 계약이다."""
 
-    def read(self) -> SlackSettingsState:
+    def read(self, *, allow_prompt: bool = False) -> SlackSettingsState:
         """등록 상태와 본인 ID만 읽는다."""
         ...
 
@@ -134,18 +134,20 @@ class SlackSettingsService:
         self._test_lock = Lock()
         self._checked: tuple[int, SlackIdentity | None] | None = None
 
-    def _credential(self, revision: int | None = None) -> CredentialRecord:
+    def _credential(
+        self, revision: int | None = None, *, allow_prompt: bool = False
+    ) -> CredentialRecord:
         """환경값 복귀 없이 Keychain 상태를 읽고 요청 버전을 확인한다."""
-        current = self._credentials.read() or CredentialRecord(0, None)
+        current = self._credentials.read(allow_prompt=allow_prompt) or CredentialRecord(0, None)
         if revision is not None and current.revision != revision:
             raise CredentialError("conflict")
         return current
 
-    def read(self) -> SlackSettingsState:
+    def read(self, *, allow_prompt: bool = False) -> SlackSettingsState:
         """읽기로 초기 행을 만들거나 토큰 원문을 반환하지 않는다."""
         runtime = self._runtime.read() or self._active
-        credential = self._credential()
-        app = self._app_credentials.read() or CredentialRecord(0, None)
+        credential = self._credential(allow_prompt=allow_prompt)
+        app = self._app_credentials.read(allow_prompt=allow_prompt) or CredentialRecord(0, None)
         verification: Literal["unchecked", "ok", "failed"] = "unchecked"
         identity = SlackIdentity()
         if (

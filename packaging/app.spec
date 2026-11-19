@@ -29,5 +29,11 @@ coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='MaengMate
 app = BUNDLE(coll, name='Maeng Mate.app', icon=str(assets / 'MaengMate.icns'),
     bundle_identifier='local.maeng-mate', version=os.environ['MAENG_MATE_BUILD_VERSION'],
     info_plist={'CFBundleName': 'Maeng Mate', 'CFBundleDisplayName': 'Maeng Mate',
+                'CFBundleVersion': os.environ['MAENG_MATE_BUILD_VERSION'],
+                **({'SUPublicEDKey': os.environ['SPARKLE_PUBLIC_ED_KEY'],
+                    'SUFeedURL': os.environ['SPARKLE_FEED_URL'],
+                    'SUEnableAutomaticChecks': False, 'SUAllowsAutomaticUpdates': False,
+                    'SUVerifyUpdateBeforeExtraction': True, 'SURequireSignedFeed': True}
+                   if 'SPARKLE_PUBLIC_ED_KEY' in os.environ else {}),
                 'LSUIElement': True, 'LSMinimumSystemVersion': '26.0',
                 'NSPrincipalClass': 'NSApplication', 'NSHighResolutionCapable': True})

@@ -89,6 +89,7 @@ def application_environment(
     env: Mapping[str, str],
     *,
     create_admin: bool = False,
+    allow_prompt: bool = False,
     profile_path: Path | None = None,
     admin_store: CredentialStore | None = None,
 ) -> dict[str, str]:
@@ -98,7 +99,7 @@ def application_environment(
         return values
     try:
         store = admin_store if admin_store is not None else KeychainAccount.LOCAL_API.store()
-        record = store.read()
+        record = store.read(allow_prompt=allow_prompt)
         if record is not None:
             if record.token is None:
                 raise CredentialError("keychain")

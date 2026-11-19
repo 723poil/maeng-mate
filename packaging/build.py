@@ -11,6 +11,8 @@ import tempfile
 import tomllib
 from pathlib import Path
 
+from sparkle_release import RELEASES, TOOLS, prepare_sparkle
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -54,6 +56,9 @@ def main() -> None:
     os.chdir(ROOT)
     assets = ROOT / "build/distribution-assets"
     assets.mkdir(parents=True, exist_ok=True)
+    public_key = os.environ.get("SPARKLE_PUBLIC_ED_KEY", "").strip()
+    if public_key:
+        prepare_sparkle(public_key)
     version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     sources = sorted((ROOT / "src").rglob("*.py")) + sorted(
         (ROOT / "src/infrastructure/skill_resources").rglob("*")
@@ -79,6 +84,9 @@ def main() -> None:
     }
     environment["PYINSTALLER_CONFIG_DIR"] = str(ROOT / ".cache/pyinstaller")
     environment["MAENG_MATE_BUILD_VERSION"] = version
+    if public_key:
+        environment["SPARKLE_PUBLIC_ED_KEY"] = public_key
+        environment["SPARKLE_FEED_URL"] = RELEASES + "/latest/download/appcast.xml"
     dist = ROOT / "dist"
     build = ROOT / "build/distribution"
     notification_dist = build / "notification-dist"
@@ -113,6 +121,13 @@ def main() -> None:
         env=environment,
     )
     app = dist / "Maeng Mate.app"
+    if public_key:
+        shutil.copytree(
+            TOOLS / "Sparkle.framework",
+            app / "Contents/Frameworks/Sparkle.framework",
+            symlinks=True,
+        )
+        shutil.copyfile(TOOLS / "LICENSE", app / "Contents/Resources/Sparkle-LICENSE")
     nested = app / "Contents/Resources/NotificationAgent.app"
     if nested.exists():
         shutil.rmtree(nested)

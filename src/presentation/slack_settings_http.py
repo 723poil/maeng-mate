@@ -53,6 +53,9 @@ def create_slack_settings_router(service: SlackSettingsClient | None) -> APIRout
             raise HTTPException(503, {"code": "unavailable"})
         raw = await _body(request)
         try:
+            # 명시적 다시 읽기만 Slack 키체인의 사용자 승인을 요청할 수 있다.
+            if action == "authorize" and not raw:
+                return slack_state_payload(await asyncio.to_thread(service.read, allow_prompt=True))
             revision = _revision(raw.get("revision"))
             if action == "member" and set(raw) == {"revision", "userId"}:
                 user = raw["userId"]

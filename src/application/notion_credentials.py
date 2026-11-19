@@ -35,7 +35,7 @@ class NotionConnectionChecker(Protocol):
 class NotionCredentialsClient(Protocol):
     """화면이 저장된 비밀값을 조회하지 않고 관리하는 포트다."""
 
-    def read(self) -> NotionCredentialState:
+    def read(self, *, allow_prompt: bool = False) -> NotionCredentialState:
         """등록·확인·적용 상태만 반환한다."""
         ...
 
@@ -68,13 +68,13 @@ class NotionCredentialsService:
         self._legacy, self._active = legacy, active
         self._checked: tuple[int, Literal["ok", "failed"]] | None = None
 
-    def selected(self) -> CredentialRecord:
+    def selected(self, *, allow_prompt: bool = False) -> CredentialRecord:
         """삭제 표시를 미등록으로 오해해 예전 환경값을 되살리지 않는다."""
-        return self._store.read() or CredentialRecord(0, self._legacy)
+        return self._store.read(allow_prompt=allow_prompt) or CredentialRecord(0, self._legacy)
 
-    def read(self) -> NotionCredentialState:
+    def read(self, *, allow_prompt: bool = False) -> NotionCredentialState:
         """이번 실행의 실제 비밀값과 선택된 값이 다르면 재시작을 요구한다."""
-        selected = self.selected()
+        selected = self.selected(allow_prompt=allow_prompt)
         changed = (selected.token is None) != (self._active is None)
         if selected.token is not None and self._active is not None:
             changed = not hmac.compare_digest(selected.token.value, self._active.value)

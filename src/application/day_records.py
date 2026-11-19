@@ -1,7 +1,6 @@
 """오늘의 출근·휴가·계획 입력과 계산을 조정한다."""
 
 from collections.abc import Callable
-from dataclasses import replace
 from datetime import UTC, datetime
 
 from src.application.date_inputs import parse_day
@@ -9,7 +8,6 @@ from src.application.day_ports import DayConflictError, DayInputError, DayStore
 from src.domain.daily_work import (
     DayRecord,
     DeparturePolicy,
-    WorkRules,
     parse_clock,
     parse_leave,
     work_instant,
@@ -24,22 +22,18 @@ class DayService:
         self,
         store: DayStore,
         policy: DeparturePolicy,
-        rules: WorkRules | None,
         *,
         now: Callable[[], datetime],
     ) -> None:
-        """저장 계약·계산 전략·확인한 규칙과 시계를 주입한다."""
+        """규칙을 포함한 기록 저장소와 계산 전략·시계를 주입한다."""
         self._store = store
         self._policy = policy
-        self._rules = rules
         self._now = now
 
     async def read(self) -> dict[str, object]:
         """오늘 기록만 읽고 최초 기록에는 현재 규칙을 표시한다."""
         day = self._now().astimezone(SEOUL).date()
         record = await self._store.read(day)
-        if record.revision == 0:
-            record = replace(record, rules=self._rules)
         return self.view(record)
 
     async def update(self, payload: object) -> dict[str, object]:
@@ -88,7 +82,7 @@ class DayService:
             attendance,
             leave,
             plan,
-            self._rules,
+            current.rules,
             now.astimezone(UTC),
             current.checkout_at,
             current.overtime,
@@ -116,6 +110,6 @@ class DayService:
             "requiredMinutes": result.required_minutes,
             "lunchMinutes": result.lunch_minutes,
             "workRulesConfigured": record.rules is not None,
-            "previewRules": self._rules.payload() if self._rules else None,
+            "previewRules": record.rules.payload() if record.rules else None,
             "warnings": list(record.attendance_warnings),
         }

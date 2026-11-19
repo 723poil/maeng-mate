@@ -24,9 +24,14 @@ async def test_day_api_authenticated_edit_conflict_and_validation(tmp_path: Path
     database = Database(str(tmp_path / "work.sqlite3"))
     await migrate(database)
     service = DayService(
-        SQLiteDayStore(database, now=now),
+        SQLiteDayStore(
+            database,
+            now=now,
+            current_rules=lambda: WorkRules(
+                480, 240, 120, time(12), time(13), time(0), time(23, 59)
+            ),
+        ),
         FlexibleDeparturePolicy(),
-        WorkRules(480, 240, 120, time(12), time(13), time(0), time(23, 59)),
         now=now,
     )
     app = create_app("fake-token", lambda: {}, day_service=service)
@@ -82,7 +87,6 @@ async def test_day_write_missing_schema_is_storage_error(tmp_path: Path) -> None
     service = DayService(
         SQLiteDayStore(Database(str(tmp_path / "missing.sqlite3")), now=now),
         FlexibleDeparturePolicy(),
-        None,
         now=now,
     )
     app = create_app("fake-token", lambda: {}, day_service=service)

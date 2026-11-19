@@ -124,13 +124,12 @@ def main() -> None:
             from src.bootstrap.instance import instance_lock
 
             with instance_lock("resident"):
-                settings = load_work_settings(
-                    Database(required(environment_values, "DATABASE_PATH")), prepare_categories=True
-                )
+                database = Database(required(environment_values, "DATABASE_PATH"))
+                settings = load_work_settings(database, prepare_categories=True)
                 app = build_api(
                     environment,
                     settings,
-                    work_rules_service=build_work_rules(settings),
+                    work_rules_service=build_work_rules(settings, database),
                     notion_legacy_token=os.environ.get("NOTION_TOKEN") or None,
                 )
                 uvicorn.run(app, host="127.0.0.1", port=environment.port, access_log=False)

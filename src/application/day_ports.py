@@ -34,7 +34,7 @@ class DayStore(Protocol):
     """날짜별 기록과 수정 이력을 원자적으로 보존한다."""
 
     async def read(self, day: date) -> DayRecord:
-        """없는 기록은 revision0으로 반환하며 파일을 만들지 않는다."""
+        """없는 기록은 현재 입력 규칙과 revision 0을 반환하며 파일을 만들지 않는다."""
         ...
 
     async def save(self, record: DayRecord, expected_revision: int) -> DayRecord:

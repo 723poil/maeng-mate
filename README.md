@@ -25,7 +25,7 @@ flowchart LR
 
 Apple Silicon·macOS 26 이상용이다.
 
-1. `dist/`의 DMG를 연다.
+1. [GitHub Releases](https://github.com/723poil/maeng-mate/releases/latest)에서 DMG를 내려받아 연다.
 2. `Maeng Mate.app`을 `Applications`로 옮긴다.
 3. 응용 프로그램에서 실행한다.
 

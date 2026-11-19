@@ -3,30 +3,61 @@ name: macOS release
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, closed]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  validate:
-    name: ${{ github.event.pull_request.merged && 'Validate merged release' || 'Validate release PR' }}
+  candidate:
+    name: Identify release branch
     if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.head_ref, 'release/') &&
-      (github.event.action != 'closed' || github.event.pull_request.merged)
+      github.event_name == 'push' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       startsWith(github.head_ref, 'release/'))
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      branch: ${{ steps.source.outputs.branch }}
+    steps:
+      - name: Identify the release PR for this commit
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="${GITHUB_HEAD_REF:-}"
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            # main에 실제 병합된 같은 저장소의 릴리스 PR만 배포한다.
+            branch=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --paginate |
+              jq -r --arg sha "$GITHUB_SHA" --arg repo "$GITHUB_REPOSITORY" '
+                .[] | select(.merged_at != null and .merge_commit_sha == $sha and
+                .base.ref == "main" and .head.repo.full_name == $repo and
+                (.head.ref | startswith("release/"))) | .head.ref')
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: ${{ github.event_name == 'push' && 'Validate merged release' || 'Validate release PR' }}
+    needs: candidate
+    if: needs.candidate.outputs.branch != ''
     runs-on: macos-26
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.merged && github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
       - name: Check release version and notes
         id: version
+        env:
+          RELEASE_BRANCH: ${{ needs.candidate.outputs.branch }}
         shell: bash
         run: |
           python - <<'PY'
@@ -38,7 +69,7 @@ jobs:
 
           version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
           pattern = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
-          if not re.fullmatch(pattern, version) or os.environ["GITHUB_HEAD_REF"] != f"release/{version}":
+          if not re.fullmatch(pattern, version) or os.environ["RELEASE_BRANCH"] != f"release/{version}":
               raise SystemExit("후보 버전과 릴리스 브랜치 이름을 확인하세요.")
           # 검토용 병합 커밋과 실제 병합 커밋 모두 첫 부모에서 직전 배포를 찾는다.
           tags = subprocess.check_output(["git", "tag", "--merged", "HEAD^1"], text=True).splitlines()
@@ -59,13 +90,13 @@ jobs:
   package:
     name: Build and sign release DMG
     needs: validate
-    if: github.event.pull_request.merged
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: production
     runs-on: macos-26
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
       - name: Build release DMG
@@ -112,7 +143,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:

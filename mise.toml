@@ -1,0 +1,10 @@
+# 개발과 검증에서 같은 실행 파일을 사용하도록 정확한 버전을 고정한다.
+[tools]
+python = "3.12.13"
+uv = "0.12.21"
+
+[tasks.check]
+run = "uv run ruff check . && uv run ruff format --check . && uv run mypy src"
+
+[tasks.package]
+run = "uv run --locked --extra menubar python packaging/build.py"

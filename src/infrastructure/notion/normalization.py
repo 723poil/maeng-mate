@@ -1,0 +1,300 @@
+"""Notion 속성과 시간대를 내부 업무 값으로 변환한다."""
+
+import re
+from datetime import UTC, date, datetime
+from urllib.parse import unquote, urlsplit
+from zoneinfo import ZoneInfo
+
+from src.domain.display_columns import DISPLAY_VALUE_LIMIT, TITLE_COLUMN_TYPES
+from src.domain.event_classification import classify_event
+from src.domain.models import CalendarEvent, Leave, Period, SourceMapping, Task, WorkItem
+from src.domain.source_alerts import SourceAlertRule, alert_value_key
+from src.domain.work_dates import SEOUL, canonical_identity
+from src.infrastructure.notion.errors import SourceError
+from src.infrastructure.notion.values import array, record, text
+
+
+def property_by_id(properties: dict[str, object], identifier: str) -> dict[str, object]:
+    """표시 이름이 바뀌어도 속성 ID로 단 하나의 필드를 선택한다."""
+    decoded = unquote(identifier)
+    matches = []
+    for raw in properties.values():
+        value = record(raw)
+        property_id = value.get("id")
+        if isinstance(property_id, str) and unquote(property_id) == decoded:
+            matches.append(value)
+    if len(matches) != 1:
+        raise SourceError("mapping_invalid")
+    return matches[0]
+
+
+def instant(value: str, zone_name: str | None = None) -> str:
+    """명시적 offset 또는 IANA 시간대로 UTC를 구하고 DST 모호성은 거부한다."""
+    try:
+        if "T" not in value:
+            raise ValueError
+        local = datetime.fromisoformat(value)
+        if local.tzinfo is None:
+            if zone_name is None:
+                raise ValueError
+            zone = ZoneInfo(zone_name)
+            # 존재하지 않는 시각과 두 번 발생하는 시각을 자동 보정하지 않는다.
+            candidates = {
+                local.replace(tzinfo=zone, fold=fold).astimezone(UTC)
+                for fold in (0, 1)
+                if local.replace(tzinfo=zone, fold=fold)
+                .astimezone(UTC)
+                .astimezone(zone)
+                .replace(tzinfo=None)
+                == local
+            }
+            if len(candidates) != 1:
+                raise ValueError
+            resolved = next(iter(candidates))
+        else:
+            resolved = local.astimezone(UTC)
+            if (
+                zone_name
+                and local.utcoffset() != resolved.astimezone(ZoneInfo(zone_name)).utcoffset()
+            ):
+                raise ValueError
+        return resolved.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    except (ValueError, KeyError):
+        raise SourceError("mapping_invalid") from None
+
+
+def read_period(prop: dict[str, object]) -> Period | None:
+    """날짜 전용 값과 시점을 구분하고 역전·혼합 구간을 거부한다."""
+    if prop.get("type") != "date" or "date" not in prop:
+        raise SourceError("mapping_invalid")
+    if prop.get("date") is None:
+        return None
+    raw = record(prop["date"])
+    if "start" not in raw or "end" not in raw:
+        raise SourceError("mapping_invalid")
+    start, end = text(raw.get("start")), raw.get("end")
+    zone = raw.get("time_zone")
+    if zone is not None and not isinstance(zone, str):
+        raise SourceError("mapping_invalid")
+    is_date = re.fullmatch(r"\d{4}-\d{2}-\d{2}", start) is not None
+    try:
+        if is_date:
+            if zone is not None:
+                raise ValueError
+            normalized_start = date.fromisoformat(start).isoformat()
+            normalized_end = None if end is None else date.fromisoformat(text(end)).isoformat()
+        else:
+            normalized_start = instant(start, zone)
+            normalized_end = None if end is None else instant(text(end), zone)
+        if normalized_end is not None and normalized_end < normalized_start:
+            raise ValueError
+        return Period("date" if is_date else "instant", normalized_start, normalized_end)
+    except ValueError:
+        raise SourceError("mapping_invalid") from None
+
+
+def read_people(prop: dict[str, object]) -> tuple[str, ...]:
+    """사용자 순서와 중복으로 가짜 변경이 발생하지 않도록 정규화한다."""
+    if prop.get("type") != "people":
+        raise SourceError("mapping_invalid")
+    return tuple(sorted({text(record(person).get("id")) for person in array(prop.get("people"))}))
+
+
+def read_status(prop: dict[str, object]) -> str | None:
+    """상태와 선택 속성을 지원하며 빈 상태도 보존한다."""
+    kind = prop.get("type")
+    if kind not in ("status", "select") or str(kind) not in prop:
+        raise SourceError("mapping_invalid")
+    value = prop.get(str(kind))
+    return None if value is None else text(record(value).get("name"))
+
+
+def read_checkbox(prop: dict[str, object]) -> bool:
+    """취소 필드의 누락과 잘못된 값을 미취소로 처리하지 않는다."""
+    if (
+        prop.get("type") != "checkbox"
+        or "checkbox" not in prop
+        or type(prop["checkbox"]) is not bool
+    ):
+        raise SourceError("mapping_invalid")
+    return prop["checkbox"]
+
+
+def local_date(value: str) -> str:
+    """시각은 화면과 같은 서울 시간대로 표시한다."""
+    return (
+        datetime.fromisoformat(value).astimezone(SEOUL).strftime("%Y-%m-%d %H:%M")
+        if "T" in value
+        else value
+    )
+
+
+def column_text(prop: dict[str, object], kind: str) -> str:
+    """원본 타입을 확인하고 이름이 없는 사람 ID는 화면에 노출하지 않는다."""
+    if prop.get("type") != kind or kind not in prop:
+        raise SourceError("mapping_invalid")
+    raw = prop[kind]
+    if raw is None:
+        return ""
+    if kind in {"title", "rich_text"}:
+        return "".join(text(record(part).get("plain_text")) for part in array(raw))
+    if kind in {"status", "select"}:
+        return read_status(prop) or ""
+    if kind in {"people", "multi_select"}:
+        names = (record(item).get("name") for item in array(raw))
+        return ", ".join(name for name in names if isinstance(name, str) and name)
+    if kind == "checkbox":
+        return "예" if read_checkbox(prop) else "아니요"
+    if kind == "date":
+        period = read_period(prop)
+        if period is None:
+            return ""
+        return local_date(period.start) + (" ~ " + local_date(period.end) if period.end else "")
+    if kind == "number":
+        if type(raw) not in (int, float):
+            raise SourceError("mapping_invalid")
+        return str(raw)
+    if kind in {"created_time", "last_edited_time"}:
+        return local_date(instant(text(raw)))
+    return text(raw)
+
+
+def alert_comparison(prop: dict[str, object], rule: SourceAlertRule, visible: str) -> str:
+    """비교값에는 화면에서 생략한 초와 사람 식별자를 보존한다."""
+    kind = rule.column_kind
+    if rule.time_only:
+        return clock_text(column_period(prop, kind))
+    if kind == "people" and rule.target is None:
+        people = set(map(canonical_identity, read_people(prop)))
+        return ",".join(sorted(people))
+    if kind == "date":
+        period = read_period(prop)
+        if period is None:
+            return ""
+        return period.start + (" ~ " + period.end if period.end else "")
+    if kind in {"created_time", "last_edited_time"} and prop[kind] is not None:
+        return instant(text(prop[kind]))
+    if rule.target is None and kind in {"title", "rich_text"}:
+        return column_text(prop, kind)
+    return visible
+
+
+def column_period(prop: dict[str, object], kind: str) -> Period | None:
+    """일반 날짜와 생성·수정 시각을 같은 기간 모델로 읽는다."""
+    if kind == "date":
+        return read_period(prop)
+    if kind in {"created_time", "last_edited_time"} and prop[kind] is not None:
+        return Period("instant", instant(text(prop[kind])), None)
+    return None
+
+
+def clock_text(period: Period | None) -> str:
+    """날짜만 있는 값은 비우고 시각은 서울 시간의 시·분으로 표시한다."""
+    if period is None or period.kind != "instant":
+        return ""
+    return " ~ ".join(
+        datetime.fromisoformat(value).astimezone(SEOUL).strftime("%H:%M")
+        for value in (period.start, period.end)
+        if value is not None
+    )
+
+
+def normalize_page(raw: object, source: SourceMapping, observed_at: str) -> WorkItem:
+    """완전히 수집한 필드만 순수 업무 모델로 변환한다."""
+    page = record(raw)
+    if page.get("object") != "page" or urlsplit(text(page.get("url"))).scheme != "https":
+        raise SourceError("invalid_response")
+    props = record(page.get("properties"))
+    base = {
+        "id": text(page.get("id")),
+        "source_id": source.source_id,
+        "url": text(page.get("url")),
+        "source_edited_at": instant(text(page.get("last_edited_time"))),
+        "observed_at": instant(observed_at),
+    }
+
+    def get(name: str) -> dict[str, object]:
+        """회사별 매핑을 통해 원천 속성을 선택한다."""
+        return property_by_id(props, source.properties[name])
+
+    values = {
+        identifier: " ".join(column_text(property_by_id(props, identifier), kind).split())
+        for identifier, kind in source.collected_columns().items()
+    }
+    display = {
+        column.value_key: (
+            clock_text(column_period(property_by_id(props, column.property_id), column.kind))
+            if column.time_only
+            else values[column.property_id]
+            if column.full_text
+            else values[column.property_id][:DISPLAY_VALUE_LIMIT]
+        )
+        for column in source.storage_layout
+    }
+    dates = {
+        column.value_key: value
+        for column in source.stored_columns
+        if not column.time_only
+        and column.kind in {"date", "created_time", "last_edited_time"}
+        and (value := column_period(property_by_id(props, column.property_id), column.kind))
+        is not None
+    }
+    alerts = {
+        rule.id: alert_value_key(
+            alert_comparison(property_by_id(props, rule.column_id), rule, values[rule.column_id]),
+            rule.comparison_kind,
+        )
+        for rule in source.alert_rules
+        if rule.enabled
+    }
+
+    if source.kind == "leave":
+        period = read_period(get("period"))
+        if period is None:
+            raise SourceError("mapping_invalid")
+        approval = read_status(get("approval"))
+        return Leave(
+            **base,
+            display_values=display,
+            alert_values=alerts,
+            calendar_periods=dates,
+            person_ids=read_people(get("people")),
+            period=period,
+            approval=approval,
+            approved=approval in source.approved_values,
+        )
+    title_prop = get("title")
+    title_kind = title_prop.get("type")
+    if not isinstance(title_kind, str) or title_kind not in TITLE_COLUMN_TYPES:
+        raise SourceError("mapping_invalid")
+    title = column_text(title_prop, title_kind)
+    if source.kind == "meeting":
+        category = read_status(get("category")) if "category" in source.properties else None
+        return CalendarEvent(
+            **base,
+            display_values=display,
+            alert_values=alerts,
+            calendar_periods=dates,
+            title=title,
+            participant_ids=read_people(get("participants"))
+            if "participants" in source.properties
+            else (),
+            period=read_period(get("period")),
+            category=category,
+            event_type=classify_event(category, source.event_types)
+            if "category" in source.properties
+            else source.default_event_type,
+            cancelled=read_checkbox(get("cancelled"))
+            if "cancelled" in source.properties
+            else False,
+        )
+    return Task(
+        **base,
+        display_values=display,
+        alert_values=alerts,
+        calendar_periods=dates,
+        title=title,
+        assignee_ids=read_people(get("assignees")) if "assignees" in source.properties else (),
+        status=read_status(get("status")) if "status" in source.properties else None,
+        due=read_period(get("dueDate")) if "dueDate" in source.properties else None,
+    )

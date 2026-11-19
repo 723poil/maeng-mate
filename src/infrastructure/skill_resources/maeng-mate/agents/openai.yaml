@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maeng Mate"
+  short_description: "Maeng Mate의 업무·QA·회의·근무 기록을 MCP로 조회합니다"
+  default_prompt: "$maeng-mate로 오늘 업무와 회의, 퇴근 예정을 확인해줘."

@@ -1,0 +1,56 @@
+[project]
+name = "maeng-mate"
+version = "0.2.0"
+description = "개인 PC 상주형 업무 비서"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.34,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.10,<3",
+  "mcp>=1.30,<2",
+  "pyobjc-framework-security>=13,<14 ; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+maeng-mate = "src.bootstrap.cli:main"
+
+[project.optional-dependencies]
+menubar = [
+    "pyobjc-framework-Cocoa>=13,<14; sys_platform == 'darwin'",
+    "pyobjc-framework-usernotifications>=13,<14 ; sys_platform == 'darwin'",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.24,<2",
+    "ruff>=0.11,<1",
+    "mypy>=1.15,<2",
+    "pyinstaller>=6.11,<7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "stubs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

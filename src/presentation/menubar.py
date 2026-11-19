@@ -1,0 +1,1230 @@
+"""근무 선택과 스크롤 일정을 한 화면에 모은 macOS 팝오버다."""
+
+import time
+import webbrowser
+from collections.abc import Callable
+from dataclasses import replace
+from datetime import date, datetime
+from pathlib import Path
+
+from AppKit import (
+    NSApplication,
+    NSApplicationActivationPolicyAccessory,
+    NSBezelStyleRounded,
+    NSButton,
+    NSColor,
+    NSControlSizeLarge,
+    NSControlSizeSmall,
+    NSFont,
+    NSImage,
+    NSNoBorder,
+    NSPopUpButton,
+    NSProgressIndicator,
+    NSProgressIndicatorStyleSpinning,
+    NSScreen,
+    NSScrollView,
+    NSStatusBar,
+    NSTextField,
+    NSVariableStatusItemLength,
+    NSView,
+    NSWorkspace,
+)
+from Foundation import NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
+
+from src.application.ai_skills import SkillInstaller
+from src.application.calendar import CalendarClient
+from src.application.desktop import DayUpdate, DesktopClient, DesktopSnapshot
+from src.application.mcp_access import McpSettingsClient
+from src.application.notification_identity import NotificationBranding
+from src.application.notifications import NotificationChannel
+from src.application.notion_credentials import NotionCredentialsClient
+from src.application.notion_links import notion_link
+from src.application.notion_page_links import NotionPageLinksClient, NotionPageLinksState
+from src.application.preferences import PreferencesClient
+from src.application.runtime_settings_service import RestartOperation, RuntimeSettingsClient
+from src.application.slack_settings import SlackSettingsClient
+from src.application.source_settings import SourceSettingsClient
+from src.application.work_records import WorkRecordsClient
+from src.application.work_rules_settings import WorkRulesClient
+from src.application.workday import LEAVE_LABELS, SELECTABLE_LEAVES
+from src.domain.calendar import CALENDAR_KINDS, CalendarPreferences
+from src.domain.daily_work import DepartureResult, LeaveType, WorkRules, parse_clock
+from src.domain.preferences import SECTIONS, Preferences, SectionPreference
+from src.domain.source_display import SourceDisplay, display_groups
+from src.domain.work_dates import SEOUL
+from src.presentation.calendar_controller import CalendarController
+from src.presentation.calendar_controls import CalendarFilterChoice, calendar_filter_choices
+from src.presentation.calendar_views import (
+    COMPACT_CALENDAR_HEIGHT,
+    CalendarWindow,
+    CompactCalendarView,
+)
+from src.presentation.desktop_controller import DesktopController
+from src.presentation.entry_section import EntrySection
+from src.presentation.glass_panel import GlassPanel
+from src.presentation.mcp_settings_controller import McpSettingsController
+from src.presentation.native_views import (
+    button,
+    card,
+    frame,
+    glass_container,
+    label,
+    place_label,
+    symbol,
+)
+from src.presentation.notification_identity_controller import NotificationIdentityController
+from src.presentation.notion_credentials_controller import NotionCredentialsController
+from src.presentation.notion_page_links_controller import NotionPageLinksController
+from src.presentation.preferences_controller import PreferencesController
+from src.presentation.preferences_window import PreferencesWindow
+from src.presentation.runtime_settings_controller import RuntimeSettingsController, SettingsEditor
+from src.presentation.slack_settings_controller import SlackSettingsController
+from src.presentation.source_sections import group_board_url, source_sections
+from src.presentation.source_settings_form import SourceEditor
+from src.presentation.work_records_controller import WorkRecordsController
+from src.presentation.work_records_window import WorkRecordsWindow
+from src.presentation.work_rules_form import WorkRulesEditor
+
+type Preview = Callable[[DayUpdate, WorkRules | None], DepartureResult]
+POPOVER_WIDTH = 520
+INTERVAL_MINUTES = (1, 5, 10, 15, 30, 60)
+
+
+def local_day() -> str:
+    """화면의 날짜 전환은 서울 날짜로 확인한다."""
+    return datetime.now(SEOUL).date().isoformat()
+
+
+def clock_label(value: datetime | None) -> str:
+    """표시 시점은 서울 시간으로 통일한다."""
+    return value.astimezone(SEOUL).strftime("%H:%M") if value else "—"
+
+
+class Callbacks(NSObject):
+    """Cocoa 선택자와 Python 화면 로직을 연결한다."""
+
+    owner: "MenuBarApp"
+
+    def toggle_(self, sender: object) -> None:
+        """팝오버를 열거나 닫는다."""
+        self.owner.toggle()
+
+    def calendar_(self, sender: object) -> None:
+        """메인 표시와 별개로 캘린더 창을 연다."""
+        self.owner.open_calendar()
+
+    def records_(self, sender: object) -> None:
+        """근무 카드에서 별도 출퇴근 기록 창을 연다."""
+        self.owner.open_records()
+
+    def tick_(self, sender: object) -> None:
+        """계산·저장 결과를 메인 루프에서 처리한다."""
+        self.owner.tick()
+
+    def calendarLoaded_(self, sender: object) -> None:
+        """월 조회가 끝나면 다음 타이머를 기다리지 않고 보이는 달력을 그린다."""
+        self.owner.calendar_loaded()
+
+    def animateResize_(self, sender: object) -> None:
+        """확대·축소 전환의 다음 프레임을 그린다."""
+        self.owner.animate_resize()
+
+    def refresh_(self, sender: object) -> None:
+        """명시적으로 마지막 저장값과 목록을 다시 읽는다."""
+        self.owner.refresh(manual=True)
+
+    def interval_(self, sender: object) -> None:
+        """선택한 수집 주기를 즉시 저장한다."""
+        self.owner.change_interval()
+
+    def now_(self, sender: object) -> None:
+        """현재 시각도 선택 변경과 동일하게 계산·저장한다."""
+        current = datetime.now(SEOUL)
+        self.owner.hour.selectItemAtIndex_(current.hour)
+        self.owner.minute.selectItemAtIndex_(current.minute)
+        self.owner.mark_dirty()
+
+    def changed_(self, sender: object) -> None:
+        """선택 변경은 즉시 계산하고 잠시 뒤 자동 저장한다."""
+        self.owner.mark_dirty()
+
+    def open_(self, sender: NSButton) -> None:
+        """검증한 원천 링크를 연다."""
+        url = sender.cell().representedObject()
+        if isinstance(url, str):
+            self.owner._open_notion(url)
+
+    def openSourceBoard_(self, sender: NSButton) -> None:
+        """사용자가 지정한 소스의 검증된 원본 주소를 연다."""
+        self.owner.open_source_board(sender.tag())
+
+    def expandSource_(self, sender: NSButton) -> None:
+        """선택한 사용자 영역만 높이를 전환한다."""
+        self.owner.expand_source(sender.tag())
+
+    def settings_(self, sender: object) -> None:
+        """독립된 설정 창을 연다."""
+        self.owner.open_settings()
+
+    def quit_(self, sender: object) -> None:
+        """메뉴바 프로세스만 종료한다."""
+        self.owner.quit()
+
+
+def open_browser_url(url: str) -> None:
+    """검증한 Notion 페이지를 기본 브라우저의 새 탭에서 연다."""
+    webbrowser.open(url, new=2)
+
+
+class MenuBarApp:
+    """화면 이동·별도 저장 버튼 없이 근무를 조정한다."""
+
+    def __init__(
+        self,
+        client: DesktopClient,
+        preview: Preview,
+        *,
+        preferences_client: PreferencesClient,
+        runtime_settings_client: RuntimeSettingsClient | None = None,
+        notion_credentials_client: NotionCredentialsClient | None = None,
+        mcp_settings_client: McpSettingsClient | None = None,
+        page_links_client: NotionPageLinksClient | None = None,
+        skills: SkillInstaller | None = None,
+        notification_branding: NotificationBranding | None = None,
+        work_records_client: WorkRecordsClient | None = None,
+        calendar_client: CalendarClient | None = None,
+        slack_settings_client: SlackSettingsClient | None = None,
+        work_rules_client: WorkRulesClient | None = None,
+        source_client: SourceSettingsClient | None = None,
+        open_url: Callable[[str], None] = open_browser_url,
+        restart_services: Callable[[], RestartOperation] | None = None,
+        notification_channels: tuple[NotificationChannel, ...] = (
+            NotificationChannel("macos", "macOS 알림"),
+        ),
+        notification_status: Callable[[], str | None] | None = None,
+        shutdown_requested: Callable[[], bool] | None = None,
+        today: Callable[[], str] = local_day,
+    ) -> None:
+        """로컬 연결과 순수 예상시간 계산 유스케이스를 주입받는다."""
+        self._notification_channels = notification_channels
+        self._open_url = open_url
+        # 저장 설정을 읽기 전에는 숨긴 업무가 잠깐 노출되지 않게 한다.
+        self._preferences = Preferences(
+            sections=tuple(SectionPreference(key, False) for key in SECTIONS)
+        )
+        self._preferences_controller = PreferencesController(preferences_client)
+        self._identity_controller = (
+            NotificationIdentityController(notification_branding) if notification_branding else None
+        )
+        self._runtime_settings_controller = (
+            RuntimeSettingsController(runtime_settings_client, restart_services)
+            if runtime_settings_client is not None
+            else None
+        )
+        self._notion_credentials_controller = (
+            NotionCredentialsController(notion_credentials_client)
+            if notion_credentials_client
+            else None
+        )
+        self._mcp_settings_controller = (
+            McpSettingsController(mcp_settings_client, skills) if mcp_settings_client else None
+        )
+        self._page_links_controller = (
+            NotionPageLinksController(page_links_client, self.update_page_links)
+            if page_links_client
+            else None
+        )
+        self._slack_settings_controller = (
+            SlackSettingsController(slack_settings_client, self._slack_member_saved)
+            if slack_settings_client
+            else None
+        )
+        self._work_rules_controller: WorkRulesEditor | None = (
+            SettingsEditor(work_rules_client, restart_services) if work_rules_client else None
+        )
+        self._source_display: tuple[SourceDisplay, ...] = ()
+        self._source_groups: dict[str, tuple[SourceDisplay, ...]] = {}
+        self._section_order: tuple[SectionPreference, ...] = ()
+        self._custom_sections: dict[str, EntrySection] = {}
+        self._custom_expanded: set[str] = set()
+        self._source_client = source_client
+        self._source_editor: SourceEditor | None = (
+            SettingsEditor(source_client, restart_services) if source_client else None
+        )
+        # 같은 설정 작업들을 갱신하고, 종료 전에는 진행 여부를 확인한 뒤 정리한다.
+        self._settings_controllers = tuple(
+            controller
+            for controller in (
+                self._slack_settings_controller,
+                self._page_links_controller,
+                self._mcp_settings_controller,
+                self._notion_credentials_controller,
+                self._runtime_settings_controller,
+                self._work_rules_controller,
+                self._source_editor,
+            )
+            if controller is not None
+        )
+        self._settings_window: PreferencesWindow | None = None
+        self._records_controller = (
+            WorkRecordsController(work_records_client, self._records_saved)
+            if work_records_client
+            else None
+        )
+        self._records_window: WorkRecordsWindow | None = None
+        self._calendar_controller = (
+            CalendarController(calendar_client, notify_loaded=self._notify_calendar_loaded)
+            if calendar_client
+            else None
+        )
+        self._calendar_window: CalendarWindow | None = None
+        self._calendar_view: CompactCalendarView | None = None
+        self._today = today
+        self._display_day = today()
+        self._preview = preview
+        self._notification_status = notification_status
+        self._shutdown_requested = shutdown_requested
+        self._notification_error: str | None = None
+        self._application = NSApplication.sharedApplication()
+        self._application.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        self._callbacks = Callbacks.alloc().init()
+        self._callbacks.owner = self
+        self._controller = DesktopController(client)
+        self._dirty = False
+        self._save_blocked = False
+        self._last_edit = 0.0
+        self._base: DayUpdate | None = None
+        self._next_refresh = time.monotonic() + 15
+        self._maximum_height = 660.0
+        self._status_item = NSStatusBar.systemStatusBar().statusItemWithLength_(
+            NSVariableStatusItemLength
+        )
+        status_button = self._status_item.button()
+        # 템플릿의 투명 영역을 살려 메뉴바 배경과 선택 상태에 맞게 시스템이 채색한다.
+        mark = NSImage.alloc().initWithContentsOfFile_(
+            str(Path(__file__).with_name("assets") / "MenuMark.svg")
+        )
+        if mark is None:
+            raise RuntimeError("메뉴바 아이콘을 불러오지 못했습니다.")
+        mark.setTemplate_(True)
+        status_button.setImage_(mark)
+        self._set_status_description("연결 중")
+        status_button.setTarget_(self._callbacks)
+        status_button.setAction_("toggle:")
+        self._view = NSView.alloc().initWithFrame_(frame(0, 0, POPOVER_WIDTH, 660))
+        self._glass = glass_container(self._view, POPOVER_WIDTH, 660)
+        self._panel = GlassPanel(
+            self._glass, POPOVER_WIDTH, 660, on_hide=self._close_calendar_filters
+        )
+        self._maximum_height = self._available_height()
+        self._base_height = min(760.0, self._maximum_height)
+        self._rendered_base_height = 0.0
+        self._build()
+        self._layout_state: dict[str, float] = {}
+        self._layout_target = self._layout_state
+        self._layout_from = self._layout_state
+        self._animation_started = 0.0
+        self._animation_timer: NSTimer | None = None
+        self._timer: NSTimer | None = None
+        self.refresh()
+
+    def _build(self) -> None:
+        """고정 기능을 배치하고 카테고리 카드는 확인한 소스로 따로 만든다."""
+        view = self._view
+        self._date = label(view, "오늘", 22, 615, POPOVER_WIDTH - 170, size=17, bold=True)
+        calendar_button = button(
+            view, "", POPOVER_WIDTH - 138, 614, 26, self._callbacks, "calendar:", bordered=False
+        )
+        calendar_button.setImage_(
+            NSImage.imageWithSystemSymbolName_accessibilityDescription_("calendar", "캘린더 열기")
+        )
+        calendar_button.setToolTip_("캘린더 열기")
+        calendar_button.setEnabled_(self._calendar_controller is not None)
+        self._refresh_button = button(
+            view, "", POPOVER_WIDTH - 74, 614, 26, self._callbacks, "refresh:", bordered=False
+        )
+        self._refresh_button.setImage_(
+            NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+                "arrow.clockwise", "새로고침"
+            )
+        )
+        self._refresh_button.setToolTip_("화면 새로고침")
+        settings_button = button(
+            view, "", POPOVER_WIDTH - 106, 614, 26, self._callbacks, "settings:", bordered=False
+        )
+        settings_button.setImage_(
+            NSImage.imageWithSystemSymbolName_accessibilityDescription_("gearshape", "설정")
+        )
+        settings_button.setToolTip_("화면 구성 및 알림 설정")
+        self._spinner = NSProgressIndicator.alloc().initWithFrame_(frame(23, 586, 16, 16))
+        self._spinner.setStyle_(NSProgressIndicatorStyleSpinning)
+        self._spinner.setIndeterminate_(True)
+        self._spinner.setDisplayedWhenStopped_(False)
+        view.addSubview_(self._spinner)
+        close = button(
+            view, "", POPOVER_WIDTH - 42, 614, 26, self._callbacks, "quit:", bordered=False
+        )
+        close.setImage_(
+            NSImage.imageWithSystemSymbolName_accessibilityDescription_("power", "메뉴바 종료")
+        )
+        self._collection_icon = symbol(view, "arrow.triangle.2.circlepath", 22, 585)
+        self._collection = label(view, "연결 중", 48, 584, POPOVER_WIDTH - 225, size=12, bold=True)
+        self._collection_detail = label(
+            view, "", 48, 565, POPOVER_WIDTH - 225, size=11, secondary=True
+        )
+        label(view, "수집 주기", POPOVER_WIDTH - 170, 584, 60, size=11, secondary=True)
+        self._interval = self._selector(
+            POPOVER_WIDTH - 112, 577, 90, [f"{minutes}분" for minutes in INTERVAL_MINUTES]
+        )
+        self._interval.setControlSize_(0)
+        self._interval.setFont_(NSFont.systemFontOfSize_(12))
+        self._interval.setAction_("interval:")
+        self._interval.selectItemAtIndex_(INTERVAL_MINUTES.index(15))
+        self._interval.setEnabled_(False)
+        self._interval.setToolTip_("Notion 수집 간격 · 변경 즉시 저장")
+        self._header_frames = [(control, control.frame()) for control in view.subviews()]
+        self._body_scroll = NSScrollView.alloc().initWithFrame_(frame(0, 0, POPOVER_WIDTH, 555))
+        self._body_scroll.setHasVerticalScroller_(True)
+        self._body_scroll.setAutohidesScrollers_(True)
+        self._body_scroll.setDrawsBackground_(False)
+        self._body_scroll.setBorderType_(NSNoBorder)
+        self._body = NSView.alloc().initWithFrame_(frame(0, 0, POPOVER_WIDTH, 555))
+        self._body_scroll.setDocumentView_(self._body)
+        view.addSubview_(self._body_scroll)
+        view = self._body
+        card(view, 16, 443, POPOVER_WIDTH - 32, 112)
+        symbol(view, "clock", 30, 525)
+        label(view, "근무", 56, 525, 140, size=13, bold=True)
+        self._records_button = button(
+            view, "기록 ↗", POPOVER_WIDTH - 92, 520, 66, self._callbacks, "records:", bordered=False
+        )
+        self._records_button.setEnabled_(self._records_controller is not None)
+        self._work_message = label(view, "", 196, 525, POPOVER_WIDTH - 306, size=11, secondary=True)
+        self._message = label(view, "", 441, 500.5, 61, size=10, secondary=True)
+        label(view, "출근", 30, 500, 150, size=11, secondary=True)
+        self._departure_title = label(view, "퇴근 예정", 382, 500, 60, size=11, secondary=True)
+        self.hour = self._selector(
+            28, 461, 70, [f"{hour:02d}시" for hour in range(24)], parent=view
+        )
+        self.minute = self._selector(
+            98, 461, 70, [f"{minute:02d}분" for minute in range(60)], parent=view
+        )
+        for selector in (self.hour, self.minute):
+            selector.setControlSize_(NSControlSizeSmall)
+            selector.setFont_(NSFont.systemFontOfSize_(12))
+        self.hour.selectItemAtIndex_(9)
+        self.minute.selectItemAtIndex_(0)
+        self._now = button(view, "지금", 172, 463, 44, self._callbacks, "now:")
+        self._now.setControlSize_(NSControlSizeSmall)
+        self._now.setFont_(NSFont.systemFontOfSize_(11))
+        self._departure = label(view, "--:--", 382, 460.5, 108, size=24, bold=True)
+        label(view, "휴가", 226, 500, 100, size=11, secondary=True)
+        self.leave = self._selector(
+            224, 461, 144, [LEAVE_LABELS[leave] for leave in SELECTABLE_LEAVES], parent=view
+        )
+        self._work_frames = [(control, control.frame()) for control in view.subviews()]
+        if self._calendar_controller is not None:
+            self._calendar_view = CompactCalendarView(
+                view,
+                POPOVER_WIDTH,
+                self._calendar_controller,
+                self._calendar_preferences,
+                self._toggle_calendar_filter,
+                self.open_calendar,
+                choices=self._calendar_filter_choices,
+            )
+        self._empty_view = label(
+            view, "설정 → 화면에서 표시할 카드를 선택하세요.", 26, 20, 460, secondary=True
+        )
+        self.hour.setEnabled_(False)
+        self.minute.setEnabled_(False)
+        self.leave.setEnabled_(False)
+        self._now.setEnabled_(False)
+
+    def _resize_lists(self, *, animated: bool = False) -> None:
+        """표시하는 카테고리만 계산하고 확대·축소를 같은 높이 기준으로 전환한다."""
+        self._maximum_height = min(760.0, self._available_height())
+        self._section_order = source_sections(self._preferences.sections, self._source_display)
+        visible = {item.key for item in self._section_order if item.visible}
+        for key, section in self._custom_sections.items():
+            section.view.setHidden_(key not in visible)
+        self._empty_view.setHidden_(bool(visible))
+        category_keys = visible.intersection(self._custom_sections)
+        self._section_height = (self._maximum_height - 269) / 3
+        self._base_height = max(
+            160.0,
+            121
+            + (112 if "work" in visible else 0)
+            + self._section_height * len(category_keys)
+            + (COMPACT_CALENDAR_HEIGHT if "calendar" in visible and self._calendar_view else 0)
+            + max(0, len(visible) - 1) * 12,
+        )
+        target = {key: 144.0 if key in self._custom_expanded else 0.0 for key in category_keys}
+        self._stop_resize_animation()
+        self._layout_target = target
+        if self._layout_state == target and self._rendered_base_height == self._base_height:
+            return
+        if (
+            not animated
+            or not self._panel.is_visible()
+            or NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+        ):
+            self._apply_layout(target)
+            return
+        self._layout_from = self._layout_state
+        self._animation_started = time.monotonic()
+        self._animation_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                1 / 60, self._callbacks, "animateResize:", None, True
+            )
+        )
+        NSRunLoop.currentRunLoop().addTimer_forMode_(self._animation_timer, NSRunLoopCommonModes)
+
+    def animate_resize(self) -> None:
+        """현재 높이에서 목표 높이까지 감속해 열림 상태를 안정적으로 유지한다."""
+        progress = min(1.0, (time.monotonic() - self._animation_started) / 0.22)
+        if not self._panel.is_visible():
+            progress = 1.0
+        weight = 1 - (1 - progress) ** 3
+        step = {}
+        for key, target in self._layout_target.items():
+            start = self._layout_from.get(key, 0.0)
+            step[key] = start + (target - start) * weight
+        self._apply_layout(step)
+        if progress >= 1:
+            self._stop_resize_animation()
+
+    def _stop_resize_animation(self) -> None:
+        """이전 전환 타이머가 새 목표나 종료된 화면을 덮어쓰지 않게 한다."""
+        if self._animation_timer is not None:
+            self._animation_timer.invalidate()
+            self._animation_timer = None
+
+    def _apply_layout(self, extras: dict[str, float]) -> None:
+        """카테고리 카드를 사용자 순서대로 놓고 본문의 읽던 위치를 복원한다."""
+        self._layout_state = extras
+        self._rendered_base_height = self._base_height
+        natural_height = self._base_height + sum(extras.values())
+        height = min(natural_height, self._maximum_height)
+        previous_doc = self._body.frame()[1][1]
+        previous_viewport = self._body_scroll.frame()[1][1]
+        previous_origin = self._body_scroll.contentView().bounds()[0][1]
+        distance_from_top = max(0, previous_doc - previous_viewport - previous_origin)
+        document_height = natural_height - 105
+        viewport_height = height - 105
+        self._body.setFrameSize_((POPOVER_WIDTH, document_height))
+        self._body_scroll.setFrame_(frame(0, 0, POPOVER_WIDTH, viewport_height))
+        self._panel.resize(POPOVER_WIDTH, height)
+        self._view.setFrameSize_((POPOVER_WIDTH, height))
+        for control, original in self._header_frames:
+            (x, y), (width, control_height) = original
+            if isinstance(control, NSTextField):
+                place_label(control, x, y + height - 660, width, control_height)
+            else:
+                control.setFrame_(frame(x, y + height - 660, width, control_height))
+        top = document_height
+        for item in self._section_order:
+            if item.key == "work":
+                for control, original in self._work_frames:
+                    control.setHidden_(not item.visible)
+                    (x, y), (width, control_height) = original
+                    bottom = top - 112
+                    if isinstance(control, NSTextField):
+                        place_label(control, x, y + bottom - 443, width, control_height)
+                    else:
+                        control.setFrame_(frame(x, y + bottom - 443, width, control_height))
+                if item.visible:
+                    top -= 124
+            elif item.key == "calendar":
+                if self._calendar_view is not None:
+                    self._calendar_view.set_hidden(not item.visible)
+                    if item.visible:
+                        self._calendar_view.resize(top - COMPACT_CALENDAR_HEIGHT)
+                        top -= COMPACT_CALENDAR_HEIGHT + 12
+            else:
+                section = self._custom_sections[item.key]
+                if item.visible:
+                    section_height = self._section_height + extras.get(item.key, 0.0)
+                    section.resize(top - section_height, section_height, POPOVER_WIDTH)
+                    top -= section_height + 12
+
+        self._body.scrollPoint_((0, max(0, document_height - viewport_height - distance_from_top)))
+
+    def _available_height(self) -> float:
+        """열거나 크기를 바꿀 때 현재 표시 중인 모니터를 다시 확인한다."""
+        window = (
+            self._view.window() if self._panel.is_visible() else self._status_item.button().window()
+        )
+        screen = window.screen() if window is not None else None
+        screen = screen or NSScreen.mainScreen()
+        return max(660.0, screen.visibleFrame()[1][1] - 24) if screen else 660.0
+
+    def _selector(
+        self, x: float, y: float, width: float, titles: list[str], *, parent: NSView | None = None
+    ) -> NSPopUpButton:
+        """시·분과 휴가는 기본 macOS 선택 컨트롤을 사용한다."""
+        view = NSPopUpButton.alloc().initWithFrame_pullsDown_(frame(x, y, width, 30), False)
+        view.addItemsWithTitles_(titles)
+        view.setFont_(NSFont.systemFontOfSize_(13))
+        view.setControlSize_(NSControlSizeLarge)
+        view.setBezelStyle_(NSBezelStyleRounded)
+        view.setTarget_(self._callbacks)
+        view.setAction_("changed:")
+        (parent if parent is not None else self._view).addSubview_(view)
+        return view
+
+    def run(self) -> None:
+        """가벼운 메인 타이머로 자동 저장 결과만 반영한다."""
+        self._timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.2, self._callbacks, "tick:", None, True
+        )
+        try:
+            self._application.run()
+        finally:
+            self.close()
+
+    def toggle(self) -> None:
+        """한 화면 팝오버를 같은 위치에서 열고 닫는다."""
+        if self._panel.is_visible():
+            self._panel.hide()
+        else:
+            self._resize_lists()
+            self._application.activateIgnoringOtherApps_(True)
+            self._panel.show(self._status_item.button())
+            self._render_calendars()
+
+    def _selection(self) -> DayUpdate | None:
+        """처음 읽은 날짜·버전과 현재 선택값을 결합한다."""
+        if self._base is None:
+            return None
+        selected = self.leave.indexOfSelectedItem()
+        if not 0 <= selected < len(SELECTABLE_LEAVES):
+            return None
+        arrival = f"{self.hour.indexOfSelectedItem():02d}:{self.minute.indexOfSelectedItem():02d}"
+        return replace(self._base, attendance=arrival, leave=SELECTABLE_LEAVES[selected])
+
+    def _forecast(self) -> None:
+        """선택 즉시 예상시간을 표시하고 저장 결과를 기다리지 않는다."""
+        update = self._selection()
+        snapshot = self._controller.snapshot
+        if update is None or snapshot is None:
+            return
+        actual = snapshot.day.actual_departure
+        displayed: datetime | None
+        if actual is not None:
+            displayed = actual
+        elif not self._dirty and snapshot.day.update.attendance is not None:
+            # 새 규칙을 적용해도 저장된 기록에는 당시 계산 결과를 표시한다.
+            displayed = snapshot.day.departure
+        else:
+            displayed = self._preview(update, snapshot.day.rules).departure
+        self._departure_title.setStringValue_("퇴근" if actual is not None else "퇴근 예정")
+        departure = clock_label(displayed) if displayed else "--:--"
+        if displayed and displayed.astimezone(SEOUL).date().isoformat() != update.day:
+            departure = displayed.astimezone(SEOUL).strftime("%m/%d %H:%M")
+        self._departure.setFont_(NSFont.boldSystemFontOfSize_(14 if "/" in departure else 24))
+        (x, y), (width, height) = self._departure.frame()
+        place_label(self._departure, x, y + height / 2 - 15.5, width, 31)
+        self._departure.setStringValue_(departure)
+
+    def _set_message(self, value: str) -> None:
+        """짧은 상태는 제목 옆에, 긴 안내는 근무 카드 상단에 잘림 없이 표시한다."""
+        self._message.setStringValue_(f"({value})" if value else "")
+        # 글꼴의 실제 너비로 판단하고 다른 근무 입력의 프레임은 변경하지 않는다.
+        overflow = self._message.fittingSize()[0] > self._message.frame()[1][0]
+        if overflow:
+            self._message.setStringValue_("")
+        self._message.setToolTip_(value if value and not overflow else None)
+        self._work_message.setStringValue_(value if overflow else "")
+        self._work_message.setToolTip_(value if overflow else None)
+
+    def mark_dirty(self) -> None:
+        """빠른 연속 선택은 마지막 값으로 모으고 계산은 즉시 갱신한다."""
+        if self._base is None:
+            return
+        self._dirty = True
+        self._last_edit = time.monotonic()
+        self._forecast()
+        self._set_message("저장 대기")
+        self._render_activity()
+
+    def _reset_workday(self, day: str) -> None:
+        """날짜가 바뀌면 전날 입력 초안과 예상만 비우고 저장 기록은 보존한다."""
+        self._display_day = day
+        self._dirty = self._save_blocked = False
+        self._base = None
+        self._controller.draft = None
+        self._controller.connected = False
+        self._controller.error = None
+        self._controller.conflict = False
+        if not self._controller.busy:
+            self._controller.snapshot = None
+        self.hour.selectItemAtIndex_(9)
+        self.minute.selectItemAtIndex_(0)
+        self.leave.selectItemAtIndex_(0)
+        for control in (self.hour, self.minute, self.leave, self._now):
+            control.setEnabled_(False)
+        self._departure.setStringValue_("--:--")
+        self._departure_title.setStringValue_("퇴근 예정")
+        current = datetime.fromisoformat(day)
+        self._date.setStringValue_(
+            f"{current.month}월 {current.day}일 {('월', '화', '수', '목', '금', '토', '일')[current.weekday()]}요일"
+        )
+        self._set_message("미기록")
+        for view in self._custom_sections.values():
+            view.entries.update(())
+        self._next_refresh = 0
+
+    def tick(self) -> None:
+        """저장 중 바뀐 선택은 이전 응답으로 되돌리지 않고 다음 버전으로 저장한다."""
+        if self._calendar_controller is not None:
+            visible = self._compact_calendar_visible() or (
+                self._calendar_window is not None and self._calendar_window.is_visible()
+            )
+            self._calendar_controller.tick(visible=visible)
+            self._render_calendars()
+        if self._records_controller is not None:
+            self._records_controller.tick()
+            if self._records_window is not None and self._records_window.is_visible():
+                month = self._records_controller.month
+                if (
+                    month is not None
+                    and month.today.isoformat() != self._today()
+                    and not self._records_controller.busy
+                    and not self._records_controller.dirty
+                ):
+                    self._records_controller.load(month.month)
+                self._records_window.render()
+        for controller in self._settings_controllers:
+            controller.tick()
+        if self._source_editor is not None:
+            state = self._source_editor.state
+            if state is not None and self._source_display != state.active_display:
+                self._apply_source_display(state.active_display)
+        if self._preferences_controller.tick():
+            confirmed = self._preferences_controller.confirmed
+            if confirmed is not None:
+                self._preferences = confirmed
+                self._rendered_base_height = -1
+                self._resize_lists()
+                self._render()
+        if self._identity_controller is not None:
+            saved = self._preferences_controller.confirmed
+            self._identity_controller.tick(
+                saved.notification_identity if saved else None, saved.revision if saved else 0
+            )
+        if self._settings_window is not None:
+            self._settings_window.tick()
+        if self._preferences_controller.confirmed is None:
+            self._empty_view.setStringValue_(
+                "잠시 후 설정을 다시 불러옵니다."
+                if self._preferences_controller.retrying
+                else "설정 확인 필요"
+                if self._preferences_controller.error
+                else "설정 불러오는 중…"
+            )
+        else:
+            self._empty_view.setStringValue_("설정 → 화면에서 표시할 카드를 선택하세요.")
+        today = self._today()
+        if today != self._display_day:
+            self._reset_workday(today)
+        operation = self._controller.operation
+        if self._controller.poll():
+            snapshot = self._controller.snapshot
+            if snapshot is not None and snapshot.day.update.day != today:
+                # 자정 전에 시작한 요청의 늦은 응답으로 전날 근무를 다시 표시하지 않는다.
+                self._reset_workday(today)
+                self.refresh()
+                return
+            if operation == "save":
+                snapshot = self._controller.snapshot
+                if self._controller.error is None and snapshot is not None:
+                    self._base = snapshot.day.update
+                    selected = self._selection()
+                    self._dirty = selected is not None and (
+                        selected.attendance != self._base.attendance
+                        or selected.leave != self._base.leave
+                    )
+                    self._set_message("저장 대기" if self._dirty else "저장됨")
+                else:
+                    self._save_blocked = True
+            elif self._controller.error is None and not self._dirty:
+                snapshot = self._controller.snapshot
+                if snapshot is not None:
+                    self._set_message(
+                        "미기록" if snapshot.day.update.attendance is None else "저장됨"
+                    )
+            self._render()
+        if (
+            self._dirty
+            and not self._save_blocked
+            and time.monotonic() - self._last_edit >= 0.35
+            and self._controller.can_edit
+        ):
+            update = self._selection()
+            if update is not None and self._controller.save(update):
+                self._set_message("저장 중…")
+                self._render_activity()
+        if time.monotonic() >= self._next_refresh and not self._controller.busy and not self._dirty:
+            self.refresh()
+        if (
+            self._notification_status is not None
+            and not self._dirty
+            and self._controller.error is None
+        ):
+            error = self._notification_status()
+            if error != self._notification_error:
+                self._notification_error = error
+                fallback = (
+                    "미기록" if self._base is None or self._base.attendance is None else "저장됨"
+                )
+                self._set_message(error or fallback)
+
+        if self._shutdown_requested is not None and self._shutdown_requested():
+            self.quit()
+
+    def refresh(self, *, manual: bool = False) -> None:
+        """명시적 새로고침만 실패한 입력을 확정 기록으로 되돌린다."""
+        if self._controller.busy:
+            return
+        if manual and self._save_blocked:
+            self._dirty = False
+            self._base = None
+            self._save_blocked = False
+            self._controller.draft = None
+        if self._controller.refresh():
+            self._next_refresh = time.monotonic() + 15
+            self._render_activity()
+
+    def change_interval(self) -> None:
+        """기록 저장과 겹치지 않게 새 주기를 저장하고 즉시 반응을 보인다."""
+        selected = self._interval.indexOfSelectedItem()
+        if self._dirty or not 0 <= selected < len(INTERVAL_MINUTES):
+            return
+        if self._controller.set_interval(INTERVAL_MINUTES[selected] * 60):
+            self._render_activity()
+
+    def _render_activity(self) -> None:
+        """기존 목록을 유지한 채 진행 표시와 중복 클릭 제한만 바꾼다."""
+        controller = self._controller
+        snapshot = controller.snapshot
+        loading = controller.busy and controller.operation in {"fetch", "interval"}
+        collecting = snapshot is not None and snapshot.collection.running and controller.connected
+        active = loading or collecting
+        self._collection_icon.setHidden_(active)
+        self._spinner.setHidden_(not active)
+        if active:
+            self._spinner.startAnimation_(None)
+        else:
+            self._spinner.stopAnimation_(None)
+        self._refresh_button.setEnabled_(not controller.busy)
+        self._interval.setEnabled_(
+            not controller.busy
+            and not self._dirty
+            and controller.connected
+            and snapshot is not None
+            and snapshot.collection.enabled
+        )
+        if loading:
+            self._collection.setStringValue_(
+                "주기 저장 중…" if controller.operation == "interval" else "새로고침 중…"
+            )
+        elif controller.error and controller.operation == "interval":
+            self._collection.setStringValue_("새로고침해 수집 주기를 확인하세요.")
+
+    def _fill_form(self, snapshot: DesktopSnapshot) -> None:
+        """조회한 확정 값을 표시하되 새 날짜를 자동 출근 기록하지 않는다."""
+        base = snapshot.day.update
+        clock = parse_clock(base.attendance or "09:00")
+        self.hour.selectItemAtIndex_(clock.hour)
+        self.minute.selectItemAtIndex_(clock.minute)
+        selected = base.leave if base.leave != LeaveType.UNSELECTED else LeaveType.NONE
+        self.leave.selectItemAtIndex_(SELECTABLE_LEAVES.index(selected))
+        self._base = base
+        if base.attendance is None:
+            self._set_message("미기록")
+        self._forecast()
+
+    def _set_status_description(self, state: str) -> None:
+        """메뉴바 아이콘의 도움말과 VoiceOver에 같은 수집 상태를 제공한다."""
+        description = f"Maeng Mate · {state}"
+        status_button = self._status_item.button()
+        status_button.setToolTip_(description)
+        status_button.setAccessibilityLabel_(description)
+
+    def _render(self) -> None:
+        """원천 목록과 수집 상태를 갱신하며 미저장 선택은 그대로 둔다."""
+        controller = self._controller
+        snapshot = controller.snapshot
+        if snapshot is None:
+            title = "연결 확인 필요" if controller.error else "연결 중"
+            self._collection.setStringValue_(title)
+            self._set_status_description(title)
+            self._render_activity()
+            return
+        if not self._dirty:
+            self._fill_form(snapshot)
+        else:
+            self._forecast()
+        day = datetime.fromisoformat(snapshot.day.update.day)
+        weekdays = ("월", "화", "수", "목", "금", "토", "일")
+        self._date.setStringValue_(f"{day.month}월 {day.day}일 {weekdays[day.weekday()]}요일")
+        collection = snapshot.collection
+        disconnected = not controller.connected
+        reasons = snapshot.freshness_reasons
+        failed = collection.failed > 0 or "last_sync_failed" in reasons
+        delayed = collection.enabled and "source_expired" in reasons and not collection.running
+        needs_refresh = any(
+            reason in reasons for reason in ("source_mapping_changed", "source_timestamp_in_future")
+        )
+        attention = disconnected or (
+            not collection.running and (failed or delayed or needs_refresh)
+        )
+        if disconnected:
+            title = "로컬 앱 연결 끊김"
+        elif collection.running:
+            title = "수집 중"
+        elif collection.retrying:
+            title = f"재시도 대기 · {collection.retry_attempt}/3"
+        elif failed:
+            title = "수집 실패"
+        elif (
+            not collection.enabled
+            and self._source_editor is not None
+            and self._source_editor.state is not None
+            and not self._source_display
+        ):
+            title = (
+                "카테고리 지정 필요"
+                if self._source_editor.state.settings.sources
+                else "수집 소스 없음"
+            )
+        elif not collection.enabled:
+            title = "수집 꺼짐"
+        elif "source_mapping_changed" in reasons:
+            title = "새 설정으로 수집할 때까지 대기 중"
+        elif "source_timestamp_in_future" in reasons:
+            title = "최근 수집 시각이 현재 시각보다 늦습니다."
+        elif "source_not_collected" in reasons:
+            title = "첫 수집 대기"
+        elif delayed:
+            title = "수집 지연"
+        else:
+            title = "수집 대기"
+        self._collection.setStringValue_(title)
+        self._collection_icon.setContentTintColor_(
+            NSColor.systemOrangeColor() if attention else NSColor.systemGreenColor()
+        )
+        detail = f"최근 {clock_label(collection.last_success)}  ·  다음 {clock_label(collection.next_at)}"
+        if (
+            failed
+            and not collection.running
+            and not collection.retrying
+            and collection.last_success is not None
+        ):
+            detail = f"저장된 자료 표시 중  ·  최근 수집 {clock_label(collection.last_success)}"
+        if snapshot.work_error:
+            detail = "수집한 항목을 불러오지 못했습니다."
+        elif "completion_status_unconfigured" in snapshot.warnings:
+            detail += "  ·  완료 기준 없음"
+        self._collection_detail.setStringValue_(detail)
+        self._collection_detail.setToolTip_(detail)
+        seconds = collection.interval_seconds
+        minutes = seconds // 60 if seconds is not None and seconds % 60 == 0 else None
+        # 환경에만 있는 사용자 지정 간격을 임의의 다른 값으로 표시하지 않는다.
+        self._interval.selectItemAtIndex_(
+            INTERVAL_MINUTES.index(minutes) if minutes in INTERVAL_MINUTES else -1
+        )
+        self._render_activity()
+        self._set_status_description(title)
+        if controller.error:
+            self._set_message(
+                "기록 변경 · 새로고침"
+                if controller.conflict
+                else "저장 실패 · 입력 유지"
+                if controller.draft
+                else "연결 확인 필요"
+            )
+        if (
+            snapshot.day.state in {"weekend_manual", "non_workday"}
+            and snapshot.day.update.attendance is None
+            and not self._dirty
+            and not controller.error
+        ):
+            self._set_message("휴무")
+        enabled = controller.connected and not controller.conflict
+        self.hour.setEnabled_(enabled)
+        self.minute.setEnabled_(enabled)
+        self.leave.setEnabled_(enabled)
+        self._now.setEnabled_(enabled)
+        self._render_source_lists(snapshot)
+
+    def _apply_source_display(self, display: tuple[SourceDisplay, ...]) -> None:
+        """확정된 카테고리 카드만 배치에 추가한다."""
+        self._source_display = display
+        groups = display_groups(display)
+        self._source_groups = groups
+        # 숨김 선택은 뷰를 보존하고, 연결이 사라진 카드는 네이티브 컨트롤까지 제거한다.
+        for key in self._custom_sections.keys() - groups.keys():
+            self._custom_sections.pop(key).view.removeFromSuperview()
+        self._custom_expanded.intersection_update(groups)
+        for index, (key, group) in enumerate(groups.items()):
+            view = self._custom_sections.get(key)
+            if view is None:
+                view = EntrySection(
+                    self._body,
+                    group[0].title,
+                    "square.stack",
+                    self._callbacks,
+                    "openSourceBoard:",
+                    "expandSource:",
+                    POPOVER_WIDTH,
+                    title_width=310,
+                )
+                self._custom_sections[key] = view
+            view.board.setTag_(index)
+            view.expand.setTag_(index)
+            view.expand.setTitle_("축소" if key in self._custom_expanded else "확대")
+        self._rendered_base_height = -1
+        self._resize_lists()
+        self._render()
+        self._render_calendars()
+
+    def open_source_board(self, index: int) -> None:
+        """현재 카테고리에 유일한 원본 주소를 연다."""
+        areas = tuple(self._source_groups.values())
+        if 0 <= index < len(areas):
+            self._open_notion(group_board_url(areas[index]))
+
+    def expand_source(self, index: int) -> None:
+        """선택한 카테고리의 카드 높이만 바꾼다."""
+        keys = tuple(self._source_groups)
+        if not 0 <= index < len(keys):
+            return
+        key = keys[index]
+        if key in self._custom_expanded:
+            self._custom_expanded.remove(key)
+        else:
+            self._custom_expanded.add(key)
+        self._custom_sections[key].expand.setTitle_(
+            "축소" if key in self._custom_expanded else "확대"
+        )
+        self._resize_lists(animated=True)
+
+    def _render_source_lists(self, snapshot: DesktopSnapshot) -> None:
+        """카테고리에 연결한 소스들의 미리보기와 실제 개수를 합산한다."""
+        for key, group in self._source_groups.items():
+            # 사용자 규칙을 적용한 카드는 서버가 소스 경계를 넘어 확정한 순서를 쓴다.
+            area = snapshot.category_areas.get(key)
+            areas = (
+                (area,)
+                if area is not None
+                else tuple(
+                    snapshot.source_areas[item.id]
+                    for item in group
+                    if item.id in snapshot.source_areas
+                )
+            )
+            count = sum(area.count for area in areas)
+            rows = tuple(entry for area in areas for entry in area.entries)
+            view = self._custom_sections[key]
+            suffix = "" if snapshot.work_error else f" {count}"
+            view.title.setStringValue_(group[0].title + suffix)
+            view.board.setEnabled_(group_board_url(group) is not None)
+            view.entries.update(rows)
+
+    def update_page_links(self, state: NotionPageLinksState) -> None:
+        """이전 링크 편집 클라이언트가 있다면 보드 주소 버전만 보존한다."""
+        pages = tuple(
+            next((item.url for item in state.sources if item.section == section and item.url), None)
+            for section in ("tasks", "qa", "meetings")
+        )
+        self._controller.update_page_links(state.revision, (pages[0], pages[1], pages[2]))
+
+    def _open_notion(self, value: str | None) -> None:
+        """카테고리 카드와 항목에 같은 원본 주소 검증을 적용한다."""
+        url = notion_link(value)
+        if url is not None:
+            self._open_url(url)
+
+    def _close_calendar_filters(self) -> None:
+        """메인 창이 닫힐 때 필터 선택창을 화면에 남기지 않는다."""
+        if self._calendar_view is not None:
+            self._calendar_view.filter_popover.hide()
+
+    def _calendar_preferences(self) -> CalendarPreferences:
+        """저장 중에도 두 달력에서 최신 표시 선택을 사용한다."""
+        value = self._preferences_controller.value
+        return value.calendar if value is not None else CalendarPreferences()
+
+    def _calendar_filter_choices(self) -> tuple[CalendarFilterChoice, ...]:
+        """두 달력에 같은 카테고리 선택지를 제공한다."""
+        return calendar_filter_choices(self._source_display)
+
+    def _toggle_calendar_filter(self, key: str, visible: bool) -> None:
+        """카테고리와 출근 기록 표시만 저장한다."""
+        value = self._preferences_controller.value
+        if value is None or key not in {item.key for item in self._calendar_filter_choices()}:
+            return
+        preferences = value.calendar
+        if key == "attendance":
+            selected = set(preferences.visible_kinds)
+            if visible:
+                selected.add("attendance")
+            else:
+                selected.discard("attendance")
+            preferences = replace(
+                preferences,
+                visible_kinds=tuple(item for item in CALENDAR_KINDS if item in selected),
+            )
+        else:
+            hidden = set(preferences.hidden_categories)
+            shown = set(preferences.shown_categories)
+            if visible:
+                hidden.discard(key)
+                shown.add(key)
+            else:
+                hidden.add(key)
+                shown.discard(key)
+            preferences = replace(
+                preferences,
+                hidden_categories=tuple(sorted(hidden)),
+                shown_categories=tuple(sorted(shown)),
+            )
+        self._preferences_controller.change(replace(value, calendar=preferences))
+        self._render_calendars()
+
+    def _notify_calendar_loaded(self) -> None:
+        """백그라운드 조회 결과는 AppKit 메인 스레드에서만 표시한다."""
+        self._callbacks.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "calendarLoaded:", None, False
+        )
+
+    def calendar_loaded(self) -> None:
+        """종료되거나 이미 반영된 월 응답은 다시 그리지 않는다."""
+        if self._calendar_controller is not None and self._calendar_controller.apply_completed():
+            self._render_calendars()
+
+    def _compact_calendar_visible(self) -> bool:
+        """메뉴바 패널과 달력 카드가 동시에 표시될 때만 격자를 그린다."""
+        return self._panel.is_visible() and any(
+            item.key == "calendar" and item.visible for item in self._preferences.sections
+        )
+
+    def _render_calendars(self) -> None:
+        """필터 입력과 조회 진행을 두 화면에서 즉시 반영한다."""
+        enabled = (
+            self._preferences_controller.value is not None
+            and not self._preferences_controller.loading
+            and self._preferences_controller.error is None
+        )
+        if self._calendar_view is not None and self._compact_calendar_visible():
+            self._calendar_view.render(enabled)
+        if self._calendar_window is not None and self._calendar_window.is_visible():
+            self._calendar_window.render(enabled)
+
+    def open_calendar(self) -> None:
+        """메인 표시 선택과 무관하게 같은 날짜의 월 달력을 별도 창으로 연다."""
+        if self._calendar_controller is None:
+            return
+        self._panel.hide()
+        if self._calendar_window is None:
+            self._calendar_window = CalendarWindow(
+                self._calendar_controller,
+                self._calendar_preferences,
+                self._toggle_calendar_filter,
+                self._open_notion,
+                choices=self._calendar_filter_choices,
+            )
+        self._calendar_window.show()
+        self._render_calendars()
+
+    def _records_saved(self, day: date) -> None:
+        """오늘 정정은 다음 조회로 반영하고 메뉴바의 미저장 입력은 보존한다."""
+        if self._calendar_controller is not None:
+            self._calendar_controller.invalidate()
+        if day.isoformat() == self._today():
+            self._next_refresh = 0
+
+    def open_records(self) -> None:
+        """설정과 분리한 기록 창을 열고 선택·초안을 재사용한다."""
+        if self._records_controller is None:
+            return
+        self._panel.hide()
+        if self._records_window is None:
+            self._records_window = WorkRecordsWindow(self._records_controller)
+        self._records_window.show()
+
+    def open_settings(self) -> None:
+        """메뉴바를 닫고 재사용 가능한 설정 창을 표시한다."""
+        self._panel.hide()
+        if self._settings_window is None:
+            self._settings_window = PreferencesWindow(
+                self._preferences_controller,
+                self._notification_channels,
+                self._runtime_settings_controller,
+                self._notion_credentials_controller,
+                self._mcp_settings_controller,
+                self._page_links_controller,
+                self._identity_controller,
+                self._slack_settings_controller,
+                self._work_rules_controller,
+                self._pending_work_edits,
+                self._source_editor,
+                self._source_client,
+            )
+        self._settings_window.show()
+
+    def _pending_work_edits(self) -> bool:
+        """근무 카드나 기록 창에서 저장할 내용이 남았는지 확인한다."""
+        records = self._records_controller
+        return self._dirty or bool(records and (records.dirty or records.saving))
+
+    def _slack_member_saved(self) -> None:
+        """Notion 미저장 초안은 유지하고 깨끗한 설정 버전만 갱신한다."""
+        controller = self._runtime_settings_controller
+        if controller is not None and not controller.dirty and not controller.busy:
+            controller.reload()
+
+    def close(self) -> None:
+        """타이머·작업자·상태 아이템을 정리한다."""
+        self._stop_resize_animation()
+        self._panel.close()
+        if self._timer:
+            self._timer.invalidate()
+            self._timer = None
+        self._controller.close()
+        if self._calendar_window is not None:
+            self._calendar_window.close()
+        if self._calendar_controller is not None:
+            self._calendar_controller.close()
+        if self._records_window is not None:
+            self._records_window.close()
+        if self._records_controller is not None:
+            self._records_controller.close()
+        if self._settings_window is not None:
+            self._settings_window.dispose()
+        self._preferences_controller.close()
+        if self._identity_controller is not None:
+            self._identity_controller.close()
+        for controller in self._settings_controllers:
+            controller.close()
+        NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
+
+    def quit(self) -> None:
+        """미완료 자동 저장이 있으면 완료를 기다린 뒤 종료한다."""
+        if any(controller.busy for controller in self._settings_controllers):
+            return
+        if self._records_controller is not None and self._records_controller.saving:
+            return
+        if self._identity_controller is not None and self._identity_controller.busy:
+            return
+        if self._preferences_controller.busy or (
+            self._preferences_controller.dirty and self._preferences_controller.error is None
+        ):
+            return
+        if self._dirty or (self._controller.busy and self._controller.operation == "save"):
+            self._set_message("저장 확인 후 종료")
+            return
+        self.close()
+        self._application.terminate_(None)

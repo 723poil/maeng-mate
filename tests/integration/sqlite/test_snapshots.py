@@ -1,0 +1,143 @@
+"""격리된 실제 SQLite에서 저장과 실행 세대를 검증한다."""
+
+import asyncio
+import json
+from dataclasses import asdict, replace
+from datetime import UTC, datetime
+from uuid import uuid4
+
+import pytest
+
+from src.application.errors import SnapshotError
+from src.application.use_cases.synchronize import synchronize
+from src.domain.models import CalendarEvent, Leave, Period, SourceMapping, Task, WorkItem
+from src.infrastructure.notion.normalization import normalize_page
+from src.infrastructure.sqlite.connection import Database
+from src.infrastructure.sqlite.serialization import fingerprint
+from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
+from tests.fixtures.notion import OBSERVED, SOURCE, page
+
+
+def source() -> SourceMapping:
+    """각 테스트가 다른 소스를 사용하도록 분리한다."""
+    return replace(SOURCE, source_id=f"fake-{uuid4()}")
+
+
+async def test_publish_and_missing(db: Database) -> None:
+    """완전 수집만 발행하고 누락 항목의 원문은 보존한다."""
+    mapping = source()
+    store = SQLiteSnapshots(db)
+    first = await store.begin_run(mapping, OBSERVED)
+    await store.complete_run(first, [normalize_page(page(), mapping, OBSERVED)], OBSERVED)
+    second = await store.begin_run(mapping, OBSERVED)
+    await store.complete_run(second, [], OBSERVED)
+    rows = await db.fetch(
+        "SELECT availability FROM item_snapshots WHERE source_id=?", (mapping.source_id,)
+    )
+    assert rows == [{"availability": "unconfirmed_missing"}]
+
+
+async def test_rollback(db: Database) -> None:
+    """중간 SQL 제약 오류가 정상 스냅샷을 부분 변경하지 않는다."""
+    mapping = source()
+    store = SQLiteSnapshots(db)
+    item = normalize_page(page(), mapping, OBSERVED)
+    first = await store.begin_run(mapping, OBSERVED)
+    await store.complete_run(first, [item], OBSERVED)
+    second = await store.begin_run(mapping, OBSERVED)
+    with pytest.raises(SnapshotError):
+        await store.complete_run(second, [replace(item, id="new"), replace(item, id="")], OBSERVED)
+    rows = await db.fetch(
+        "SELECT item_id FROM item_snapshots WHERE source_id=?", (mapping.source_id,)
+    )
+    assert rows == [{"item_id": "fake-page"}]
+
+
+async def test_generation_and_parallel_sessions(db: Database) -> None:
+    """병렬 실행의 승자를 한 명으로 제한하고 이전 실패가 새 lease를 풀지 못하게 한다."""
+    mapping = source()
+    store = SQLiteSnapshots(db)
+    results = await asyncio.gather(
+        store.begin_run(mapping, OBSERVED),
+        store.begin_run(mapping, OBSERVED),
+        return_exceptions=True,
+    )
+    winners = [result for result in results if not isinstance(result, BaseException)]
+    assert len(winners) == 1
+    first = winners[0]
+    with db.transaction() as connection:
+        connection.execute(
+            "UPDATE work_source_state SET lease_until=0 WHERE source_id=?",
+            (mapping.source_id,),
+        )
+    second = await store.begin_run(mapping, OBSERVED)
+    await store.fail_run(first, "source_failed")
+    with pytest.raises(SnapshotError):
+        await store.begin_run(mapping, OBSERVED)
+    with pytest.raises(SnapshotError):
+        await store.complete_run(first, [], OBSERVED)
+    await store.complete_run(second, [], OBSERVED)
+
+
+async def test_failure_preserves_snapshot(db: Database) -> None:
+    """수집 실패를 빈 정상 결과로 확정하지 않는다."""
+    mapping = source()
+    store = SQLiteSnapshots(db)
+    item = normalize_page(page(), mapping, OBSERVED)
+    run = await store.begin_run(mapping, OBSERVED)
+    await store.complete_run(run, [item], OBSERVED)
+
+    class FailedSource:
+        """원문 오류를 업무 결과에 노출하지 않는 외부 경계다."""
+
+        async def collect(self, source: SourceMapping, observed_at: str) -> list[WorkItem]:
+            """항상 원천 실패를 반환한다."""
+            raise ValueError("private-original-error")
+
+    result = await synchronize(mapping, FailedSource(), store, lambda: datetime.now(UTC))
+    assert result == {"status": "failed", "code": "source_failed"}
+    rows = await db.fetch(
+        "SELECT availability FROM item_snapshots WHERE source_id=?", (mapping.source_id,)
+    )
+    assert rows == [{"availability": "present"}]
+
+
+async def test_stored_json_and_hash_remain_compatible(db: Database) -> None:
+    """세 항목 유형의 기본값과 선택 칼럼이 이전 저장 바이트와 해시를 유지한다."""
+    period = Period("date", "2026-11-19", None)
+    identity = ("item", "fixture", "https://notion.so/fixture", OBSERVED, OBSERVED)
+    items: tuple[WorkItem, ...] = (
+        Task(*identity, "업무", ("p",), None, period, "2차"),
+        CalendarEvent(*identity, "일정", ("p",), None, "휴가", "leave", True),
+        Leave(*identity, ("p",), period, None, False),
+    )
+    store = SQLiteSnapshots(db)
+    for item in items:
+        mapping = replace(SOURCE, source_id=item.source_id, kind=item.kind)
+        for row in (
+            item,
+            replace(
+                item,
+                display_values={"c": "표시"},
+                alert_values={"r": "비교값"},
+                calendar_periods={"c": period},
+            ),
+        ):
+            run = await store.begin_run(mapping, OBSERVED)
+            await store.complete_run(run, [row], OBSERVED)
+            expected = asdict(row)
+            for name in ("alert_values", "display_values", "calendar_periods"):
+                if not expected[name]:
+                    del expected[name]
+            facts = {
+                k: v for k, v in expected.items() if k not in ("source_edited_at", "observed_at")
+            }
+            assert await db.fetch(
+                "SELECT payload,semantic_hash FROM item_snapshots WHERE source_id=?",
+                (item.source_id,),
+            ) == [
+                {
+                    "payload": json.dumps(expected, ensure_ascii=False),
+                    "semantic_hash": fingerprint(facts),
+                }
+            ]

@@ -11,7 +11,7 @@ from src.domain.display_columns import DisplayColumn
 from src.domain.models import SourceMapping, Task, WorkItem
 from src.infrastructure.notion.catalog import inspect_columns
 from src.infrastructure.notion.errors import SourceError
-from src.infrastructure.notion.normalization import normalize_page, property_by_id
+from src.infrastructure.notion.normalization import PageProperties, normalize_page, property_by_id
 from src.infrastructure.notion.read_api import NotionReadApi
 from src.infrastructure.notion.values import array, record, text
 
@@ -63,30 +63,34 @@ class NotionSource:
             if identifier in seen:
                 raise SourceError("pagination_invalid")
             seen.add(identifier)
-            properties = record(page.get("properties"))
+            properties = PageProperties(record(page.get("properties")))
             await self._fill_columns(identifier, source, properties)
-            result.append(normalize_page(page, source, observed_at))
+            result.append(normalize_page(page, source, observed_at, properties=properties))
         return result
 
     async def _fill_columns(
-        self, identifier: str, source: SourceMapping, properties: dict[str, object]
+        self, identifier: str, source: SourceMapping, properties: PageProperties
     ) -> None:
         """담당자·제목·표시 칼럼 중 페이지네이션이 필요한 값만 추가 조회한다."""
         selected = source.collected_columns()
         for role in ("title", "assignees", "participants", "people"):
-            if (property_id := source.properties.get(role)) is not None:
-                selected.setdefault(
-                    property_id, text(property_by_id(properties, property_id).get("type"))
-                )
+            property_id = source.properties.get(role)
+            if property_id is not None and property_id not in selected:
+                selected[property_id] = text(properties.by_id(property_id).get("type"))
+        fetched: set[str] = set()
         for property_id, kind in selected.items():
-            prop = property_by_id(properties, property_id)
+            prop = properties.by_id(property_id)
             if prop.get("type") != kind:
                 raise SourceError("mapping_invalid")
-            if kind not in {"title", "rich_text", "people"} or not needs_property_fetch(prop, kind):
+            if kind not in {"title", "rich_text", "people"}:
                 continue
-            encoded = quote(unquote(property_id), safe="")
-            if unquote(encoded) in (".", ".."):
+            # 역할과 저장 칼럼이 같은 속성을 서로 다른 인코딩으로 가리켜도 상세 페이지는 한 번만 읽는다.
+            key = unquote(property_id)
+            if key in fetched or not needs_property_fetch(prop, kind):
+                continue
+            if key in (".", ".."):
                 raise SourceError("mapping_invalid")
+            encoded = quote(key, safe="")
             path = f"/pages/{quote(identifier, safe='')}/properties/{encoded}"
             values = []
             async for part in self._api.items(path):
@@ -95,6 +99,7 @@ class NotionSource:
                     raise SourceError("invalid_response")
                 values.append(item.get(kind))
             prop[kind] = values
+            fetched.add(key)
 
     async def _collect_qa_rounds(self, source: SourceMapping, observed_at: str) -> list[WorkItem]:
         """모든 차시의 항목을 읽은 뒤 한 부모 소스의 완전한 결과로 반환한다."""

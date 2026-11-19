@@ -141,3 +141,62 @@ async def test_stored_json_and_hash_remain_compatible(db: Database) -> None:
                     "semantic_hash": fingerprint(facts),
                 }
             ]
+
+
+async def test_encoded_alias_reuses_complete_property_and_preserves_snapshot(db: Database) -> None:
+    """같은 담당자 칼럼은 끝까지 한 번 읽고 재수집 중 상세 조회가 실패하면 이전 값을 보존한다."""
+    import httpx
+
+    from src.domain.display_columns import DisplayColumn
+    from src.infrastructure.notion.source import NotionSource
+
+    mapping = replace(
+        source(),
+        properties={**SOURCE.properties, "assignees": "p%3F"},
+        stored_columns=(DisplayColumn("p?", "담당자", "people"),),
+    )
+    store = SQLiteSnapshots(db)
+    cursors: list[str | None] = []
+    fail_last_page = False
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        """목록 한 페이지와 두 페이지로 나뉜 가상 사람 속성을 반환한다."""
+        if request.method == "POST":
+            raw = page()
+            props = raw["properties"]
+            assert isinstance(props, dict)
+            props["People"] = {"id": "p%3F", "type": "people", "people": [], "has_more": True}
+            return httpx.Response(200, json={"object": "list", "results": [raw], "has_more": False})
+        assert request.url.path.endswith("/properties/p?")
+        cursor = request.url.params.get("start_cursor")
+        cursors.append(cursor)
+        if fail_last_page and cursor is not None:
+            return httpx.Response(503)
+        name = "B" if cursor else "A"
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "results": [{"type": "people", "people": {"id": name, "name": name}}],
+                "has_more": cursor is None,
+                "next_cursor": "next" if cursor is None else None,
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        adapter = NotionSource("fixture", client, interval=0)
+        result = await synchronize(mapping, adapter, store, lambda: datetime.now(UTC))
+        assert result == {"status": "succeeded", "count": 1} and cursors == [None, "next"]
+        query = (
+            "SELECT payload,semantic_hash,last_seen_run_id FROM item_snapshots WHERE source_id=?"
+        )
+        previous = await db.fetch(query, (mapping.source_id,))
+        payload = previous[0]["payload"]
+        assert isinstance(payload, str)
+        stored = json.loads(payload)
+        assert stored["assignee_ids"] == ["A", "B"] and stored["display_values"] == {"p?": "A, B"}
+
+        fail_last_page = True
+        result = await synchronize(mapping, adapter, store, lambda: datetime.now(UTC))
+        assert result["status"] == "failed" and cursors == [None, "next", None, "next"]
+        assert await db.fetch(query, (mapping.source_id,)) == previous

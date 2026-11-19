@@ -14,18 +14,30 @@ from src.infrastructure.notion.errors import SourceError
 from src.infrastructure.notion.values import array, record, text
 
 
+class PageProperties:
+    """한 행의 원본 속성을 디코딩한 ID로 찾아 상세 조회와 정규화에서 공유한다."""
+
+    def __init__(self, properties: dict[str, object]) -> None:
+        """같은 ID를 가진 속성은 모호함을 표시해 그 칼럼을 사용할 때 거부한다."""
+        self._by_id: dict[str, dict[str, object] | None] = {}
+        for raw in properties.values():
+            prop = record(raw)
+            identifier = prop.get("id")
+            if isinstance(identifier, str):
+                key = unquote(identifier)
+                self._by_id[key] = None if key in self._by_id else prop
+
+    def by_id(self, identifier: str) -> dict[str, object]:
+        """표시 이름과 인코딩 표기에 관계없이 단 하나의 원본 속성만 선택한다."""
+        prop = self._by_id.get(unquote(identifier))
+        if prop is None:
+            raise SourceError("mapping_invalid")
+        return prop
+
+
 def property_by_id(properties: dict[str, object], identifier: str) -> dict[str, object]:
-    """표시 이름이 바뀌어도 속성 ID로 단 하나의 필드를 선택한다."""
-    decoded = unquote(identifier)
-    matches = []
-    for raw in properties.values():
-        value = record(raw)
-        property_id = value.get("id")
-        if isinstance(property_id, str) and unquote(property_id) == decoded:
-            matches.append(value)
-    if len(matches) != 1:
-        raise SourceError("mapping_invalid")
-    return matches[0]
+    """단일 속성 조회에도 행 색인과 같은 ID 비교·중복 검사를 사용한다."""
+    return PageProperties(properties).by_id(identifier)
 
 
 def instant(value: str, zone_name: str | None = None) -> str:
@@ -199,12 +211,17 @@ def clock_text(period: Period | None) -> str:
     )
 
 
-def normalize_page(raw: object, source: SourceMapping, observed_at: str) -> WorkItem:
+def normalize_page(
+    raw: object,
+    source: SourceMapping,
+    observed_at: str,
+    *,
+    properties: PageProperties | None = None,
+) -> WorkItem:
     """완전히 수집한 필드만 순수 업무 모델로 변환한다."""
     page = record(raw)
     if page.get("object") != "page" or urlsplit(text(page.get("url"))).scheme != "https":
         raise SourceError("invalid_response")
-    props = record(page.get("properties"))
     base = {
         "id": text(page.get("id")),
         "source_id": source.source_id,
@@ -213,17 +230,19 @@ def normalize_page(raw: object, source: SourceMapping, observed_at: str) -> Work
         "observed_at": instant(observed_at),
     }
 
+    props = properties if properties is not None else PageProperties(record(page.get("properties")))
+
     def get(name: str) -> dict[str, object]:
         """회사별 매핑을 통해 원천 속성을 선택한다."""
-        return property_by_id(props, source.properties[name])
+        return props.by_id(source.properties[name])
 
     values = {
-        identifier: " ".join(column_text(property_by_id(props, identifier), kind).split())
+        identifier: " ".join(column_text(props.by_id(identifier), kind).split())
         for identifier, kind in source.collected_columns().items()
     }
     display = {
         column.value_key: (
-            clock_text(column_period(property_by_id(props, column.property_id), column.kind))
+            clock_text(column_period(props.by_id(column.property_id), column.kind))
             if column.time_only
             else values[column.property_id]
             if column.full_text
@@ -236,12 +255,11 @@ def normalize_page(raw: object, source: SourceMapping, observed_at: str) -> Work
         for column in source.stored_columns
         if not column.time_only
         and column.kind in {"date", "created_time", "last_edited_time"}
-        and (value := column_period(property_by_id(props, column.property_id), column.kind))
-        is not None
+        and (value := column_period(props.by_id(column.property_id), column.kind)) is not None
     }
     alerts = {
         rule.id: alert_value_key(
-            alert_comparison(property_by_id(props, rule.column_id), rule, values[rule.column_id]),
+            alert_comparison(props.by_id(rule.column_id), rule, values[rule.column_id]),
             rule.comparison_kind,
         )
         for rule in source.alert_rules

@@ -2,8 +2,9 @@
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime
+from itertools import batched
 
 from src.application.errors import QueryReadError, SnapshotError
 from src.application.models import SyncRun
@@ -14,6 +15,29 @@ from src.domain.work_dates import SEOUL, canonical_identity
 from src.infrastructure.sqlite.decoding import decode_item
 from src.infrastructure.sqlite.notification_deliveries import logical_completed
 from src.infrastructure.sqlite.notification_keys import meeting_scope, notification_key
+
+
+def meetings_with_jobs(
+    connection: sqlite3.Connection, source_id: str, user: str, items: Sequence[WorkItem]
+) -> Iterator[tuple[CalendarEvent, str, list[sqlite3.Row]]]:
+    """이번 수집에 포함된 본인 예약을 묶어서 조회하고 원래 회의 순서로 넘긴다."""
+    meetings = (item for item in items if isinstance(item, CalendarEvent))
+    for batch in batched(meetings, 128):
+        keys = [notification_key(f"meeting:{source_id}:{item.id}:{user}") for item in batch]
+        placeholders = ",".join("?" for _ in keys)
+        # 묶음마다 전체 대기 큐를 순회하지 않도록 현재 회의 키의 인덱스로 찾는다.
+        rows = connection.execute(
+            f"""SELECT id,logical_key,state,body,notion_url,meeting_start_at,meeting_mapping_hash
+                FROM notification_jobs INDEXED BY notification_logical_idx
+                WHERE logical_key IN ({placeholders})
+                AND kind='meeting' AND state IN ('pending','delivering') ORDER BY logical_key,rowid""",
+            keys,
+        )
+        grouped: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            grouped.setdefault(row["logical_key"], []).append(row)
+        for item, logical in zip(batch, keys, strict=True):
+            yield item, logical, grouped.get(logical, [])
 
 
 def enqueue_meeting_reminders(
@@ -31,36 +55,37 @@ def enqueue_meeting_reminders(
     scope = meeting_scope(run.source_id, user, run.mapping_hash)
     now = datetime.fromisoformat(completed_at)
     current: set[str] = set()
-    for item in items:
-        if not isinstance(item, CalendarEvent):
-            continue
+    for item, logical, jobs in meetings_with_jobs(connection, run.source_id, user, items):
         current.add(item.id)
-        logical = notification_key(f"meeting:{run.source_id}:{item.id}:{user}")
         timing = policy.schedule(item, user, now)
         start = timing.start.timestamp() if timing is not None else None
-        connection.execute(
-            """UPDATE notification_jobs SET state='obsolete'
-            WHERE kind='meeting' AND logical_key=? AND state IN ('pending','delivering')
-            AND (? IS NULL OR meeting_start_at<>? OR meeting_mapping_hash<>?)""",
-            (logical, start, start, run.mapping_hash),
-        )
-        if timing is None:
+        existing = None
+        for job in jobs:
+            if (
+                start is None
+                or job["meeting_start_at"] != start
+                or job["meeting_mapping_hash"] != run.mapping_hash
+            ):
+                connection.execute(
+                    "UPDATE notification_jobs SET state='obsolete' WHERE id=?", (job["id"],)
+                )
+            elif existing is None:
+                existing = job
+        if timing is None or (existing is not None and existing["state"] == "delivering"):
             continue
         body = f"{timing.start.astimezone(SEOUL):%H:%M} · {item.title[:160]}"
+        url = notion_link(item.url)
+        if existing is not None and body == existing["body"] and url == existing["notion_url"]:
+            continue
+        # 새 예약이나 대기 중 본문을 확정하기 전에는 채널별 전달 완료 여부를 다시 검사한다.
         if logical_completed(connection, logical):
             continue
-        existing = connection.execute(
-            """SELECT id,state FROM notification_jobs WHERE logical_key=?
-            AND state IN ('pending','delivering') LIMIT 1""",
-            (logical,),
-        ).fetchone()
         if existing is not None:
-            if existing["state"] == "pending":
-                connection.execute(
-                    "UPDATE notification_jobs SET body=?,notion_url=? WHERE id=?",
-                    (body, notion_link(item.url), existing["id"]),
-                )
-            continue  # 이미 요청했거나 결과가 불명확한 회의는 시간 변경으로 재발송하지 않는다.
+            connection.execute(
+                "UPDATE notification_jobs SET body=?,notion_url=? WHERE id=?",
+                (body, url, existing["id"]),
+            )
+            continue
         identifier = notification_key(f"{logical}:{run.id}")
         connection.execute(
             """INSERT INTO notification_jobs(id,logical_key,kind,title,body,notion_url,due_at,expires_at,state,
@@ -70,7 +95,7 @@ def enqueue_meeting_reminders(
                 identifier,
                 logical,
                 body,
-                notion_link(item.url),
+                url,
                 timing.due.timestamp(),
                 start,
                 scope,
@@ -85,12 +110,9 @@ def enqueue_meeting_reminders(
         """SELECT id,meeting_item_id FROM notification_jobs WHERE kind='meeting'
         AND source_key=? AND state IN ('pending','delivering')""",
         (scope,),
-    ).fetchall()
-    for row in rows:
-        if row["meeting_item_id"] not in current:
-            connection.execute(
-                "UPDATE notification_jobs SET state='obsolete' WHERE id=?", (row["id"],)
-            )
+    )
+    missing = [(row["id"],) for row in rows if row["meeting_item_id"] not in current]
+    connection.executemany("UPDATE notification_jobs SET state='obsolete' WHERE id=?", missing)
 
 
 def meeting_job_current(row: dict[str, object], user_id: str | None, now: datetime) -> bool:

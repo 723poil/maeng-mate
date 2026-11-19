@@ -313,3 +313,65 @@ async def test_field_alerts_keep_missing_baseline_and_retire_pending_jobs(db: Da
     await publish(replace(other, alert_rules=()), [])
     assert await db.fetch("SELECT item_id FROM source_alert_baselines") == []
     assert await db.fetch("SELECT DISTINCT state FROM notification_jobs") == [{"state": "obsolete"}]
+
+
+async def test_meeting_reschedule_invalidates_claim_and_respects_completed_delivery(
+    db: Database,
+) -> None:
+    """정정된 회의는 이전 실행권을 막고 새 알림이 접수된 뒤에는 다시 예약하지 않는다."""
+    from datetime import timedelta
+
+    from src.domain.meeting_reminders import TenMinuteMeetingReminderPolicy
+    from src.domain.models import CalendarEvent, Period, SourceMapping
+    from src.infrastructure.sqlite.notifications import SQLiteNotifications
+    from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
+
+    clock = Clock()
+    observed = clock.now().isoformat()
+    mapping = SourceMapping(
+        "meeting",
+        "fixture-meeting",
+        {"title": "t", "participants": "p", "period": "d"},
+        event_alert_triggers=frozenset({"meeting"}),
+    )
+    store = SQLiteSnapshots(
+        db,
+        clock=clock,
+        notification_user_id="me",
+        meeting_reminder_policy=TenMinuteMeetingReminderPolicy(),
+    )
+    queue = SQLiteNotifications(db, now=clock.now, user_id="me")
+    meeting = CalendarEvent(
+        "item",
+        mapping.source_id,
+        "https://www.notion.so/fixture",
+        observed,
+        observed,
+        "회의",
+        ("me",),
+        Period("instant", (clock.now() + timedelta(minutes=5)).isoformat(), None),
+    )
+
+    async def publish(item: CalendarEvent) -> None:
+        """같은 회의를 다시 수집하고 정상 스냅샷으로 확정한다."""
+        await store.complete_run(await store.begin_run(mapping, observed), [item], observed)
+
+    await publish(meeting)
+    renamed = replace(meeting, title="수정한 제목", url="https://www.notion.so/revised")
+    await publish(renamed)
+    (old,) = await queue.claim()
+    assert "수정한 제목" in old.body and old.url == renamed.url
+    assert await queue.authorize(old.id, old.token)
+
+    moved = replace(
+        renamed, period=Period("instant", (clock.now() + timedelta(minutes=8)).isoformat(), None)
+    )
+    await publish(moved)
+    assert not await queue.authorize(old.id, old.token)
+    await queue.ack(old.id, old.token, "cancelled")
+    (fresh,) = await queue.claim()
+    assert fresh.id != old.id and await queue.authorize(fresh.id, fresh.token)
+    await queue.ack(fresh.id, fresh.token, "requested")
+    await publish(meeting)
+    assert await queue.claim() == ()
+    assert len(await db.fetch("SELECT id FROM notification_jobs WHERE kind='meeting'")) == 2

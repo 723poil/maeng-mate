@@ -154,3 +154,55 @@ async def test_calendar_navigation_reuses_projection_and_refreshes_current_data(
     await store.fail_run(run, "source_failed")
     failed = await calendar.month("2026-12")
     assert failed.stale and len(failed.items) == 1
+
+
+async def test_calendar_keeps_small_details_after_large_rows_are_truncated(db: Database) -> None:
+    """월 응답에서 한도를 넘은 상세만 생략하고 뒤의 짧은 행과 전체 제목은 유지한다."""
+    import httpx
+
+    from src.application.calendar import CalendarService, CalendarSource
+    from src.domain.display_columns import DisplayColumn
+    from src.infrastructure.calendar_api import parse_calendar
+    from src.infrastructure.sqlite.day_records import SQLiteDayStore
+    from src.presentation.http import create_app
+
+    columns = tuple(DisplayColumn(f"c{i}", f"칼럼 {i}", "rich_text") for i in range(24))
+    mapping = replace(source(), display_columns=columns)
+    wide = {column.id: "한😀" * 120 for column in columns}
+    short = {column.id: "끝" for column in columns}
+    rows = [
+        replace(event(), id=str(i), title=f"{i:03}", display_values=wide if i < 40 else short)
+        for i in range(41)
+    ]
+    store = SQLiteSnapshots(db)
+    await store.complete_run(await store.begin_run(mapping, STAMP), rows, STAMP)
+    calendar = CalendarService(
+        SQLiteWorkReader(db),
+        SQLiteDayStore(db),
+        (CalendarSource(mapping, True, None, None),),
+        ParticipationPolicy(),
+        user_id="me",
+        max_age_seconds=1200,
+        now=lambda: datetime.fromisoformat(STAMP),
+    )
+    app = create_app("fixture", lambda: {}, calendar_service=calendar)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/v1/calendar", params={"month": "2026-11"}, headers={"Authorization": "Bearer fixture"}
+        )
+        response.raise_for_status()
+        month = parse_calendar(response.json())
+
+    # 표준 JSON의 이스케이프와 구분자를 기준으로 계산한 마지막 온전한 행을 확인한다.
+    size = len(json.dumps([{"label": c.label, "value": wide[c.id]} for c in columns]))
+    accepted = 900_000 // size
+    assert 0 < accepted < len(rows) - 1
+    assert month.truncated and [item.title for item in month.items] == [item.title for item in rows]
+    assert all(
+        item.display_fields == tuple((c.label, wide[c.id]) for c in columns)
+        for item in month.items[:accepted]
+    )
+    assert all(item.display_fields == () for item in month.items[accepted:-1])
+    assert month.items[-1].display_fields == tuple((c.label, short[c.id]) for c in columns)

@@ -1,9 +1,12 @@
 """앱 내 MCP 주소·사용 선택과 조회 토큰을 관리하는 기본 화면이다."""
 
 import time
+from dataclasses import dataclass
 from datetime import datetime
+from math import inf
 
 from AppKit import (
+    NSButton,
     NSFont,
     NSNoBorder,
     NSPasteboard,
@@ -18,6 +21,7 @@ from AppKit import (
 from Foundation import NSNotification, NSObject
 
 from src.application.ai_skills import SkillTarget
+from src.domain.mcp_access import McpAccessToken
 from src.domain.work_dates import SEOUL
 from src.presentation.mcp_settings_controller import McpSettingsController
 from src.presentation.native_views import button, card, frame, label, place_label
@@ -66,8 +70,6 @@ class McpSettingsActions(NSObject):
 
     def revoke_(self, sender: object) -> None:
         """버튼의 목록 인덱스를 현재 토큰 ID로 바꾼다."""
-        from AppKit import NSButton
-
         if isinstance(sender, NSButton) and self.owner.controller.state is not None:
             items = self.owner.controller.state.snapshot.tokens
             index = sender.tag()
@@ -98,6 +100,15 @@ class McpSettingsActions(NSObject):
         self.owner.render()
 
 
+@dataclass
+class _TokenControls:
+    """목록 구조가 그대로일 때 갱신할 배지와 폐기 버튼이다."""
+
+    badge: SettingsBadge
+    revoke: NSButton
+    status: str | None = None
+
+
 class McpSettingsView:
     """컴팩트한 입력과 스크롤 목록에서 여러 토큰을 관리한다."""
 
@@ -108,7 +119,11 @@ class McpSettingsView:
         self.controller = controller
         self._secret_generation = -1
         self._issue_generation = 0
-        self._list_key: object = None
+        self._list_key: tuple[bool, tuple[McpAccessToken, ...]] | None = None
+        self._token_controls: list[_TokenControls] = []
+        self._list_editable: bool | None = None
+        self._checked_at = inf
+        self._next_expiry = inf
         self._list_ids: tuple[str, ...] = ()
         self._actions = McpSettingsActions.alloc().init()
         self._actions.owner = self
@@ -221,15 +236,6 @@ class McpSettingsView:
                 self._status.update(
                     "실행 중" if active else "중지됨", "green" if active else "neutral"
                 )
-            latest = max(
-                (
-                    item.last_used_at
-                    for item in state.snapshot.tokens
-                    if item.last_used_at is not None
-                ),
-                default=None,
-            )
-            self._recent.setStringValue_(_last_used(latest))
         else:
             self._status.update(
                 "확인 불가" if controller.error else "불러오는 중",
@@ -254,26 +260,53 @@ class McpSettingsView:
         state = controller.state
         now = time.time()
         items = state.snapshot.tokens if state else ()
-        key = (
-            items,
-            tuple(item.status_at(now) for item in items),
-            controller.editable,
-            controller.error,
-        )
-        if key == self._list_key:
+        key = (state is not None, items)
+        data_changed = key != self._list_key
+        self._list_key = key
+        if data_changed:
+            self._build_token_rows(items, loaded=state is not None)
+            if state is not None:
+                latest = max(
+                    (item.last_used_at for item in items if item.last_used_at is not None),
+                    default=None,
+                )
+                self._recent.setStringValue_(_last_used(latest))
+        # 같은 구간에서는 시간이 지나도 상태가 같다. 시계가 뒤로 이동하면 다시 판정한다.
+        check_status = data_changed or not self._checked_at <= now < self._next_expiry
+        editable = controller.editable
+        if not check_status and editable == self._list_editable:
             return
+        if check_status:
+            self._checked_at, self._next_expiry = now, inf
+        for item, controls in zip(items, self._token_controls, strict=True):
+            if check_status:
+                status = item.status_at(now)
+                if status == "active" and item.expires_at is not None:
+                    self._next_expiry = min(self._next_expiry, item.expires_at)
+                if status != controls.status:
+                    controls.badge.update(
+                        {"active": "유효", "expired": "만료", "revoked": "폐기됨"}[status],
+                        {"active": "green", "expired": "orange", "revoked": "neutral"}[status],
+                    )
+                    controls.status = status
+            if data_changed or editable != self._list_editable:
+                controls.revoke.setEnabled_(editable and item.revoked_at is None)
+        self._list_editable = editable
+
+    def _build_token_rows(self, items: tuple[McpAccessToken, ...], *, loaded: bool) -> None:
+        """새 목록의 표시 정보를 배치하고 같은 토큰 순서라면 스크롤 위치를 보존한다."""
         old = self._scroll.documentView()
         origin = self._scroll.contentView().bounds()[0][1] if old is not None else 0
         ids = tuple(item.id for item in items)
         same_ids = ids == self._list_ids and old is not None
         self._list_ids = ids
-        self._list_key = key
+        self._token_controls.clear()
         height = max(self._list_height, len(items) * 34)
         document = NSView.alloc().initWithFrame_(frame(0, 0, 528, height))
         if not items:
             label(
                 document,
-                "발급된 토큰 없음" if state else "상태를 불러오는 중…",
+                "발급된 토큰 없음" if loaded else "상태를 불러오는 중…",
                 0,
                 height - 25,
                 528,
@@ -298,14 +331,9 @@ class McpSettingsView:
             expiry.setToolTip_(
                 "만료: " + _date(item.expires_at) if item.expires_at is not None else "만료 없음"
             )
-            status = item.status_at(now)
             badge = SettingsBadge(document, 310, y + 7, 100)
-            badge.update(
-                {"active": "유효", "expired": "만료", "revoked": "폐기됨"}[status],
-                {"active": "green", "expired": "orange", "revoked": "neutral"}[status],
-            )
             revoke = button(document, "폐기", 450, y + 4, 78, self._actions, "revoke:")
             revoke.setTag_(index)
-            revoke.setEnabled_(controller.editable and status != "revoked")
+            self._token_controls.append(_TokenControls(badge, revoke))
         self._scroll.setDocumentView_(document)
         document.scrollPoint_((0, origin if same_ids else max(0, height - self._list_height)))

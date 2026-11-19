@@ -52,6 +52,8 @@ jobs:
           PY
           uv lock --check
       - run: mise run check
+      - name: Verify MCP stdio transport
+        run: uv run --locked --extra menubar pytest -q tests/integration/mcp/test_stdio.py
       - run: mise run package
       - name: Verify packaged app from read-only DMG
         working-directory: dist
@@ -102,6 +104,7 @@ jobs:
           dmg="Maeng-Mate-${VERSION}-macOS-arm64.dmg"
           (cd dist && sha256sum -c "$dmg.sha256")
           if git show-ref --verify --quiet "refs/tags/$tag"; then
+            test "$(git cat-file -t "refs/tags/$tag")" = tag
             test "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)"
           else
             git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' tag -a "$tag" -m "Release Maeng Mate $VERSION"

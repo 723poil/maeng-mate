@@ -3,6 +3,7 @@
 import asyncio
 import json
 import platform
+import plistlib
 import secrets
 import socket
 import subprocess
@@ -45,6 +46,16 @@ def check_bundle() -> None:
 
     del MenuBarApp, NotificationDelegate
     if packaged():
+        contents = bundle_contents()
+        with (contents / "Info.plist").open("rb") as stream:
+            info = plistlib.load(stream)
+        if info.get("CFBundleVersion") != version("maeng-mate"):
+            raise RuntimeError("업데이트 비교 버전과 설치 버전이 다릅니다.")
+        if info.get("SUPublicEDKey"):
+            from src.infrastructure.sparkle_updates import load_controller
+
+            # 읽기 전용 DMG에서도 네트워크 요청 없이 동봉 프레임워크를 실제로 로드한다.
+            load_controller(contents / "Frameworks/Sparkle.framework")
         executable = (
             bundle_contents() / "Resources/NotificationAgent.app/Contents/MacOS/NotificationAgent"
         )

@@ -1,16 +1,19 @@
 """macOS 메뉴바의 최소 환경과 로컬 클라이언트를 조립한다."""
 
 import os
+import plistlib
 import signal
 import subprocess
 import sys
 import threading
+import webbrowser
 from collections.abc import Mapping
 from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
 from types import FrameType
 
+from src.application.app_updates import AppUpdates
 from src.application.data_backup import DataBackupActions
 from src.application.desktop import preview_departure
 from src.application.notifications import NotificationRunner
@@ -18,14 +21,28 @@ from src.application.runtime_settings_service import RestartOperation
 from src.bootstrap.app_settings import application_environment
 from src.bootstrap.backup_commands import export_backup, launch_restore, preview_backup
 from src.bootstrap.environment import ConfigError, McpEnvironment, local_api_settings
-from src.bootstrap.executable import executable_command, execution_environment
-from src.bootstrap.instance import application_directory, project_root
+from src.bootstrap.executable import (
+    bundle_contents,
+    executable_command,
+    execution_environment,
+    packaged,
+)
+from src.bootstrap.instance import (
+    application_directory,
+    coordination_lock,
+    instance_lock,
+    project_root,
+    stop_owned_process,
+)
 from src.bootstrap.notification_channels import CHANNELS, build_senders
 from src.bootstrap.notification_worker import NotificationWorker
+from src.bootstrap.service import LABELS
 from src.domain.daily_work import FlexibleDeparturePolicy
 from src.infrastructure.ai_skills import UserSkillInstaller
 from src.infrastructure.calendar_api import CalendarApi
 from src.infrastructure.desktop_api import DesktopApi
+from src.infrastructure.github_release import LATEST_RELEASE, latest_version
+from src.infrastructure.macos_launchd import MacLaunchd
 from src.infrastructure.macos_notification_app import MacNotificationApp
 from src.infrastructure.mcp_settings_api import McpSettingsApi
 from src.infrastructure.notification_api import LocalNotificationQueue
@@ -50,6 +67,45 @@ def restart_services() -> RestartOperation:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+def stop_update_resident() -> None:
+    """서비스 변경과 경합하지 않도록 잠금 안에서 확인된 상주 역할만 내린다."""
+    with coordination_lock("service"):
+        manager = MacLaunchd(os.getuid(), Path.home() / "Library/LaunchAgents")
+        label = LABELS["resident"]
+        registered = manager.registered(label)
+        try:
+            manager.unload(label)
+            stop_owned_process(project_root(), "resident")
+            # 수동 서버가 PID 확인과 엇갈려 시작한 경우에도 저장 중이면 설치를 보류한다.
+            with instance_lock("resident"), coordination_lock("storage"):
+                return
+        except (RuntimeError, ValueError, OSError):
+            if registered:
+                manager.start(label)
+            raise
+
+
+def open_release() -> None:
+    """개발 실행본에서는 고정된 공개 릴리스 주소로 이동한다."""
+    webbrowser.open(LATEST_RELEASE, new=2)
+
+
+def app_update_actions() -> AppUpdates:
+    """공개키를 내장한 배포 빌드에서만 자체 설치를 제공한다."""
+    if packaged():
+        from src.infrastructure.sparkle_updates import SparkleUpdates
+
+        contents = bundle_contents()
+        with (contents / "Info.plist").open("rb") as stream:
+            info = plistlib.load(stream)
+        if info.get("SUPublicEDKey"):
+            updater = SparkleUpdates(
+                contents / "Frameworks/Sparkle.framework", stop_update_resident
+            )
+            return AppUpdates(latest_version, open_release, updater.check)
+    return AppUpdates(latest_version, open_release, None)
 
 
 def run_menubar(env: Mapping[str, str]) -> None:
@@ -110,6 +166,7 @@ def run_menubar(env: Mapping[str, str]) -> None:
             skills=UserSkillInstaller(Path.home()),
             source_client=SourceSettingsApi(environment.api_url, environment.api_token),
             restart_services=restart_services,
+            app_updates=app_update_actions(),
             data_backup=DataBackupActions(export_backup, preview_backup, launch_restore),
             notification_channels=CHANNELS,
             notification_status=notifications.status,

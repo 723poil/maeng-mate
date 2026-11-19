@@ -84,7 +84,7 @@ class DataBackupView:
         )
 
     @property
-    def _busy(self) -> bool:
+    def busy(self) -> bool:
         """패널이나 확인 대화상자의 중첩 이벤트에서도 동작 중복을 막는다."""
         return self._choosing or any(
             operation is not None for operation in (self._export, self._preview, self._restore)
@@ -92,7 +92,7 @@ class DataBackupView:
 
     def choose_export(self) -> None:
         """새 이름을 고른 경우에만 파일 작성을 요청한다."""
-        if self._busy:
+        if self.busy:
             return
         self._choosing = True
         try:
@@ -114,7 +114,7 @@ class DataBackupView:
 
     def choose_restore(self) -> None:
         """파일 선택을 취소하면 작업자나 복원 요청을 만들지 않는다."""
-        if self._busy:
+        if self.busy:
             return
         self._choosing = True
         try:
@@ -157,7 +157,7 @@ class DataBackupView:
 
     def tick(self, *, visible: bool) -> None:
         """완료된 작업을 회수하고 현재 페이지를 보는 동안에만 복원을 확인한다."""
-        if not self._busy or self._choosing:
+        if not self.busy or self._choosing:
             return
         try:
             if self._export is not None and self._export.done():
@@ -194,7 +194,7 @@ class DataBackupView:
     def _update_buttons(self) -> None:
         """현재 동작이 끝나기 전에는 재요청을 받지 않는다."""
         for control in (self._save, self._open):
-            control.setEnabled_(not self._busy)
+            control.setEnabled_(not self.busy)
 
     def close(self) -> None:
         """앱 종료 때 진행 중인 파일 작성은 끝까지 마치고 대기 작업을 정리한다."""

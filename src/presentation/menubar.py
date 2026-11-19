@@ -32,6 +32,7 @@ from AppKit import (
 from Foundation import NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
 
 from src.application.ai_skills import SkillInstaller
+from src.application.app_updates import AppUpdates
 from src.application.calendar import CalendarClient
 from src.application.data_backup import DataBackupActions
 from src.application.desktop import DayUpdate, DesktopClient, DesktopSnapshot
@@ -200,6 +201,7 @@ class MenuBarApp:
         open_url: Callable[[str], None] = open_browser_url,
         restart_services: Callable[[], RestartOperation] | None = None,
         data_backup: DataBackupActions | None = None,
+        app_updates: AppUpdates | None = None,
         notification_channels: tuple[NotificationChannel, ...] = (
             NotificationChannel("macos", "macOS 알림"),
         ),
@@ -208,6 +210,7 @@ class MenuBarApp:
         today: Callable[[], str] = local_day,
     ) -> None:
         """로컬 연결과 순수 예상시간 계산 유스케이스를 주입받는다."""
+        self._app_updates = app_updates
         self._data_backup = data_backup
         self._notification_channels = notification_channels
         self._open_url = open_url
@@ -1214,6 +1217,7 @@ class MenuBarApp:
                 self._source_editor,
                 self._source_client,
                 self._data_backup,
+                self._app_updates,
             )
         self._settings_window.show()
 

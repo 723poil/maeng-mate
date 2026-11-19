@@ -31,20 +31,33 @@ from src.infrastructure.sqlite.preferences import (
 )
 
 
-def _read_validated(connection: sqlite3.Connection) -> tuple[WorkSettingsDocument, Settings] | None:
-    """미저장만 None으로 구분하고 손상된 문서는 기본값으로 바꾸지 않는다."""
+def read_work_settings_row(connection: sqlite3.Connection) -> tuple[int, str | bytes] | None:
+    """같은 행에서 확인한 버전과 아직 해석하지 않은 저장 원문을 반환한다."""
     row = connection.execute("SELECT revision,payload FROM work_settings WHERE id=1").fetchone()
     if row is None:
         return None
-    raw: object = json.loads(row["payload"])
+    revision, encoded = row["revision"], row["payload"]
+    if type(revision) is not int or revision < 1 or not isinstance(encoded, (str, bytes)):
+        raise WorkSettingsError("invalid")
+    return revision, encoded
+
+
+def validate_work_document(
+    revision: int, encoded: str | bytes
+) -> tuple[WorkSettingsDocument, Settings]:
+    """원본 문서와 매핑을 함께 검증하고 손상된 자료를 기본값으로 바꾸지 않는다."""
+    raw: object = json.loads(encoded)
     if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
         raise WorkSettingsError("invalid")
     payload: dict[str, object] = {key: value for key, value in raw.items()}
     settings = parse_settings(payload)
-    revision: object = row["revision"]
-    if type(revision) is not int or revision < 1:
-        raise WorkSettingsError("invalid")
     return WorkSettingsDocument(revision, payload), settings
+
+
+def _read_validated(connection: sqlite3.Connection) -> tuple[WorkSettingsDocument, Settings] | None:
+    """저장된 행이 있을 때만 업무 설정을 검증한다."""
+    row = read_work_settings_row(connection)
+    return validate_work_document(*row) if row is not None else None
 
 
 def read_document(connection: sqlite3.Connection) -> WorkSettingsDocument | None:
@@ -151,7 +164,9 @@ class SQLiteWorkSettings:
                     )
             return document, settings
 
-    def save_links(self, revision: int, links: Mapping[str, str | None]) -> WorkSettingsDocument:
+    def save_links(
+        self, revision: int, links: Mapping[str, str | None]
+    ) -> tuple[WorkSettingsDocument, Settings]:
         """주소만 고치며 매핑·규칙을 보존하고 동시 수정은 덮어쓰지 않는다."""
         with self._database.transaction() as connection:
             stored = _read_validated(connection)
@@ -170,8 +185,8 @@ class SQLiteWorkSettings:
                         else:
                             source["pageUrl"] = url
                     payload = {**current.payload, "sources": sources}
-                    _write(connection, revision + 1, payload)
-                    return WorkSettingsDocument(revision + 1, payload)
+                    saved = _write(connection, revision + 1, payload)
+                    return WorkSettingsDocument(revision + 1, payload), saved
         # 충돌은 손상된 저장 자료와 구분해 편집 화면에 전달한다.
         raise WorkSettingsError("conflict")
 

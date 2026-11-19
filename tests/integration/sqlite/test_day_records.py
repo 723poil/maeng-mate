@@ -59,3 +59,32 @@ async def test_midnight_rejects_previous_day_edit(db: Database) -> None:
     with pytest.raises(DayConflictError):
         await store.save(record, 0)
     assert await db.fetch("SELECT day FROM day_records") == []
+
+
+async def test_history_compares_fiftieth_change_and_preserves_current_rules(db: Database) -> None:
+    """표시 한도 바로 밖의 이력과 비교하고 확정에는 현재 기록의 메모와 규칙을 유지한다."""
+    from src.application.work_records import WorkRecordsService
+    from src.domain.daily_work import DEFAULT_WORK_RULES, DayRecord, FlexibleDeparturePolicy
+    from src.infrastructure.sqlite.day_records import SQLiteDayStore
+
+    clock = Clock(datetime(2026, 11, 16, 10, tzinfo=UTC).timestamp())
+    day = clock.now().date()
+    store = SQLiteDayStore(db, now=clock.now)
+    service = WorkRecordsService(store, None, now=clock.now, policy=FlexibleDeparturePolicy())
+    record = DayRecord(day, plan="가상 계획", rules=DEFAULT_WORK_RULES)
+    for minute in range(51):
+        record = await store.correct(
+            replace(record, attendance=clock.now().replace(hour=0, minute=minute)), record.revision
+        )
+
+    detail = await service.detail(day)
+    assert detail.truncated and len(detail.history) == 50
+    assert detail.history[-1].revision == 2
+    assert detail.history[-1].changes == ("출근 09:00 → 09:01",)
+    assert detail.item.arrival == "09:50"
+
+    confirmed = await service.confirm(day, record.revision)
+    assert confirmed.item.departure == "17:50"
+    assert confirmed.history[0].changes == ("퇴근 미기록 → 17:50",)
+    current = await store.read(day)
+    assert current.rules == record.rules and current.plan == record.plan

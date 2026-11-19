@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime
 
 from src.application.day_ports import DayConflictError
 from src.application.errors import SnapshotError
-from src.application.work_records import SavedRecordHistory
+from src.application.work_records import SavedRecordHistory, WorkRecordItem, record_item
 from src.domain.daily_work import DayRecord, DeparturePolicy, parse_leave, parse_rules
 from src.domain.work_dates import SEOUL
 from src.infrastructure.sqlite.connection import Database
@@ -53,23 +53,24 @@ class SQLiteDayStore:
         except (ValueError, TypeError, KeyError):
             raise SnapshotError("storage_failed") from None
 
-    async def read_month(self, first: date, last: date) -> tuple[DayRecord, ...]:
+    async def read_month(self, first: date, last: date) -> tuple[WorkRecordItem, ...]:
         """월별 기록을 읽기 전용 연결 하나에서 가져온다."""
         return await asyncio.to_thread(self._read_month, first, last)
 
-    def _read_month(self, first: date, last: date) -> tuple[DayRecord, ...]:
+    def _read_month(self, first: date, last: date) -> tuple[WorkRecordItem, ...]:
         """조회로 미기록 행이나 알림을 만들지 않는다."""
         with self._database.transaction(read_only=True) as connection:
             rows = connection.execute(
                 "SELECT day,payload FROM day_records WHERE day BETWEEN ? AND ? ORDER BY day DESC",
                 (first.isoformat(), last.isoformat()),
-            ).fetchall()
-            records: list[DayRecord] = []
+            )
+            records: list[WorkRecordItem] = []
             for row in rows:
                 record = decode_record(json.loads(row["payload"]))
                 if record.day.isoformat() != row["day"]:
                     raise SnapshotError("invalid_snapshot")
-                records.append(record)
+                # 메모·규칙도 검증하되 월 목록에는 표시값만 보관한다.
+                records.append(record_item(record))
             return tuple(records)
 
     async def read_history(self, day: date) -> SavedRecordHistory:
@@ -85,19 +86,22 @@ class SQLiteDayStore:
             rows = connection.execute(
                 "SELECT revision,payload FROM day_record_revisions WHERE day=? ORDER BY revision DESC LIMIT 51",
                 (day.isoformat(),),
-            ).fetchall()
+            )
             current = decode_record(json.loads(row["payload"])) if row else DayRecord(day)
-            versions = tuple(decode_record(json.loads(version["payload"])) for version in rows)
+            versions: list[WorkRecordItem] = []
+            for stored in rows:
+                version = decode_record(json.loads(stored["payload"]))
+                if version.day != day or version.revision != stored["revision"]:
+                    raise SnapshotError("invalid_snapshot")
+                # 예정 계산·정정에는 현재 기록만 필요하고, 과거 버전은 표시값끼리 비교한다.
+                versions.append(record_item(version))
             if (
                 current.day != day
-                or bool(row) != bool(rows)
+                or bool(row) != bool(versions)
                 or (versions and versions[0].revision != current.revision)
             ):
                 raise SnapshotError("invalid_snapshot")
-            for version, stored in zip(versions, rows, strict=True):
-                if version.day != day or version.revision != stored["revision"]:
-                    raise SnapshotError("invalid_snapshot")
-            return SavedRecordHistory(current, versions)
+            return SavedRecordHistory(current, tuple(versions))
 
     async def reconcile_today_notifications(self) -> None:
         """상주 앱 시작 시 저장된 오늘 기록에 누락된 퇴근 예약만 보완한다."""

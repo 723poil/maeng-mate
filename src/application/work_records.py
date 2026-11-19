@@ -22,14 +22,6 @@ from src.domain.work_dates import SEOUL
 
 
 @dataclass(frozen=True)
-class SavedRecordHistory:
-    """같은 읽기 시점에서 가져온 확정 기록과 최신51개 버전이다."""
-
-    current: DayRecord
-    versions: tuple[DayRecord, ...]
-
-
-@dataclass(frozen=True)
 class WorkRecordItem:
     """목록·편집에 필요한 실제 시간만 전달하며 예상 퇴근은 포함하지 않는다."""
 
@@ -52,6 +44,14 @@ class WorkRecordItem:
             "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
             "overtime": self.overtime,
         }
+
+
+@dataclass(frozen=True)
+class SavedRecordHistory:
+    """같은 읽기 시점의 확정 기록과 이력 비교용 최신 51개 표시값이다."""
+
+    current: DayRecord
+    versions: tuple[WorkRecordItem, ...]
 
 
 @dataclass(frozen=True)
@@ -138,7 +138,7 @@ class WorkRecordCorrection:
 class WorkRecordsStore(Protocol):
     """운영 DB 구현과 분리된 월별 읽기·버전별 읽기·명시적 정정 포트다."""
 
-    async def read_month(self, first: date, last: date) -> tuple[DayRecord, ...]:
+    async def read_month(self, first: date, last: date) -> tuple[WorkRecordItem, ...]:
         """범위 내 확정 기록만 읽고 미기록을 저장하지 않는다."""
         ...
 
@@ -184,21 +184,19 @@ def record_item(record: DayRecord) -> WorkRecordItem:
     )
 
 
-def revision_changes(current: DayRecord, previous: DayRecord | None) -> tuple[str, ...]:
+def revision_changes(current: WorkRecordItem, previous: WorkRecordItem | None) -> tuple[str, ...]:
     """기록의 실제 시간·휴가 차이만 이력에 표시한다."""
-    value = record_item(current)
     if previous is None:
         return ("최초 기록",)
-    before = record_item(previous)
     result: list[str] = []
     for label, old, new in (
-        ("출근", before.arrival, value.arrival),
-        ("퇴근", before.departure, value.departure),
-        ("휴가", LEAVE_LABELS[before.leave], LEAVE_LABELS[value.leave]),
+        ("출근", previous.arrival, current.arrival),
+        ("퇴근", previous.departure, current.departure),
+        ("휴가", LEAVE_LABELS[previous.leave], LEAVE_LABELS[current.leave]),
         (
             extra_work_label(current.day),
-            "있음" if before.overtime else "없음",
-            "있음" if value.overtime else "없음",
+            "있음" if previous.overtime else "없음",
+            "있음" if current.overtime else "없음",
         ),
     ):
         if old != new:
@@ -231,7 +229,11 @@ class WorkRecordsService:
         return WorkRecordsMonth(
             month,
             today,
-            tuple(record_item(records.get(day, DayRecord(day))) for day in days if day <= today),
+            tuple(
+                records[day] if day in records else record_item(DayRecord(day))
+                for day in days
+                if day <= today
+            ),
         )
 
     async def detail(self, day: date) -> WorkRecordDetail:

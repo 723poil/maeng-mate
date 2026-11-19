@@ -11,6 +11,7 @@ from src.application.errors import QueryReadError
 from src.application.notion_links import notion_link
 from src.application.today_metadata import source_metadata
 from src.application.today_models import SourceSnapshot
+from src.application.work_records import WorkRecordItem
 from src.domain.calendar import (
     CALENDAR_GRID_DAYS,
     CalendarAttendance,
@@ -18,7 +19,6 @@ from src.domain.calendar import (
     CalendarKind,
     CalendarMonth,
 )
-from src.domain.daily_work import DayRecord
 from src.domain.display_columns import labelled_values
 from src.domain.models import CalendarEvent, Leave, Period, SourceMapping, Task, WorkItem
 from src.domain.policies import RelevancePolicy
@@ -57,7 +57,7 @@ class _CalendarProjection:
 class CalendarRecordsReader(Protocol):
     """달력에는 개인 기록의 읽기 권한만 제공한다."""
 
-    async def read_month(self, first: date, last: date) -> tuple[DayRecord, ...]:
+    async def read_month(self, first: date, last: date) -> tuple[WorkRecordItem, ...]:
         """격자에 포함된 날짜 범위의 실제 기록만 읽는다."""
         ...
 
@@ -306,12 +306,8 @@ class CalendarService:
         attendance = tuple(
             CalendarAttendance(
                 record.day,
-                record.attendance.astimezone(SEOUL).strftime("%H:%M")
-                if record.attendance
-                else None,
-                record.checkout_at.astimezone(SEOUL).strftime("%H:%M")
-                if record.checkout_at
-                else None,
+                record.arrival,
+                record.departure,
                 record.leave,
                 record.overtime,
             )

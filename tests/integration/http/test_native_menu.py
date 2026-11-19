@@ -42,9 +42,14 @@ def test_native_menu_renders_and_saves_attendance(
     db = Database(str(tmp_path / "work.sqlite3"))
     asyncio.run(migrate(db))
     service = DayService(
-        SQLiteDayStore(db, now=now),
+        SQLiteDayStore(
+            db,
+            now=now,
+            current_rules=lambda: WorkRules(
+                480, 240, 120, day_time(12), day_time(13), day_time(0), day_time(23, 59)
+            ),
+        ),
         FlexibleDeparturePolicy(),
-        WorkRules(480, 240, 120, day_time(12), day_time(13), day_time(0), day_time(23, 59)),
         now=now,
     )
 

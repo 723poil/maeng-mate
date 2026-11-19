@@ -23,6 +23,10 @@ from AppKit import (
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorMoveToActiveSpace,
     NSWindowStyleMaskBorderless,
+    NSWindowStyleMaskClosable,
+    NSWindowStyleMaskFullSizeContentView,
+    NSWindowStyleMaskTitled,
+    NSWindowTitleHidden,
 )
 from Foundation import NSNotificationCenter, NSObject
 from objc import super
@@ -44,6 +48,18 @@ class KeyablePanel(NSPanel):
     def performKeyEquivalent_(self, event: NSEvent) -> bool:
         """앱 메뉴가 없는 패널에서도 현재 입력의 macOS 기본 편집 명령을 실행한다."""
         modifiers = event.modifierFlags()
+        # 메뉴가 없는 보조 창은 표준 닫기 동작을 직접 전달하고 열린 시트의 입력을 우선한다.
+        if (
+            self.styleMask() & NSWindowStyleMaskClosable
+            and modifiers & NSEventModifierFlagCommand
+            and not modifiers
+            & (NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagShift)
+            and self.attachedSheet() is None
+        ):
+            key = (event.charactersIgnoringModifiers() or "").lower()
+            if key == "w" or (not key.isascii() and event.keyCode() == 13):
+                self.performClose_(None)
+                return True
         editor = self.firstResponder()
         if (
             modifiers & NSEventModifierFlagCommand
@@ -77,7 +93,32 @@ class KeyablePanel(NSPanel):
 
     def cancelOperation_(self, sender: object) -> None:
         """Escape로 패널만 닫고 상주 앱은 유지한다."""
-        self.orderOut_(None)
+        if self.styleMask() & NSWindowStyleMaskClosable:
+            if self.attachedSheet() is None:
+                self.performClose_(sender)
+        else:
+            self.orderOut_(None)
+
+
+def auxiliary_window(title: str, width: float, height: float) -> KeyablePanel:
+    """독립 보조 창에는 AppKit이 그리는 닫기 버튼과 투명 제목 막대를 사용한다."""
+    panel = KeyablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        frame(0, 0, width, height),
+        NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskFullSizeContentView,
+        NSBackingStoreBuffered,
+        False,
+    )
+    panel.setTitle_(title)
+    panel.setTitleVisibility_(NSWindowTitleHidden)
+    panel.setTitlebarAppearsTransparent_(True)
+    panel.setReleasedWhenClosed_(False)
+    panel.setOpaque_(False)
+    panel.setBackgroundColor_(NSColor.clearColor())
+    panel.setBecomesKeyOnlyIfNeeded_(False)
+    panel.setHidesOnDeactivate_(False)
+    panel.setMovableByWindowBackground_(True)
+    panel.center()
+    return panel
 
 
 class PanelEvents(NSObject):

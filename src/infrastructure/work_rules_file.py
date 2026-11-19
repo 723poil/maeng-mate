@@ -1,6 +1,8 @@
 """근무 규칙만 보호된 JSON 파일에 버전 조건부로 저장한다."""
 
 import json
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from src.application.work_rules_settings import (
     document_payload,
     parse_document,
 )
+from src.domain.daily_work import WorkRules
 from src.infrastructure.private_files import (
     private_file_lock,
     read_private_file,
@@ -22,9 +25,15 @@ MAX_WORK_RULES_BYTES = 16384
 class WorkRulesFile:
     """관리자 API 내부의 동시 쓰기를 직렬화한다."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        apply_today: Callable[[WorkRules], AbstractContextManager[None]] | None = None,
+    ) -> None:
         """설치 경로를 시작 경계에서 주입한다."""
         self._path = path
+        self._apply_today = apply_today
         self._lock_path = path.with_name(f".{path.name}.lock")
 
     def read(self) -> WorkRulesDocument | None:
@@ -47,8 +56,23 @@ class WorkRulesFile:
             if revision != document.revision:
                 raise WorkRulesConflictError()
             saved = replace(document, revision=revision + 1)
-            write_private_file(
-                self._path,
-                (json.dumps(document_payload(saved), ensure_ascii=False, indent=2) + "\n").encode(),
-            )
+            published = False
+            try:
+                # 기록·예약을 먼저 준비하고 파일 교체가 실패하면 DB 변경도 롤백한다.
+                with self._apply_today(saved.rules) if self._apply_today else nullcontext():
+                    self._write(saved)
+                    published = True
+            except Exception:
+                # 파일 교체 뒤 DB 커밋이 실패하면 다른 작성자가 들어오기 전에 원래 규칙을 복구한다.
+                if published:
+                    if current is None:
+                        self._path.unlink()
+                    else:
+                        self._write(current)
+                raise
             return saved
+
+    def _write(self, document: WorkRulesDocument) -> None:
+        """버전과 규칙을 같은 보호 파일에 원자적으로 교체한다."""
+        content = json.dumps(document_payload(document), ensure_ascii=False, indent=2) + "\n"
+        write_private_file(self._path, content.encode())

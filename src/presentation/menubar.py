@@ -619,7 +619,7 @@ class MenuBarApp:
         if actual is not None:
             displayed = actual
         elif not self._dirty and snapshot.day.update.attendance is not None:
-            # 새 규칙을 적용해도 저장된 기록에는 당시 계산 결과를 표시한다.
+            # 서버가 오늘 규칙으로 갱신한 예정 시각을 표시한다.
             displayed = snapshot.day.departure
         else:
             displayed = self._preview(update, snapshot.day.rules).departure
@@ -699,9 +699,25 @@ class MenuBarApp:
                     and not self._records_controller.dirty
                 ):
                     self._records_controller.load(month.month)
+                detail = self._records_controller.detail
+                snapshot = self._controller.snapshot
+                # 열린 기록 창도 오늘 버전이 바뀌면 다시 읽되, 편집 중인 입력은 보존한다.
+                if (
+                    detail is not None
+                    and snapshot is not None
+                    and detail.item.day.isoformat() == snapshot.day.update.day
+                    and detail.item.revision < snapshot.day.update.revision
+                    and not self._records_controller.blocked
+                ):
+                    self._records_controller.select(detail.item.day)
                 self._records_window.render()
+        rules_editor = self._work_rules_controller
+        previous_rules = rules_editor.state if rules_editor else None
         for controller in self._settings_controllers:
             controller.tick()
+        if rules_editor and previous_rules is not None and previous_rules != rules_editor.state:
+            # 규칙 저장 직후 메뉴바는 다음 주기를 기다리지 않고 서버의 확정 기록을 읽는다.
+            self._next_refresh = 0
         if self._source_editor is not None:
             state = self._source_editor.state
             if state is not None and self._source_display != state.active_display:

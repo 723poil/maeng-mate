@@ -88,8 +88,12 @@ def build_api(
             mcp_service.ready = ready
 
     legacy = settings.work_rules if settings else None
-    rules = work_rules_service.active if work_rules_service else legacy or DEFAULT_WORK_RULES
-    day_service, work_records_service = build_day_services(environment, rules)
+    day_service, work_records_service = build_day_services(
+        environment,
+        work_rules_service.current_rules
+        if work_rules_service
+        else lambda: legacy or DEFAULT_WORK_RULES,
+    )
     credentials = build_notion_credentials(
         environment.notion_token,
         settings.sources if settings else (),

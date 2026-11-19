@@ -1,4 +1,4 @@
-"""근무 규칙 파일의 저장값과 이번 실행에 적용된 값을 구분한다."""
+"""저장한 근무 규칙을 오늘 기록과 새 입력에 적용한다."""
 
 from dataclasses import dataclass
 from typing import Protocol
@@ -78,20 +78,23 @@ class WorkRulesClient(Protocol):
 
 
 class WorkRulesService:
-    """첫 편집은 기존 설정을 이어받고 적용은 다음 앱 실행에서 한다."""
+    """최초 편집은 기존 설정을 이어받고 저장한 규칙을 즉시 제공한다."""
 
     def __init__(self, store: WorkRulesStore, legacy: WorkRules | None) -> None:
-        """설치된 규칙과 이전 DB 설정으로 이번 실행의 규칙을 고정한다."""
+        """파일이 없는 경우에만 사용할 초기 규칙을 정한다."""
         self._store = store
         self._initial = WorkRulesDocument(0, legacy if legacy is not None else DEFAULT_WORK_RULES)
-        self.active = (store.read() or self._initial).rules
+
+    def current_rules(self) -> WorkRules:
+        """새 기록을 만들 때 가장 최근에 저장된 설정을 사용한다."""
+        return (self._store.read() or self._initial).rules
 
     def read(self) -> WorkRulesState:
         """파일이 없으면 최초 편집값만 반환한다."""
         value = self._store.read() or self._initial
-        return WorkRulesState(value, value.rules != self.active)
+        return WorkRulesState(value, False)
 
     def save(self, value: WorkRulesDocument) -> WorkRulesState:
         """명시적으로 저장한 규칙만 설정 파일을 갱신한다."""
         saved = self._store.save(value)
-        return WorkRulesState(saved, saved.rules != self.active)
+        return WorkRulesState(saved, False)

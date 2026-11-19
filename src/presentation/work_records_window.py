@@ -4,7 +4,6 @@ from datetime import date
 
 from AppKit import (
     NSApplication,
-    NSBackingStoreBuffered,
     NSBox,
     NSBoxSeparator,
     NSButton,
@@ -18,7 +17,6 @@ from AppKit import (
     NSScrollView,
     NSTextAlignmentCenter,
     NSView,
-    NSWindowStyleMaskBorderless,
 )
 from Foundation import NSObject
 
@@ -26,7 +24,7 @@ from src.application.work_records import WorkRecordCorrection, WorkRecordsMonth
 from src.application.workday import LEAVE_LABELS, SELECTABLE_LEAVES, extra_work_label
 from src.domain.daily_work import LeaveType
 from src.domain.work_dates import SEOUL
-from src.presentation.glass_panel import KeyablePanel
+from src.presentation.glass_panel import auxiliary_window
 from src.presentation.native_views import button, card, frame, glass_container, label
 from src.presentation.settings_badge import SettingsBadge
 from src.presentation.work_records_controller import WorkRecordsController
@@ -38,10 +36,6 @@ class RecordsWindowActions(NSObject):
     """창의 월 이동·입력·저장 동작을 명시적 콜백으로 분리한다."""
 
     owner: "WorkRecordsWindow"
-
-    def close_(self, sender: object) -> None:
-        """창을 닫아도 초안·진행 중 저장은 보존한다."""
-        self.owner.close()
 
     def previous_(self, sender: object) -> None:
         """수정 중이 아닐 때 이전 달로 이동한다."""
@@ -94,22 +88,11 @@ class WorkRecordsWindow:
         self._actions.owner = self
         screen = NSScreen.mainScreen()
         height = min(660.0, max(600.0, screen.visibleFrame()[1][1] - 80)) if screen else 640.0
-        self._window = KeyablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            frame(0, 0, 900, height), NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False
-        )
-        self._window.setTitle_("출퇴근 기록")
-        self._window.setReleasedWhenClosed_(False)
-        self._window.setOpaque_(False)
-        self._window.setBackgroundColor_(NSColor.clearColor())
-        self._window.setHasShadow_(False)
-        self._window.setBecomesKeyOnlyIfNeeded_(False)
-        self._window.setHidesOnDeactivate_(False)
-        self._window.setMovableByWindowBackground_(True)
-        self._window.center()
+        self._window = auxiliary_window("출퇴근 기록", 900, height)
         content = NSView.alloc().initWithFrame_(frame(0, 0, 900, height))
         self._window.setContentView_(glass_container(content, 900, height))
-        label(content, "출퇴근 기록", 24, height - 48, 140, size=18, bold=True)
-        self._spinner = NSProgressIndicator.alloc().initWithFrame_(frame(176, height - 44, 16, 16))
+        label(content, "출퇴근 기록", 82, height - 48, 100, size=18, bold=True)
+        self._spinner = NSProgressIndicator.alloc().initWithFrame_(frame(184, height - 44, 16, 16))
         self._spinner.setStyle_(NSProgressIndicatorStyleSpinning)
         self._spinner.setDisplayedWhenStopped_(False)
         content.addSubview_(self._spinner)
@@ -126,10 +109,6 @@ class WorkRecordsWindow:
             control.setImage_(
                 NSImage.imageWithSystemSymbolName_accessibilityDescription_(symbol, title)
             )
-        close = button(content, "", 850, height - 48, 26, self._actions, "close:", bordered=False)
-        close.setImage_(
-            NSImage.imageWithSystemSymbolName_accessibilityDescription_("xmark", "기록 창 닫기")
-        )
         self._summary = label(content, "", 24, height - 88, 480, size=12, secondary=True)
         card(content, 16, 58, 500, height - 162)
         self._table = WorkRecordsTable(content, frame(24, 66, 484, height - 180), self.select)
@@ -189,7 +168,7 @@ class WorkRecordsWindow:
 
     def close(self) -> None:
         """창을 숨기며 다시 열 때 선택과 미저장 내용을 보존한다."""
-        self._window.orderOut_(None)
+        self._window.close()
 
     def select(self, day: date) -> None:
         """날짜 선택 즉시 진행 상태를 표시한다."""

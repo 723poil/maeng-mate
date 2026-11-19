@@ -7,11 +7,8 @@ from typing import Literal
 
 from AppKit import (
     NSApplication,
-    NSBackingStoreBuffered,
     NSBox,
     NSBoxSeparator,
-    NSColor,
-    NSImage,
     NSNoBorder,
     NSScreen,
     NSScrollView,
@@ -19,7 +16,6 @@ from AppKit import (
     NSView,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorMoveToActiveSpace,
-    NSWindowStyleMaskBorderless,
 )
 from Foundation import NSNotification, NSObject
 
@@ -31,7 +27,7 @@ from src.application.work_rules_settings import WorkRulesDocument
 from src.domain.preferences import NOTIFICATION_TYPES, SECTIONS, SectionPreference
 from src.presentation.category_settings_form import CategorySettingsForm
 from src.presentation.data_backup_view import DataBackupView
-from src.presentation.glass_panel import KeyablePanel
+from src.presentation.glass_panel import auxiliary_window
 from src.presentation.mcp_settings_controller import McpSettingsController
 from src.presentation.mcp_settings_view import McpSettingsView
 from src.presentation.native_views import button, card, frame, glass_container, label, place_label
@@ -67,9 +63,9 @@ class PreferencesActions(NSObject):
         """선택 변경을 자동 저장 초안으로 전달한다."""
         self.owner.changed()
 
-    def close_(self, sender: object) -> None:
-        """설정만 닫고 저장 작업과 상주 앱은 유지한다."""
-        self.owner.close()
+    def windowWillClose_(self, notification: NSNotification) -> None:
+        """기본 닫기 버튼과 단축키 모두에서 임시 인증 표시를 지운다."""
+        self.owner.clear_private_fields()
 
     def reload_(self, sender: object) -> None:
         """확정 설정을 다시 읽어 충돌·연결 실패를 복구한다."""
@@ -217,29 +213,16 @@ class PreferencesWindow:
         self._actions.owner = self
         screen = NSScreen.mainScreen()
         height = min(600.0, max(500.0, screen.visibleFrame()[1][1] - 60)) if screen else 600.0
-        self._window = KeyablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            frame(0, 0, 760, height),
-            NSWindowStyleMaskBorderless,
-            NSBackingStoreBuffered,
-            False,
-        )
-        self._window.setTitle_("Maeng Mate 설정")
-        self._window.setReleasedWhenClosed_(False)
-        self._window.setOpaque_(False)
-        self._window.setBackgroundColor_(NSColor.clearColor())
-        self._window.setHasShadow_(False)
-        self._window.setBecomesKeyOnlyIfNeeded_(False)
-        self._window.setHidesOnDeactivate_(False)
+        self._window = auxiliary_window("Maeng Mate 설정", 760, height)
         self._window.setCollectionBehavior_(
             NSWindowCollectionBehaviorMoveToActiveSpace
             | NSWindowCollectionBehaviorFullScreenAuxiliary
         )
-        self._window.setMovableByWindowBackground_(True)
-        self._window.center()
+        self._window.setDelegate_(self._actions)
         content = NSView.alloc().initWithFrame_(frame(0, 0, 760, height))
         self._glass = glass_container(content, 760, height)
         self._window.setContentView_(self._glass)
-        label(content, "설정", 20, height - 44, 120, size=17, bold=True)
+        label(content, "설정", 82, height - 44, 60, size=17, bold=True)
         label(content, f"버전 {version('maeng-mate')}", 20, 22, 120, size=12, secondary=True)
         self._page_title = label(
             content, SettingsPage.SCREEN.title, 188, height - 44, 450, size=17, bold=True
@@ -247,10 +230,6 @@ class PreferencesWindow:
         divider = NSBox.alloc().initWithFrame_(frame(148, 16, 1, height - 32))
         divider.setBoxType_(NSBoxSeparator)
         content.addSubview_(divider)
-        close = button(content, "", 708, height - 45, 26, self._actions, "close:", bordered=False)
-        close.setImage_(
-            NSImage.imageWithSystemSymbolName_accessibilityDescription_("xmark", "설정 닫기")
-        )
         viewport = height - 102
         pages: tuple[SettingsPage, ...] = (SettingsPage.SCREEN, SettingsPage.NOTIFICATIONS)
         if runtime_controller is not None:
@@ -816,7 +795,11 @@ class PreferencesWindow:
             )
 
     def close(self) -> None:
-        """앱 종료 시 설정 창을 숨긴다."""
+        """앱이 종료될 때도 시스템 닫기 절차를 거친다."""
+        self._window.close()
+
+    def clear_private_fields(self) -> None:
+        """창이 닫힐 때 도움말과 일회성 비밀 표시를 정리한다."""
         if self._page_links_view is not None:
             self._page_links_view.hide_help()
         if self._mcp_controller is not None:
@@ -827,4 +810,3 @@ class PreferencesWindow:
             self._slack_controller.forget_token()
             if self._slack_view is not None:
                 self._slack_view.render()
-        self._window.orderOut_(None)

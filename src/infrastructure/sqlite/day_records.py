@@ -2,14 +2,16 @@
 
 import asyncio
 import json
-from collections.abc import Callable
+import sqlite3
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, date, datetime
 
 from src.application.day_ports import DayConflictError
 from src.application.errors import SnapshotError
 from src.application.work_records import SavedRecordHistory, WorkRecordItem, record_item
-from src.domain.daily_work import DayRecord, DeparturePolicy, parse_leave, parse_rules
+from src.domain.daily_work import DayRecord, DeparturePolicy, WorkRules, parse_leave, parse_rules
 from src.domain.work_dates import SEOUL
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.notifications import enqueue_departure
@@ -29,11 +31,13 @@ class SQLiteDayStore:
         *,
         now: Callable[[], datetime] = utc_now,
         policy: DeparturePolicy | None = None,
+        current_rules: Callable[[], WorkRules] | None = None,
     ) -> None:
         """날짜 전환도 쓰기 트랜잭션 안에서 검사할 수 있도록 시계를 받는다."""
         self._database = database
         self._now = now
         self._policy = policy
+        self._current_rules = current_rules
 
     async def read(self, day: date) -> DayRecord:
         """조회는 실행·예약·파일을 생성하지 않는다."""
@@ -41,7 +45,7 @@ class SQLiteDayStore:
             "SELECT payload FROM day_records WHERE day=?", (day.isoformat(),)
         )
         if not rows:
-            return DayRecord(day)
+            return self._new_record(day)
         payload = rows[0]["payload"]
         if not isinstance(payload, str):
             raise SnapshotError("storage_failed")
@@ -87,7 +91,7 @@ class SQLiteDayStore:
                 "SELECT revision,payload FROM day_record_revisions WHERE day=? ORDER BY revision DESC LIMIT 51",
                 (day.isoformat(),),
             )
-            current = decode_record(json.loads(row["payload"])) if row else DayRecord(day)
+            current = decode_record(json.loads(row["payload"])) if row else self._new_record(day)
             versions: list[WorkRecordItem] = []
             for stored in rows:
                 version = decode_record(json.loads(stored["payload"]))
@@ -103,26 +107,29 @@ class SQLiteDayStore:
                 raise SnapshotError("invalid_snapshot")
             return SavedRecordHistory(current, tuple(versions))
 
-    async def reconcile_today_notifications(self) -> None:
-        """상주 앱 시작 시 저장된 오늘 기록에 누락된 퇴근 예약만 보완한다."""
-        await asyncio.to_thread(self._reconcile_today_notifications)
+    def _new_record(self, day: date) -> DayRecord:
+        """최초 입력은 저장 전에도 현재 근무 규칙으로 미리 본다."""
+        return DayRecord(day, rules=self._current_rules() if self._current_rules else None)
 
-    def _reconcile_today_notifications(self) -> None:
-        """근무 버전·이력은 바꾸지 않고 과거 시각과 기존 알림은 다시 만들지 않는다."""
-        if self._policy is None:
-            return
-        now = self._now()
-        day = now.astimezone(SEOUL).date()
+    @contextmanager
+    def apply_today_rules(self, rules: WorkRules) -> Iterator[None]:
+        """규칙 파일 교체와 직렬화해 오늘 기록·이력·남은 예약을 함께 갱신한다."""
         with self._database.transaction() as connection:
+            now = self._now()
+            day = now.astimezone(SEOUL).date()
             row = connection.execute(
-                "SELECT payload FROM day_records WHERE day=?", (day.isoformat(),)
+                "SELECT revision,payload FROM day_records WHERE day=?", (day.isoformat(),)
             ).fetchone()
-            if row is None:
-                return
-            record = decode_record(json.loads(row["payload"]))
-            if record.day != day:
-                raise SnapshotError("invalid_snapshot")
-            enqueue_departure(connection, record, self._policy, now)
+            # 출근을 입력하지 않은 날짜에는 설정 저장만으로 기록을 만들지 않는다.
+            if row is not None:
+                record = decode_record(json.loads(row["payload"]))
+                if record.day != day or record.revision != row["revision"]:
+                    raise SnapshotError("invalid_snapshot")
+                if record.rules != rules:
+                    record = self._write_revision(connection, replace(record, rules=rules), now)
+                if self._policy is not None:
+                    enqueue_departure(connection, record, self._policy, now)
+            yield
 
     async def save(self, record: DayRecord, expected_revision: int) -> DayRecord:
         """기록·규칙·수정 이력을 같은 작업 스레드에서 확정한다."""
@@ -146,20 +153,30 @@ class SQLiteDayStore:
             current = row["revision"] if row else 0
             if current != expected_revision:
                 raise DayConflictError()
-            saved = replace(record, revision=current + 1, updated_at=self._now().astimezone(UTC))
-            payload = encode_record(saved)
-            connection.execute(
-                "INSERT INTO day_records(day,revision,payload) VALUES(?,?,?) ON CONFLICT(day) DO UPDATE SET revision=excluded.revision,payload=excluded.payload",
-                (saved.day.isoformat(), saved.revision, payload),
-            )
-            connection.execute(
-                "INSERT INTO day_record_revisions(day,revision,payload) VALUES(?,?,?)",
-                (saved.day.isoformat(), saved.revision, payload),
-            )
+            # 첫 입력이 설정 저장을 기다렸다면 쓰기 잠금 안에서 확정된 최신 규칙을 사용한다.
+            if current == 0 and self._current_rules is not None:
+                record = replace(record, rules=self._current_rules())
+            saved = self._write_revision(connection, replace(record, revision=current), self._now())
             # 과거 정정은 기록만 보존하고 알림 큐에는 손대지 않는다.
             if self._policy is not None and record.day == today:
                 enqueue_departure(connection, saved, self._policy, self._now())
             return saved
+
+    def _write_revision(
+        self, connection: sqlite3.Connection, record: DayRecord, now: datetime
+    ) -> DayRecord:
+        """현재 기록과 같은 버전의 수정 이력을 하나의 트랜잭션에 쓴다."""
+        saved = replace(record, revision=record.revision + 1, updated_at=now.astimezone(UTC))
+        payload = encode_record(saved)
+        connection.execute(
+            "INSERT INTO day_records(day,revision,payload) VALUES(?,?,?) ON CONFLICT(day) DO UPDATE SET revision=excluded.revision,payload=excluded.payload",
+            (saved.day.isoformat(), saved.revision, payload),
+        )
+        connection.execute(
+            "INSERT INTO day_record_revisions(day,revision,payload) VALUES(?,?,?)",
+            (saved.day.isoformat(), saved.revision, payload),
+        )
+        return saved
 
 
 def encode_record(record: DayRecord) -> str:

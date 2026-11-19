@@ -4,17 +4,12 @@ from collections.abc import Callable
 
 from AppKit import (
     NSApplication,
-    NSBackingStoreBuffered,
-    NSColor,
-    NSImage,
     NSLineBreakByTruncatingTail,
     NSNoBorder,
     NSScreen,
     NSScrollView,
     NSView,
-    NSWindowStyleMaskBorderless,
 )
-from Foundation import NSObject
 
 from src.domain.calendar import CalendarPreferences
 from src.presentation.calendar_agenda import CalendarAgenda
@@ -28,8 +23,8 @@ from src.presentation.calendar_controls import (
 from src.presentation.calendar_filter_popover import CalendarFilterPopover
 from src.presentation.calendar_grid import CalendarGrid
 from src.presentation.calendar_style import attendance_hint, attendance_summary, item_summary
-from src.presentation.glass_panel import KeyablePanel
-from src.presentation.native_views import button, card, frame, glass_container, label
+from src.presentation.glass_panel import auxiliary_window
+from src.presentation.native_views import card, frame, glass_container, label
 
 COMPACT_CALENDAR_HEIGHT = 324.0
 
@@ -123,16 +118,6 @@ class CompactCalendarView:
         self._second.setStringValue_(lines[1] if len(lines) > 1 else "")
 
 
-class CalendarWindowActions(NSObject):
-    """독립 창 닫기는 달력 상태나 메인 표시 선택을 바꾸지 않는다."""
-
-    owner: "CalendarWindow"
-
-    def close_(self, sender: object) -> None:
-        """선택 날짜와 필터를 보존하고 창만 숨긴다."""
-        self.owner.close()
-
-
 class CalendarWindow:
     """좌측 표시 항목·월 격자·오른쪽 날짜 상세를 동시에 보여준다."""
 
@@ -150,26 +135,13 @@ class CalendarWindow:
         """메인 달력과 같은 상태·설정 콜백을 주입한다."""
         self.controller, self.preferences = controller, preferences
         self._choices = choices
-        self._actions = CalendarWindowActions.alloc().init()
-        self._actions.owner = self
         screen = NSScreen.mainScreen()
         height = min(700.0, max(620.0, screen.visibleFrame()[1][1] - 80)) if screen else 680.0
         width = 1080.0
-        self._window = KeyablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            frame(0, 0, width, height), NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False
-        )
-        self._window.setTitle_("캘린더")
-        self._window.setReleasedWhenClosed_(False)
-        self._window.setOpaque_(False)
-        self._window.setBackgroundColor_(NSColor.clearColor())
-        self._window.setHasShadow_(False)
-        self._window.setBecomesKeyOnlyIfNeeded_(False)
-        self._window.setHidesOnDeactivate_(False)
-        self._window.setMovableByWindowBackground_(True)
-        self._window.center()
+        self._window = auxiliary_window("캘린더", width, height)
         content = NSView.alloc().initWithFrame_(frame(0, 0, width, height))
         self._window.setContentView_(glass_container(content, width, height))
-        label(content, "캘린더", 20, height - 48, 150, size=20, bold=True)
+        label(content, "캘린더", 82, height - 48, 90, size=20, bold=True)
         card(content, 16, 50, 154, height - 124)
         label(content, "표시할 항목", 28, height - 108, 130, size=12, bold=True)
         self.filters = CalendarFilters(content, 28, height - 148, toggle, viewport=height - 182)
@@ -192,10 +164,6 @@ class CalendarWindow:
         content.addSubview_(scroll)
         self.agenda = CalendarAgenda(scroll, controller, open_item)
         self._status = label(content, "", 190, 20, 850, size=12, secondary=True)
-        close = button(content, "", 1038, height - 48, 26, self._actions, "close:", bordered=False)
-        close.setImage_(
-            NSImage.imageWithSystemSymbolName_accessibilityDescription_("xmark", "캘린더 닫기")
-        )
 
     def show(self) -> None:
         """메인 표시가 꺼져 있어도 독립적으로 현재 월을 연다."""
@@ -211,7 +179,7 @@ class CalendarWindow:
 
     def close(self) -> None:
         """창만 닫고 다음 열기의 날짜와 표시 선택은 보존한다."""
-        self._window.orderOut_(None)
+        self._window.close()
 
     def render(self, enabled: bool) -> None:
         """현재 상태를 두 화면에 같은 날짜·필터로 표시한다."""

@@ -5,13 +5,6 @@
   font-style: normal;
   font-display: swap;
 }
-@font-face {
-  font-family: "Gowun Dodum";
-  src: url("assets/fonts/GowunDodum-headings.ttf") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
 :root {
   color-scheme: light;
   --ink: #1d1d1f;
@@ -49,9 +42,9 @@ nav { gap: clamp(1.1rem, 2.5vw, 2.2rem); font-size: .91rem; font-weight: 555; }
 .hero-surface { margin-top: -3.8rem; padding-top: 3.8rem; background: radial-gradient(ellipse at 87% 19%, #d5e6ff 0%, transparent 47%), radial-gradient(ellipse at 61% 90%, #ebe6ff 0%, transparent 58%), linear-gradient(120deg,#f9fbff 15%,#edf3ff 75%); }
 .hero { display: grid; grid-template-columns: minmax(0,.84fr) minmax(0,1.16fr); gap: 2.5%; align-items: center; padding-block: clamp(1.05rem, 1.8vw, 1.8rem); }
 h1, .gallery h2, .install-lead > h2 {
-  font-family: "Gowun Dodum", "Pretendard Variable", sans-serif;
-  font-weight: 400;
-  letter-spacing: -.025em;
+  font-family: "Apple SD Gothic Neo", "Pretendard Variable", system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -.035em;
 }
 .hero-copy { container-type: inline-size; }
 h1 { font-size: min(4.3rem, 4.5vw, 11.3cqi); line-height: 1.18; word-spacing: .02em; margin: .72rem 0 .82rem; }

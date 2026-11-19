@@ -11,6 +11,7 @@ import pytest
 from src.application.errors import SnapshotError
 from src.application.use_cases.synchronize import synchronize
 from src.domain.models import CalendarEvent, Leave, Period, SourceMapping, Task, WorkItem
+from src.domain.task_changes import AssignedTaskChangePolicy
 from src.infrastructure.notion.normalization import normalize_page
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.serialization import fingerprint
@@ -35,6 +36,31 @@ async def test_publish_and_missing(db: Database) -> None:
         "SELECT availability FROM item_snapshots WHERE source_id=?", (mapping.source_id,)
     )
     assert rows == [{"availability": "unconfirmed_missing"}]
+
+
+async def test_returning_tasks_compare_with_last_seen_values(db: Database) -> None:
+    """누락을 반복해도 이전 정상 값과 비교해 재등장한 업무의 실제 변경만 기록한다."""
+    mapping = source()
+    item = normalize_page(page(), mapping, OBSERVED)
+    assert isinstance(item, Task)
+    store = SQLiteSnapshots(
+        db, notification_user_id="me", task_change_policy=AssignedTaskChangePolicy()
+    )
+    # 한 조회 묶음을 넘는 입력에서 첫 항목과 마지막 항목의 이전 상태를 구분한다.
+    tasks = [replace(item, id=f"item-{i}") for i in range(160)]
+    for observed in (tasks, [], []):
+        await store.complete_run(await store.begin_run(mapping, OBSERVED), observed, OBSERVED)
+    changed = replace(tasks[-1], status="검토")
+    returned = [changed, *reversed(tasks[:-1])]
+    await store.complete_run(await store.begin_run(mapping, OBSERVED), returned, OBSERVED)
+
+    assert await db.fetch("SELECT item_id,kinds FROM task_changes") == [
+        {"item_id": changed.id, "kinds": '["status"]'}
+    ]
+    assert await db.fetch("SELECT state FROM notification_jobs") == [{"state": "pending"}]
+    assert await db.fetch("SELECT DISTINCT availability FROM item_snapshots") == [
+        {"availability": "present"}
+    ]
 
 
 async def test_rollback(db: Database) -> None:

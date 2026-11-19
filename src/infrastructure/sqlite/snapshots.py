@@ -166,9 +166,10 @@ class SQLiteSnapshots:
               observed_at=excluded.observed_at,availability='present'""",
                 (run.source_id, run.mapping_hash, completed_at, run.id),
             )
-            # 누락은 삭제 근거가 아니므로 마지막 정상 값은 보존한다.
+            # 처음 누락된 행만 전환하고, 계속 누락된 행은 마지막 정상 값과 상태를 보존한다.
             connection.execute(
-                "UPDATE item_snapshots SET availability='unconfirmed_missing' WHERE source_id=? AND last_seen_run_id<>?",
+                """UPDATE item_snapshots SET availability='unconfirmed_missing'
+                WHERE source_id=? AND availability='present' AND last_seen_run_id<>?""",
                 (run.source_id, run.id),
             )
             connection.execute(

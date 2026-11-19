@@ -2,9 +2,10 @@
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict
 from datetime import datetime
+from itertools import batched
 
 from src.application.errors import QueryReadError, SnapshotError
 from src.application.models import SyncRun
@@ -22,10 +23,10 @@ def facts_hash(facts: TaskFacts) -> str:
     return fingerprint(asdict(facts))
 
 
-def task_from_payload(payload: str, source_id: str) -> Task:
+def task_from_payload(payload: str, source: SourceMapping) -> Task:
     """손상된 이전 자료를 없는 업무로 가장하지 않는다."""
     value: object = json.loads(payload)
-    item = decode_item(value, SourceMapping("task", source_id, {}))
+    item = decode_item(value, source)
     if not isinstance(item, Task):
         raise QueryReadError()
     return item
@@ -54,6 +55,24 @@ def outstanding_task_jobs(
     return grouped
 
 
+def tasks_with_previous(
+    connection: sqlite3.Connection, source_id: str, items: Sequence[WorkItem]
+) -> Iterator[tuple[Task, sqlite3.Row | None]]:
+    """이번 수집에 있는 업무의 이전 원문만 묶어서 읽고 입력 순서로 돌려준다."""
+    tasks = (item for item in items if isinstance(item, Task))
+    for batch in batched(tasks, 128):
+        # 누락 후 돌아온 업무도 마지막 정상 값과 비교한다. 한 번에 보관하는 원문 수는 제한한다.
+        placeholders = ",".join("?" for _ in batch)
+        rows = connection.execute(
+            f"""SELECT item_id,payload,mapping_hash FROM item_snapshots
+            WHERE source_id=? AND item_id IN ({placeholders})""",
+            (source_id, *(item.id for item in batch)),
+        )
+        previous = {row["item_id"]: row for row in rows}
+        for item in batch:
+            yield item, previous.get(item.id)
+
+
 def record_task_changes(
     connection: sqlite3.Connection,
     run: SyncRun,
@@ -75,23 +94,19 @@ def record_task_changes(
             (scope,),
         )
         return
-    rows = connection.execute(
-        "SELECT item_id,payload,mapping_hash FROM item_snapshots WHERE source_id=?",
-        (run.source_id,),
-    ).fetchall()
-    previous = {row["item_id"]: row for row in rows}
     outstanding = outstanding_task_jobs(connection, run.source_id, user_key)
     now = datetime.fromisoformat(completed_at).timestamp()
-    for item in items:
-        if not isinstance(item, Task):
-            continue
+    # 변경 판단용 복원에는 화면 칼럼이 필요 없으므로 소스당 같은 매핑을 사용한다.
+    comparison_source = SourceMapping("task", run.source_id, {})
+    for item, row in tasks_with_previous(connection, run.source_id, items):
         current_facts = task_facts(item, user)
-        row = previous.get(item.id)
         # 이전 매핑으로만 본 항목은 새 기준으로 삼되 오래된 실행권은 검사한다.
         comparable = row is None or row["mapping_hash"] == run.mapping_hash
         change = None
         if comparable:
-            before = task_from_payload(row["payload"], run.source_id) if row is not None else None
+            before = (
+                task_from_payload(row["payload"], comparison_source) if row is not None else None
+            )
             change = policy.compare(before, item, user)
         jobs = outstanding.get(item.id, ())
         if change is None and not jobs:
@@ -172,7 +187,7 @@ def task_job_current(row: dict[str, object], user_id: str | None) -> bool:
     if not isinstance(payload, str) or not isinstance(source, str):
         raise SnapshotError("storage_failed")
     try:
-        current = task_from_payload(payload, source)
+        current = task_from_payload(payload, SourceMapping("task", source, {}))
         facts = task_facts(current, user)
         return facts.assigned and facts_hash(facts) == row["change_after_hash"]
     except (ValueError, TypeError, KeyError):

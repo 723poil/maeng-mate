@@ -12,7 +12,7 @@ from src.application.errors import QueryReadError
 from src.application.ports import SnapshotReader
 from src.application.today_metadata import source_metadata, utc_string
 from src.application.today_models import MainListCard, SourceSnapshot, TodayContext
-from src.domain.display_columns import labelled_values
+from src.domain.display_columns import DisplayColumn, labelled_values
 from src.domain.main_list import STATUS_GROUP_NAMES
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
 from src.domain.policies import RelevancePolicy
@@ -83,15 +83,13 @@ def empty_groups() -> dict[str, list[dict[str, object]]]:
     return {"tasks": [], "qa": [], "meetings": [], "leaves": [], "otherEvents": []}
 
 
-def desktop_fields(item: WorkItem, context: TodayContext) -> dict[str, object]:
+def desktop_fields(
+    columns: tuple[DisplayColumn, ...], values: Mapping[str, str]
+) -> dict[str, object]:
     """임의 칼럼은 관리자 메뉴바 응답에만 사용한다."""
-    columns = context.display_columns.get(item.source_id)
-    if columns is None:
-        return {}
     return {
         "displayFields": [
-            {"label": name, "value": value}
-            for name, value in labelled_values(columns, item.display_values)
+            {"label": name, "value": value} for name, value in labelled_values(columns, values)
         ]
     }
 
@@ -169,6 +167,7 @@ def main_list_values(
 
 
 type SortValues = dict[tuple[str, str], dict[str, str]]
+type PreviewValues = dict[tuple[str, str], Mapping[str, str]]
 type ScopedRow = tuple[str, WorkItem, dict[str, object]]
 
 
@@ -302,11 +301,12 @@ def main_card_rows(
 
 def desktop_card_previews(
     areas: dict[str, list[dict[str, object]]],
-    ordering: Mapping[str, str],
-    cards: Mapping[str, MainListCard],
+    context: TodayContext,
     sort_values: SortValues,
+    preview_values: PreviewValues,
 ) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
     """별도 정렬을 지정한 경우에만 스냅샷 행을 재배치한다."""
+    ordering, cards = context.desktop_areas, context.main_cards
     if not ordering:
         return {}, {}
     result: dict[str, dict[str, object]] = {}
@@ -316,6 +316,9 @@ def desktop_card_previews(
     area_count = len(areas.keys() - cards.keys()) + len(category_rules)
     limit = max(1, 500 // area_count)
     budget = 640_000 // area_count
+    preview = partial(
+        desktop_preview, limit=limit, budget=budget, context=context, preview_values=preview_values
+    )
     for source_id, items in areas.items():
         order = ordering[source_id]
         if order == "title":
@@ -326,7 +329,7 @@ def desktop_card_previews(
             categories.setdefault(cards[source_id].key, []).extend(items)
             continue
         result[source_id] = {
-            "items": desktop_preview(items, limit, budget),
+            "items": preview(items),
             "count": len(items),
             "calendar": bool(items and "period" in items[0]),
         }
@@ -337,17 +340,27 @@ def desktop_card_previews(
             card.rules.order(
                 items, lambda row: sort_values[(str(row["sourceId"]), str(row["id"]))], card.kinds
             )
-        category_areas[key] = {"items": desktop_preview(items, limit, budget), "count": len(items)}
+        category_areas[key] = {"items": preview(items), "count": len(items)}
     return result, category_areas
 
 
 def desktop_preview(
-    items: list[dict[str, object]], limit: int, budget: int
+    items: list[dict[str, object]],
+    *,
+    limit: int,
+    budget: int,
+    context: TodayContext,
+    preview_values: PreviewValues,
 ) -> list[dict[str, object]]:
     """긴 비고가 있어도 카드가 조회 한도 안에서 일부 행부터 표시되게 한다."""
     selected: list[dict[str, object]] = []
     used = 0
     for item in items[:limit]:
+        # 앞순위 행에만 표시 칼럼을 붙인 뒤 최종 응답과 같은 JSON 크기를 잰다.
+        source_id = str(item["sourceId"])
+        values = preview_values.get((source_id, str(item["id"])))
+        if values is not None:
+            item.update(desktop_fields(context.display_columns[source_id], values))
         used += len(json.dumps(item, ensure_ascii=True)) + 2
         if selected and used > budget:
             break
@@ -390,14 +403,23 @@ class PersonalWorkSelection:
     max_rows: int
     sort_values: SortValues
 
-    def rows(self, context: TodayContext) -> Iterator[tuple[str, str, dict[str, object]]]:
-        """모든 후보의 완료 경고를 기록하고 관리자 조회에서만 추가 칼럼을 붙인다."""
+    def rows(
+        self,
+        context: TodayContext,
+        *,
+        preview_values: PreviewValues | None = None,
+    ) -> Iterator[tuple[str, str, dict[str, object]]]:
+        """모든 행의 경고를 확인하고, 카드 미리보기는 정렬 후 표시값을 만들도록 원본을 남긴다."""
         for source, batch in self.batches:
             for group, item, row in batch:
                 if row.get("completionState") == "unknown" and not self.metadata["warnings"]:
                     self.metadata["warnings"] = ["completion_status_unconfigured"]
-                if item.source_id in context.display_columns:
-                    row.update(desktop_fields(item, context))
+                columns = context.display_columns.get(item.source_id)
+                if columns is not None:
+                    if preview_values is not None and source.source_id in context.desktop_areas:
+                        preview_values[(item.source_id, item.id)] = item.display_values
+                    else:
+                        row.update(desktop_fields(columns, item.display_values))
                 yield source.source_id, group, row
 
 
@@ -483,7 +505,8 @@ async def read_personal_work(
     selection = await read_personal_sources(requested_date, reader, context, policy, now)
     groups = empty_groups()
     areas: dict[str, list[dict[str, object]]] = {key: [] for key in context.desktop_areas}
-    for source_id, name, row in selection.rows(context):
+    preview_values: PreviewValues = {}
+    for source_id, name, row in selection.rows(context, preview_values=preview_values):
         area = areas.get(source_id)
         (groups[name] if area is None else area).append(row)
     for name, values in groups.items():
@@ -492,6 +515,6 @@ async def read_personal_work(
         else:
             values.sort(key=event_sort_key)
     desktop_areas, category_areas = desktop_card_previews(
-        areas, context.desktop_areas, context.main_cards, selection.sort_values
+        areas, context, selection.sort_values, preview_values
     )
     return PersonalWorkRows(selection.metadata, groups, desktop_areas, category_areas)

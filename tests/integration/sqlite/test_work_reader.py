@@ -191,3 +191,50 @@ async def test_search_pages_keep_global_order_count_and_warnings(db: Database) -
         assert result["totalCount"] == 8
         assert result["nextOffset"] == (offset + 2 if offset < 6 else None)
         assert result["warnings"] == ["completion_status_unconfigured"]
+
+
+async def test_sorted_card_preview_uses_display_columns_from_each_source(db: Database) -> None:
+    """두 소스에 같은 항목 ID가 있어도 정렬 뒤 각 소스의 칼럼과 표시 길이를 적용한다."""
+    from datetime import datetime
+
+    from src.application.today_models import MainListCard, TodayContext
+    from src.application.use_cases.get_my_today import get_my_today
+    from src.domain.main_list import ListSort, MainListRules
+    from src.domain.models import Task
+    from src.domain.policies import AssignmentPolicy
+
+    first, second = source(), source()
+    layouts = {
+        first.source_id: (DisplayColumn("t", "첫 표", "title"),),
+        second.source_id: (DisplayColumn("t", "둘째 표", "title"),),
+    }
+    sources = tuple(replace(s, display_columns=layouts[s.source_id]) for s in (first, second))
+    card = MainListCard("combined", MainListRules(sorts=(ListSort("title"),)), {"title": "text"})
+    store = SQLiteSnapshots(db)
+    for mapping, title in zip(sources, ("B", "A"), strict=True):
+        original = normalize_page(page(), mapping, OBSERVED)
+        assert isinstance(original, Task)
+        item = replace(original, title=title, display_values={"t": title * 300})
+        await store.complete_run(await store.begin_run(mapping, OBSERVED), [item], OBSERVED)
+    context = TodayContext(
+        "me",
+        sources,
+        desktop_areas={s.source_id: "default" for s in sources},
+        main_cards={s.source_id: card for s in sources},
+        display_columns=layouts,
+    )
+    result = await get_my_today(
+        None,
+        SQLiteWorkReader(db),
+        context,
+        AssignmentPolicy(),
+        lambda: datetime.fromisoformat(OBSERVED),
+    )
+    areas = result["categoryAreas"]
+    assert isinstance(areas, dict)
+    combined = areas["combined"]
+    assert combined["count"] == 2
+    assert [row["displayFields"] for row in combined["items"]] == [
+        [{"label": "둘째 표", "value": "A" * 240}],
+        [{"label": "첫 표", "value": "B" * 240}],
+    ]

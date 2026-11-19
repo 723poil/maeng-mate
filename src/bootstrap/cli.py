@@ -13,16 +13,36 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="maeng-mate")
     parser.add_argument(
         "command",
-        choices=["api", "migrate", "sync", "mcp", "run", "menubar", "service", "agent", "settings"],
+        choices=[
+            "api",
+            "migrate",
+            "sync",
+            "mcp",
+            "run",
+            "menubar",
+            "service",
+            "agent",
+            "settings",
+            "restore",
+        ],
     )
     parser.add_argument("action", nargs="?")
     parser.add_argument("--file", type=str, help="최초로 가져올 업무 설정 JSON")
     args = parser.parse_args()
-    if args.command not in {"service", "agent", "settings"} and args.action is not None:
+    if args.command not in {"service", "agent", "settings", "restore"} and args.action is not None:
         parser.error("이 명령은 하위 동작을 받지 않습니다.")
     if args.file is not None and (args.command, args.action) != ("settings", "import-work"):
         parser.error("--file은 settings import-work에서만 사용합니다.")
     try:
+        if args.command == "restore":
+            from src.bootstrap.backup_restore import run_restore
+
+            run_restore(args.action)
+            return
+        if args.command in {"settings", "migrate", "sync", "api", "menubar", "run", "agent"}:
+            from src.bootstrap.backup_restore import guard_startup
+
+            guard_startup(allow_trial=args.command in {"menubar", "run", "agent"})
         if args.command == "settings":
             from src.bootstrap.runtime_settings import import_runtime_settings
 

@@ -27,6 +27,7 @@ class SettingsPage(Enum):
     WORK_RULES = ("근무 규칙", "clock")
     CATEGORIES = ("카테고리", "tag")
     SOURCES = ("수집 소스", "square.stack")
+    BACKUP = ("데이터 백업", "externaldrive")
     NOTION = ("Notion", "person.crop.square", True)
     SLACK = ("Slack", "bubble.left.and.bubble.right", True)
     MCP = ("MCP", "network", True)

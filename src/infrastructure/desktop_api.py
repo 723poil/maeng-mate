@@ -174,7 +174,7 @@ class DesktopApi:
         try:
             with self._client() as client:
                 day = day_view(self._payload(client.get("/v1/day")))
-                status = self._payload(client.get("/v1/status"))
+                status = self._payload(client.get("/v1/status", params={"desktop": True}))
                 response = client.get("/v1/today", params={"date": day.update.day, "desktop": True})
                 work_error = response.status_code == 503
                 today = self._payload(response) if not work_error else None
@@ -195,6 +195,9 @@ class DesktopApi:
                     else None,
                     integer(raw.get("retryingSources", 0)),
                     integer(raw.get("maxRetryAttempt", 0)),
+                    active_source_id=text(raw["activeSourceId"])
+                    if raw.get("activeSourceId") is not None
+                    else None,
                 )
             if today is None:
                 return DesktopSnapshot(

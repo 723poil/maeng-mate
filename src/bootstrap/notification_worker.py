@@ -3,6 +3,8 @@
 import threading
 
 from src.application.notifications import NotificationRunner
+from src.bootstrap.backup_transaction import pending_restore
+from src.bootstrap.instance import application_directory
 
 
 class NotificationWorker:
@@ -25,8 +27,10 @@ class NotificationWorker:
         """한 번 요청한 작업을 재전송하지 않고 다음 due 작업을 확인한다."""
         while not self._stop.is_set():
             try:
-                failed = self._runner.run_once()
-                self._error = "알림 요청 확인 필요" if failed else None
+                # 시험 기동이 실패하면 원래 DB로 돌아가므로 복원 확정 후 발송을 시작한다.
+                if not pending_restore(application_directory()):
+                    failed = self._runner.run_once()
+                    self._error = "알림 요청 확인 필요" if failed else None
             except Exception:
                 self._error = "알림 연결 확인 필요"
             self._stop.wait(5)

@@ -11,10 +11,12 @@ from functools import partial
 from pathlib import Path
 from types import FrameType
 
+from src.application.data_backup import DataBackupActions
 from src.application.desktop import preview_departure
 from src.application.notifications import NotificationRunner
 from src.application.runtime_settings_service import RestartOperation
 from src.bootstrap.app_settings import application_environment
+from src.bootstrap.backup_commands import export_backup, launch_restore, preview_backup
 from src.bootstrap.environment import ConfigError, McpEnvironment, local_api_settings
 from src.bootstrap.executable import executable_command, execution_environment
 from src.bootstrap.instance import application_directory, project_root
@@ -108,6 +110,7 @@ def run_menubar(env: Mapping[str, str]) -> None:
             skills=UserSkillInstaller(Path.home()),
             source_client=SourceSettingsApi(environment.api_url, environment.api_token),
             restart_services=restart_services,
+            data_backup=DataBackupActions(export_backup, preview_backup, launch_restore),
             notification_channels=CHANNELS,
             notification_status=notifications.status,
             shutdown_requested=stop_requested.is_set,

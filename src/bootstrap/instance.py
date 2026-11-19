@@ -190,7 +190,7 @@ def stop_owned_process(root: Path, role: Role, *, expected_pid: int | None = Non
 
 @contextmanager
 def coordination_lock(
-    name: Literal["storage", "service"], *, shared: bool = False
+    name: Literal["storage", "service", "restore-trial"], *, shared: bool = False
 ) -> Iterator[None]:
     """데이터 전환과 서비스 관리가 다른 실행과 겹치지 않게 한다."""
     with _state_lock(

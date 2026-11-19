@@ -33,6 +33,7 @@ from Foundation import NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
 
 from src.application.ai_skills import SkillInstaller
 from src.application.calendar import CalendarClient
+from src.application.data_backup import DataBackupActions
 from src.application.desktop import DayUpdate, DesktopClient, DesktopSnapshot
 from src.application.mcp_access import McpSettingsClient
 from src.application.notification_identity import NotificationBranding
@@ -198,6 +199,7 @@ class MenuBarApp:
         source_client: SourceSettingsClient | None = None,
         open_url: Callable[[str], None] = open_browser_url,
         restart_services: Callable[[], RestartOperation] | None = None,
+        data_backup: DataBackupActions | None = None,
         notification_channels: tuple[NotificationChannel, ...] = (
             NotificationChannel("macos", "macOS 알림"),
         ),
@@ -206,6 +208,7 @@ class MenuBarApp:
         today: Callable[[], str] = local_day,
     ) -> None:
         """로컬 연결과 순수 예상시간 계산 유스케이스를 주입받는다."""
+        self._data_backup = data_backup
         self._notification_channels = notification_channels
         self._open_url = open_url
         # 저장 설정을 읽기 전에는 숨긴 업무가 잠깐 노출되지 않게 한다.
@@ -592,6 +595,7 @@ class MenuBarApp:
             self._resize_lists()
             self._application.activateIgnoringOtherApps_(True)
             self._panel.show(self._status_item.button())
+            self._next_refresh = 0
             self._render_calendars()
 
     def _selection(self) -> DayUpdate | None:
@@ -756,6 +760,15 @@ class MenuBarApp:
                         "미기록" if snapshot.day.update.attendance is None else "저장됨"
                     )
             self._render()
+            # 열린 패널에서 수집할 때만 다음 조회를 앞당겨 소스 전환과 종료를 따라간다.
+            if (
+                operation in {"fetch", "interval"}
+                and self._panel.is_visible()
+                and self._controller.connected
+                and snapshot is not None
+                and snapshot.collection.running
+            ):
+                self._next_refresh = time.monotonic() + 2
         if (
             self._dirty
             and not self._save_blocked
@@ -826,7 +839,7 @@ class MenuBarApp:
             and snapshot is not None
             and snapshot.collection.enabled
         )
-        if loading:
+        if loading and (not collecting or controller.operation == "interval"):
             self._collection.setStringValue_(
                 "주기 저장 중…" if controller.operation == "interval" else "새로고침 중…"
             )
@@ -860,6 +873,7 @@ class MenuBarApp:
         if snapshot is None:
             title = "연결 확인 필요" if controller.error else "연결 중"
             self._collection.setStringValue_(title)
+            self._collection.setToolTip_(title)
             self._set_status_description(title)
             self._render_activity()
             return
@@ -884,7 +898,15 @@ class MenuBarApp:
         if disconnected:
             title = "로컬 앱 연결 끊김"
         elif collection.running:
-            title = "수집 중"
+            name = next(
+                (
+                    source.name or source.title
+                    for source in self._source_display
+                    if source.id == collection.active_source_id
+                ),
+                None,
+            )
+            title = f"수집 중 · {name}" if name else "수집 중"
         elif collection.retrying:
             title = f"재시도 대기 · {collection.retry_attempt}/3"
         elif failed:
@@ -913,6 +935,7 @@ class MenuBarApp:
         else:
             title = "수집 대기"
         self._collection.setStringValue_(title)
+        self._collection.setToolTip_(title)
         self._collection_icon.setContentTintColor_(
             NSColor.systemOrangeColor() if attention else NSColor.systemGreenColor()
         )
@@ -1174,6 +1197,7 @@ class MenuBarApp:
                 self._pending_work_edits,
                 self._source_editor,
                 self._source_client,
+                self._data_backup,
             )
         self._settings_window.show()
 

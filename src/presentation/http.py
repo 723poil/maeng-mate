@@ -54,6 +54,7 @@ def create_app(
     *,
     query_desktop_today: TodayQuery | None = None,
     query_periodic: PeriodicStatusQuery | None = None,
+    query_desktop_periodic: PeriodicStatusQuery | None = None,
     update_interval: IntervalUpdate | None = None,
     day_service: DayUseCases | None = None,
     notification_store: NotificationStore | None = None,
@@ -69,6 +70,7 @@ def create_app(
     mcp_server: FastMCP | None = None,
     mcp_query_client: AbstractAsyncContextManager[object] | None = None,
     on_mcp_ready: Callable[[bool], None] | None = None,
+    restore_committed: Callable[[], bool] | None = None,
     work_records_service: WorkRecordsService | None = None,
     work_rules_service: WorkRulesClient | None = None,
     source_settings_service: SourceSettingsClient | None = None,
@@ -107,6 +109,13 @@ def create_app(
         response: Response
         if not header.startswith("Bearer ") or len(header) > 4096:
             response = JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        elif (
+            restore_committed is not None
+            and not restore_committed()
+            and not (internal and request.method == "GET" and request.url.path == "/v1/status")
+        ):
+            # 복원 확정 전에는 내부 준비 검사만 허용한다. MCP 인증도 최근 사용을 기록한다.
+            response = JSONResponse({"detail": "데이터 복원 중입니다."}, status_code=503)
         elif internal and not mcp_path:
             response = await call_next(request)
         elif internal:
@@ -130,12 +139,16 @@ def create_app(
         return response
 
     @app.get("/v1/status")
-    async def status() -> dict[str, object]:
+    async def status(request: Request, desktop: bool = False) -> dict[str, object]:
         """HTTP 요청을 상태 조회 유스케이스에 연결한다."""
         result = query_status()
-        if query_periodic is not None:
+        # 소스 키는 내부 메뉴바 조회에만 포함하고 일반 상태와 MCP에는 집계만 보낸다.
+        query = query_periodic
+        if desktop and not request.scope.get("maeng.mcp_read_only"):
+            query = query_desktop_periodic or query
+        if query is not None:
             try:
-                periodic = await query_periodic()
+                periodic = await query()
             except (SnapshotError, ValueError):
                 raise HTTPException(503, detail="정기 수집 상태를 조회할 수 없습니다.") from None
             result["periodicSync"] = periodic

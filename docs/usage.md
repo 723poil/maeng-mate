@@ -88,6 +88,12 @@ Notion 토큰은 `연동 → Notion`에서 확인 후 저장·연결 확인·삭
 
 내부 API 인증은 Keychain, 시작 위치·포트는 `Application Support/MaengMate/bootstrap.json`, 일반·계정 설정과 수집 주기는 SQLite에 둔다. 소스 매핑·페이지 링크·QA 규칙은 SQLite의 `work_settings` JSON 문서에 저장한다. 링크 입력은 해당 소스의 `pageUrl`만 수정한다. `config` 폴더는 사용하지 않는다.
 
+### 데이터 백업과 전체 복원
+
+**설정 → 데이터 백업 → 백업하기…**에서 저장 위치와 새 파일 이름을 선택한다. `.maengbackup` 파일 하나에 출퇴근 기록, 수집한 업무 데이터, 앱 설정과 근무 규칙이 담긴다. 파일을 다른 Mac으로 옮기는 경우 Notion·Slack 인증과 MCP 접근 권한은 그 Mac에서 설정한다.
+
+**백업 불러오기…**에서 파일을 고르고 생성 시각을 확인한 뒤 **전체 복원**을 누르면 해당 시점의 데이터로 교체하고 앱을 다시 시작한다. 복원 직전 데이터는 `~/Library/Application Support/MaengMate/backups/`의 `pre-restore-*.maengbackup`으로 보관한다. 이 파일도 같은 버튼으로 불러올 수 있다.
+
 ## 로그인 자동 실행
 
 DB를 준비한 뒤 등록한다.

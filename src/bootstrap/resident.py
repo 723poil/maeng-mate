@@ -12,8 +12,11 @@ import uvicorn
 
 from src.application.periodic import PeriodicCollector
 from src.bootstrap.app_settings import application_environment
+from src.bootstrap.backup_restore import guard_startup
+from src.bootstrap.backup_transaction import pending_restore
 from src.bootstrap.collection_wiring import build_collection
 from src.bootstrap.environment import ConfigError, app_environment, required, sync_interval
+from src.bootstrap.instance import application_directory
 from src.bootstrap.notion_credentials import load_notion_environment
 from src.bootstrap.runtime_settings import load_runtime_environment
 from src.bootstrap.storage import require_migrated_database
@@ -107,6 +110,18 @@ async def supervise(
             await api
 
 
+async def wait_for_restore_commit(committed: asyncio.Event, stop: asyncio.Event) -> None:
+    """도우미가 교체를 확정한 뒤에만 조회·기록과 정기 수집을 허용한다."""
+    home = application_directory()
+    while not stop.is_set():
+        if not pending_restore(home):
+            committed.set()
+            return
+        # 도우미가 비정상 종료되면 복구를 요청하고 시험 서버를 종료해 저장 잠금을 돌려준다.
+        guard_startup(allow_trial=True)
+        await asyncio.sleep(0.2)
+
+
 async def _run_resident(env: Mapping[str, str]) -> None:
     """준비된 개인 설정과 DB로만 API·수집을 명시적으로 시작한다."""
     env = application_environment(env)
@@ -121,6 +136,7 @@ async def _run_resident(env: Mapping[str, str]) -> None:
     settings = load_work_settings(database, prepare_categories=True)
     rules_service = build_work_rules(settings)
     stop = asyncio.Event()
+    committed = asyncio.Event() if pending_restore(application_directory()) else None
     # 포트 충돌 시 예약 등록이나 원천 조회까지 진행하지 않는다.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         try:
@@ -149,7 +165,9 @@ async def _run_resident(env: Mapping[str, str]) -> None:
                 settings,
                 notion_legacy_token=legacy_token,
                 work_rules_service=rules_service,
+                restore_committed=committed.is_set if committed is not None else None,
                 periodic_status=collector.read_status if collector else None,
+                desktop_periodic_status=collector.read_desktop_status if collector else None,
                 update_interval=collector.set_interval if collector else None,
             )
             server = ResidentServer(
@@ -177,11 +195,16 @@ async def _run_resident(env: Mapping[str, str]) -> None:
                     cleanup.callback(signal.signal, sig, previous)
                     cleanup.callback(loop.remove_signal_handler, sig)
 
-                async def wait_for_stop(stop_event: asyncio.Event) -> None:
-                    """인증 미등록이어도 API를 유지하고 외부 수집은 실행하지 않는다."""
-                    await stop_event.wait()
+                async def collect_when_ready(stop_event: asyncio.Event) -> None:
+                    """시험 기동 중에는 외부 수집을 미루고 확정 후 일반 실행으로 전환한다."""
+                    if committed is not None:
+                        await wait_for_restore_commit(committed, stop_event)
+                    if collector is None or stop_event.is_set():
+                        await stop_event.wait()
+                    else:
+                        await collector.run(stop_event)
 
-                await supervise(server, collector.run if collector else wait_for_stop, stop)
+                await supervise(server, collect_when_ready, stop)
 
 
 async def run_resident(env: Mapping[str, str]) -> None:

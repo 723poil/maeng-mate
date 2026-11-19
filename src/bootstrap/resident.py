@@ -150,6 +150,7 @@ async def _run_resident(env: Mapping[str, str]) -> None:
                 notion_legacy_token=legacy_token,
                 work_rules_service=rules_service,
                 periodic_status=collector.read_status if collector else None,
+                desktop_periodic_status=collector.read_desktop_status if collector else None,
                 update_interval=collector.set_interval if collector else None,
             )
             server = ResidentServer(

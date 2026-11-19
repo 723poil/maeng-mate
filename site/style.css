@@ -5,6 +5,13 @@
   font-style: normal;
   font-display: swap;
 }
+@font-face {
+  font-family: "Paperlogy";
+  src: url("assets/fonts/Paperlogy-6SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
 :root {
   color-scheme: light;
   --ink: #1d1d1f;
@@ -43,7 +50,13 @@ nav { gap: clamp(1.1rem, 2.5vw, 2.2rem); font-size: .91rem; font-weight: 555; }
 .hero { display: grid; grid-template-columns: minmax(0,.84fr) minmax(0,1.16fr); gap: 2.5%; align-items: center; padding-block: clamp(1.05rem, 1.8vw, 1.8rem); }
 .release { gap: .48rem; color: #364961; font-size: .875rem; width: fit-content; }
 .release span { font-size: .8rem; font-weight: 650; font-variant-numeric: tabular-nums; color: #285582; border: 1px solid #bacde1; background: #ffffff85; border-radius: 1rem; padding: .19rem .58rem; }
-h1 { font-size: clamp(2.85rem, 4.5vw, 4.3rem); font-weight: 730; line-height: 1.12; letter-spacing: -.05em; word-spacing: .02em; margin: .72rem 0 .82rem; }
+h1, .features > h2, .install-lead > h2 {
+  font-family: "Paperlogy", "Pretendard Variable", sans-serif;
+  font-weight: 600;
+  letter-spacing: -.035em;
+}
+.hero-copy { container-type: inline-size; }
+h1 { font-size: min(4.3rem, 4.5vw, 11.3cqi); line-height: 1.18; word-spacing: .02em; margin: .72rem 0 .82rem; }
 .hero-copy > p { color: #4b525f; font-size: clamp(1.04rem, 1.32vw, 1.2rem); line-height: 1.54; letter-spacing: -.019em; }
 .actions { flex-wrap: wrap; gap: 1.05rem; margin: 1.1rem 0 .46rem; }
 .button { width: fit-content; gap: .52rem; background: var(--blue); border-radius: 2rem; color: white; font-size: 1rem; font-weight: 650; padding: .86rem 1.34rem; box-shadow: inset 0 1px 1px #ffffff35,0 3px 8px #0066cc15; }
@@ -110,7 +123,6 @@ footer div { display: flex; gap: 1.4rem; font-size: .9rem; color: var(--muted); 
 .lightbox > a { display: block; margin: .6rem .3rem 0; font-size: .88rem; }
 @media (max-width: 910px) {
   .wide { display: none; }
-  h1 { font-size: clamp(2.9rem, 5.8vw, 3.7rem); }
   .hero { gap: 3%; }
   .menubar { gap: .6rem; padding-inline: .7rem; }
   .demo summary { margin-right: 7.4rem; }

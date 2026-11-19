@@ -21,12 +21,13 @@ def load_work_settings(database: Database, *, prepare_categories: bool = False) 
     """서버 시작에서만 이전 카테고리 구조를 갱신한다."""
     try:
         store = SQLiteWorkSettings(database)
-        document = store.prepare_categories() if prepare_categories else store.read()
-        if document is None:
+        stored = store.prepare_categories() if prepare_categories else store.read_validated()
+        if stored is None:
             raise ConfigError(
                 "업무 설정을 먼저 가져오세요: settings import-work --file <JSON 경로>"
             )
-        return parse_settings(document.payload)
+        _, settings = stored
+        return settings
     except (SnapshotError, WorkSettingsError):
         raise ConfigError(
             "DB의 업무 설정을 확인하세요. migrate 실행 여부와 JSON 구조를 확인하세요."

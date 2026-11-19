@@ -76,8 +76,13 @@ class SQLiteWorkSettings:
 
     def read(self) -> WorkSettingsDocument | None:
         """일반 실행은 설정 문서만 읽고 파일을 생성하거나 이전하지 않는다."""
+        stored = self.read_validated()
+        return stored[0] if stored is not None else None
+
+    def read_validated(self) -> tuple[WorkSettingsDocument, Settings] | None:
+        """편집기는 읽기 트랜잭션에서 검증한 매핑으로 같은 버전의 화면을 구성한다."""
         with self._database.transaction(read_only=True) as connection:
-            return read_document(connection)
+            return _read_validated(connection)
 
     def initialize(
         self, payload: dict[str, object], *, replace_initial: bool = False
@@ -118,23 +123,23 @@ class SQLiteWorkSettings:
             _write(connection, revision, document)
         return WorkSettingsDocument(revision, document)
 
-    def prepare_categories(self) -> WorkSettingsDocument | None:
+    def prepare_categories(self) -> tuple[WorkSettingsDocument, Settings] | None:
         """이전 그룹·표시·알림 선택을 서버 시작 전에 원자적으로 이전한다."""
-        with self._database.transaction(read_only=True) as connection:
-            stored = _read_validated(connection)
+        stored = self.read_validated()
         if stored is None:
             return None
         observed, settings = stored
         if settings_up_to_date(observed, settings):
-            return observed
+            return stored
         with self._database.transaction() as connection:
-            current = read_document(connection)
-            if current is None:
+            latest = _read_validated(connection)
+            if latest is None:
                 return None
             # 읽기 잠금을 놓은 뒤 다른 창이 저장했을 수 있어 방금 읽은 버전을 이전한다.
+            current, _ = latest
             upgrade = upgrade_work_settings(current)
             if upgrade is None:
-                return current
+                return latest
             document = upgrade.document
             settings = _write(connection, document.revision, document.payload)
             if upgrade.category_keys is not None:
@@ -144,7 +149,7 @@ class SQLiteWorkSettings:
                         connection,
                         upgrade_category_preferences(preferences, upgrade.category_keys, settings),
                     )
-            return document
+            return document, settings
 
     def save_links(self, revision: int, links: Mapping[str, str | None]) -> WorkSettingsDocument:
         """주소만 고치며 매핑·규칙을 보존하고 동시 수정은 덮어쓰지 않는다."""
@@ -176,7 +181,7 @@ class SQLiteWorkSettings:
         payload: dict[str, object],
         *,
         event_selections: tuple[EventAlertSelection, ...] = (),
-    ) -> WorkSettingsDocument:
+    ) -> tuple[WorkSettingsDocument, Settings]:
         """읽은 버전이 유지될 때만 소스와 카테고리 변경을 함께 확정한다."""
         with self._database.transaction() as connection:
             stored = _read_validated(connection)
@@ -196,7 +201,7 @@ class SQLiteWorkSettings:
                 save_event_subscriptions(
                     connection, before, after, event_selections, self._notification_groups
                 )
-                return WorkSettingsDocument(revision + 1, payload)
+                return WorkSettingsDocument(revision + 1, payload), after
         raise WorkSettingsError("conflict")
 
 

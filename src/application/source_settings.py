@@ -114,8 +114,8 @@ class ProviderSources:
 class SourceSettingsStore(Protocol):
     """공통 JSON에서 소스 목록만 편집하는 저장 계약이다."""
 
-    def read(self) -> WorkSettingsDocument | None:
-        """현재 설정 버전을 조회한다."""
+    def read_validated(self) -> tuple[WorkSettingsDocument, Settings] | None:
+        """같은 읽기에서 얻은 설정 문서와 검증된 매핑을 반환한다."""
         ...
 
     def save_document(
@@ -124,8 +124,8 @@ class SourceSettingsStore(Protocol):
         payload: dict[str, object],
         *,
         event_selections: tuple[EventAlertSelection, ...] = (),
-    ) -> WorkSettingsDocument:
-        """같은 버전의 설정 문서를 한 번에 저장한다."""
+    ) -> tuple[WorkSettingsDocument, Settings]:
+        """같은 버전에서 저장한 문서와 실제로 확정한 매핑을 반환한다."""
         ...
 
 
@@ -271,12 +271,14 @@ class SourceSettingsService:
 
     def read(self) -> SourceSettingsState:
         """탭 조회는 외부를 호출하지 않고 설정 JSON만 읽는다."""
-        current = self._store.read() or WorkSettingsDocument(0, empty_work_settings())
-        return self._state(current)
+        stored = self._store.read_validated()
+        if stored is None:
+            current = WorkSettingsDocument(0, empty_work_settings())
+            return self._state(current, parse_settings(current.payload))
+        return self._state(*stored)
 
-    def _state(self, current: WorkSettingsDocument) -> SourceSettingsState:
+    def _state(self, current: WorkSettingsDocument, parsed: Settings) -> SourceSettingsState:
         """현재 실행과 저장된 의미 매핑만 비교한다."""
-        parsed = parse_settings(current.payload)
         pending = mapping_signature(parsed) != self._active
         return SourceSettingsState(
             SourceDraft(current.revision, canonical_sources(source_documents(current.payload))),
@@ -315,10 +317,10 @@ class SourceSettingsService:
 
     def save(self, value: CollectionDraft) -> SourceSettingsState:
         """카테고리와 수집 연결을 독립적으로 검증하고 한 문서에 저장한다."""
-        current = self._store.read()
-        if current is None or current.revision != value.revision:
+        stored = self._store.read_validated()
+        if stored is None or stored[0].revision != value.revision:
             raise WorkSettingsError("conflict")
-        existing = parse_settings(current.payload)
+        current, existing = stored
         stored_sources = canonical_sources(source_documents(current.payload))
         if isinstance(value, CategoryDraft):
             categories = allow_enabled_events(value.categories, value.event_selections)
@@ -379,7 +381,7 @@ class SourceSettingsService:
             ):
                 raise SourceSettingsError("저장할 알림 규칙을 다시 선택하세요.")
             return self._state(
-                self._store.save_document(
+                *self._store.save_document(
                     value.revision, payload, event_selections=value.event_selections
                 )
             )
@@ -394,7 +396,7 @@ class SourceSettingsService:
             if schema is None:
                 raise SourceSettingsError("수집할 데이터 소스를 다시 선택하세요.")
             validate_columns(source, schema)
-        return self._state(self._store.save_document(value.revision, payload))
+        return self._state(*self._store.save_document(value.revision, payload))
 
 
 def allow_enabled_events(

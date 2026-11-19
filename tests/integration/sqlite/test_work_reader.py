@@ -150,3 +150,44 @@ async def test_shares_only_current_sources_across_search_scopes(db: Database) ->
     refreshed, retained = await reader.read_sources((one, two))
     assert not refreshed.items and first.items
     assert retained is second
+
+
+async def test_search_pages_keep_global_order_count_and_warnings(db: Database) -> None:
+    """앞·뒤·빈 페이지 모두 다른 소스에 있는 미표시 행까지 개수와 경고에 반영한다."""
+    from datetime import datetime
+
+    from src.application.task_search import TaskSearch
+    from src.application.today_models import TodayContext
+    from src.application.use_cases.search_my_tasks import search_my_tasks
+    from src.domain.models import Task
+    from src.domain.policies import AssignmentPolicy
+
+    tasks, qa = source(), replace(source(), section="qa")
+    store = SQLiteSnapshots(db)
+    for mapping in (tasks, qa):
+        original = normalize_page(page(), mapping, OBSERVED)
+        assert isinstance(original, Task)
+        items = [
+            replace(original, id=f"item-{index}", status="진행 중" if mapping == tasks else "보류")
+            for index in range(4)
+        ]
+        await store.complete_run(await store.begin_run(mapping, OBSERVED), items, OBSERVED)
+
+    context = TodayContext("me", (tasks, qa), {tasks.source_id: ("완료",)})
+    reader = SQLiteWorkReader(db, active_sources=context.sources)
+    # 순위가 낮은 QA 소스에만 완료 기준이 없으므로 첫 페이지에 없는 행도 검사해야 한다.
+    expected = [(mapping.source_id, f"item-{i}") for mapping in (tasks, qa) for i in range(4)]
+    for offset in (0, 2, 4, 6, 8, 100000):
+        result = await search_my_tasks(
+            TaskSearch.parse({"limit": 2, "offset": offset}),
+            reader,
+            context,
+            AssignmentPolicy(),
+            lambda: datetime.fromisoformat(OBSERVED),
+        )
+        rows = result["tasks"]
+        assert isinstance(rows, list)
+        assert [(row["sourceId"], row["id"]) for row in rows] == expected[offset : offset + 2]
+        assert result["totalCount"] == 8
+        assert result["nextOffset"] == (offset + 2 if offset < 6 else None)
+        assert result["warnings"] == ["completion_status_unconfigured"]

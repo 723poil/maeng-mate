@@ -180,7 +180,6 @@ def scoped_rows(
     day: date,
     now: datetime,
     task_filter: Callable[[Task], bool] | None = None,
-    merge_qa: bool = False,
 ) -> Iterator[ScopedRow]:
     """소스의 사람 범위와 일반 오늘 조회의 표시 규칙을 확인한다."""
     if not snapshot.mapping_matches:
@@ -199,7 +198,7 @@ def scoped_rows(
             selected = task_view(item, source, context, day, now)
             if selected is None:
                 continue
-            group = "qa" if selected["section"] == "qa" and not merge_qa else "tasks"
+            group = "qa" if source.section == "qa" else "tasks"
         elif (
             isinstance(item, CalendarEvent)
             and (
@@ -382,7 +381,27 @@ def checked_query_result(payload: dict[str, object]) -> dict[str, object]:
     return payload
 
 
-async def read_personal_work(
+@dataclass(frozen=True)
+class PersonalWorkSelection:
+    """한 읽기 시점의 수집 근거와 아직 표시 목록에 담지 않은 소스별 행이다."""
+
+    metadata: dict[str, object]
+    batches: list[tuple[SourceMapping, Iterator[ScopedRow]]]
+    max_rows: int
+    sort_values: SortValues
+
+    def rows(self, context: TodayContext) -> Iterator[tuple[str, str, dict[str, object]]]:
+        """모든 후보의 완료 경고를 기록하고 관리자 조회에서만 추가 칼럼을 붙인다."""
+        for source, batch in self.batches:
+            for group, item, row in batch:
+                if row.get("completionState") == "unknown" and not self.metadata["warnings"]:
+                    self.metadata["warnings"] = ["completion_status_unconfigured"]
+                if item.source_id in context.display_columns:
+                    row.update(desktop_fields(item, context))
+                yield source.source_id, group, row
+
+
+async def read_personal_sources(
     requested_date: str | None,
     reader: SnapshotReader,
     context: TodayContext,
@@ -390,8 +409,7 @@ async def read_personal_work(
     now: Callable[[], datetime],
     *,
     task_filter: Callable[[Task], bool] | None = None,
-    merge_qa: bool = False,
-) -> PersonalWorkRows:
+) -> PersonalWorkSelection:
     """조회는 저장 자료만 읽으며 수집·확인 커서·발송 상태를 변경하지 않는다."""
     requested_day = parse_day(requested_date) if requested_date is not None else None
     configured = context.sources
@@ -409,12 +427,11 @@ async def read_personal_work(
     by_id = {snapshot.source_id: snapshot for snapshot in snapshots}
     if len(by_id) != len(snapshots):
         raise QueryReadError()
-    groups = empty_groups()
-    areas: dict[str, list[dict[str, object]]] = {key: [] for key in context.desktop_areas}
-    warning = False
+    batches: list[tuple[SourceMapping, Iterator[ScopedRow]]] = []
     sources: list[dict[str, object]] = []
     successful: list[datetime] = []
     sort_values: SortValues = {}
+    max_rows = 0
     for source_order, source in enumerate(configured, 1):
         snapshot = by_id.get(
             source.source_id, SourceSnapshot(source.source_id, source.kind, None, None, False, ())
@@ -432,28 +449,14 @@ async def read_personal_work(
             day,
             observed_now,
             task_filter,
-            merge_qa,
         )
         if card := context.main_cards.get(source.source_id):
             selected = main_card_rows(
                 selected, source, card, context, day, source_order, sort_values
             )
-        # 메인 행은 오늘 조회의 상태·날짜 정렬 전에 소스의 읽기 순서로 분리한다.
-        area = areas.get(source.source_id)
-        for name, item, row in selected:
-            if row.get("completionState") == "unknown":
-                warning = True
-            (groups[name] if area is None else area).append(
-                {**row, **desktop_fields(item, context)}
-            )
-    for name, values in groups.items():
-        if name in {"tasks", "qa"}:
-            values.sort(key=partial(task_sort_key, display_policy=context.task_display_policy))
-        else:
-            values.sort(key=event_sort_key)
-    desktop_areas, category_areas = desktop_card_previews(
-        areas, context.desktop_areas, context.main_cards, sort_values
-    )
+        batches.append((source, selected))
+        if snapshot.mapping_matches:
+            max_rows += len(snapshot.items)
     metadata: dict[str, object] = {
         "date": day.isoformat(),
         "timezone": "Asia/Seoul",
@@ -464,6 +467,31 @@ async def read_personal_work(
         else None,
         "stale": not bool(configured) or any(bool(source["stale"]) for source in sources),
         "sources": sources,
-        "warnings": ["completion_status_unconfigured"] if warning else [],
+        "warnings": [],
     }
-    return PersonalWorkRows(metadata, groups, desktop_areas, category_areas)
+    return PersonalWorkSelection(metadata, batches, max_rows, sort_values)
+
+
+async def read_personal_work(
+    requested_date: str | None,
+    reader: SnapshotReader,
+    context: TodayContext,
+    policy: RelevancePolicy,
+    now: Callable[[], datetime],
+) -> PersonalWorkRows:
+    """오늘 목록과 메인 카드는 소스별 표시 자료를 모두 모아 각 화면 순서로 정렬한다."""
+    selection = await read_personal_sources(requested_date, reader, context, policy, now)
+    groups = empty_groups()
+    areas: dict[str, list[dict[str, object]]] = {key: [] for key in context.desktop_areas}
+    for source_id, name, row in selection.rows(context):
+        area = areas.get(source_id)
+        (groups[name] if area is None else area).append(row)
+    for name, values in groups.items():
+        if name in {"tasks", "qa"}:
+            values.sort(key=partial(task_sort_key, display_policy=context.task_display_policy))
+        else:
+            values.sort(key=event_sort_key)
+    desktop_areas, category_areas = desktop_card_previews(
+        areas, context.desktop_areas, context.main_cards, selection.sort_values
+    )
+    return PersonalWorkRows(selection.metadata, groups, desktop_areas, category_areas)

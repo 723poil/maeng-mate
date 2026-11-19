@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
-from src.application.errors import SOURCE_ERROR_CODES
+from src.application.errors import SOURCE_ERROR_CODES, SnapshotError
 from src.application.models import SyncRun
 from src.domain.models import SourceMapping
 from src.domain.retry import RetryPolicy
@@ -15,7 +15,7 @@ from src.infrastructure.sqlite.serialization import collection_fingerprint
 
 # 실행 시각은 예약과 실행권으로 결정하고, 상태 집계에서만 최신 실행 이력을 연결한다.
 SCHEDULE_TIMES = """
-    SELECT schedule.next_run_at, state.lease_until
+    SELECT schedule.source_id, schedule.next_run_at, state.lease_until
     FROM sync_schedules AS schedule
     JOIN work_source_state AS state ON state.source_id=schedule.source_id
 """
@@ -107,12 +107,20 @@ class SQLiteSchedules:
             [source.source_id for source in sources],
         )
 
-    async def next_delay(self, sources: Sequence[SourceMapping]) -> float:
-        """실행 중인 소스는 lease 만료까지 기다려 반복 경쟁을 피한다."""
+    async def due_sources_and_delay(
+        self, sources: Sequence[SourceMapping]
+    ) -> tuple[tuple[SourceMapping, ...], float]:
+        """실행권이 비고 기한이 된 소스만 설정 순서로 돌려준다."""
         rows = await self._rows(SCHEDULE_TIMES, sources)
-        if not rows:
-            return 60.0
-        return max(0.0, min(effective_due(row) for row in rows) - self._clock())
+        now = self._clock()
+        due_at = {row["source_id"]: effective_due(row) for row in rows}
+        # 초기 설정에서 등록한 예약이 사라졌다면 유휴 상태로 처리할 수 없다.
+        try:
+            due = tuple(source for source in sources if due_at[source.source_id] <= now)
+        except KeyError:
+            raise SnapshotError("storage_failed") from None
+        delay = max(0.0, min(due_at.values()) - now) if due_at else 60.0
+        return due, delay
 
     async def read_status(self, sources: Sequence[SourceMapping]) -> dict[str, object]:
         """인증 응답에 필요한 집계만 제공하고 식별자와 원문은 제외한다."""

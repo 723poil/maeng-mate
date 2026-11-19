@@ -6,28 +6,60 @@ from dataclasses import replace
 import pytest
 
 from src.application.errors import SnapshotError
+from src.application.periodic import PeriodicCollector
 from src.application.use_cases.synchronize import synchronize
 from src.domain.models import SourceMapping, WorkItem
 from src.infrastructure.notion.normalization import normalize_page
 from src.infrastructure.sqlite.connection import Database
+from src.infrastructure.sqlite.schedules import SQLiteSchedules
 from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
 from tests.fixtures.clock import Clock
 from tests.fixtures.notion import OBSERVED, SOURCE, page
 
 
-async def configure(db: Database, clock: Clock, interval: int = 300) -> object:
+async def configure(db: Database, clock: Clock, interval: int = 300) -> SQLiteSchedules:
     """실제 예약 저장소를 준비하며 없는 기능은 명확하게 실패시킨다."""
-    from src.infrastructure.sqlite import schedules
-
-    store = schedules.SQLiteSchedules(db, clock=clock)
+    store = SQLiteSchedules(db, clock=clock)
     await store.configure((SOURCE,), interval)
     return store
 
 
+async def test_idle_collector_can_wait_while_another_writer_holds_db(db: Database) -> None:
+    """예약까지 대기하는 실행기는 다른 쓰기 트랜잭션의 종료를 기다리지 않는다."""
+    clock = Clock()
+    schedules = SQLiteSchedules(db, clock=clock)
+    await schedules.configure((SOURCE,), 300)
+    await schedules.set_interval((SOURCE,), 120)
+    waits: list[float] = []
+
+    async def wait(stop: asyncio.Event, delay: float) -> None:
+        """예약 시각을 기록하고 한 번의 확인으로 종료한다."""
+        waits.append(delay)
+        stop.set()
+
+    class IdleSource:
+        """기한 전에 외부 요청이 발생하면 검증을 실패시킨다."""
+
+        async def collect(self, source: SourceMapping, observed_at: str) -> list[WorkItem]:
+            """유휴 상태에서는 수집할 수 없다."""
+            pytest.fail("기한 전 수집")
+
+    collector = PeriodicCollector(
+        (SOURCE,),
+        IdleSource(),
+        SQLiteSnapshots(db, scheduled=True, clock=clock),
+        schedules,
+        now=clock.now,
+        wait=wait,
+    )
+    with db.transaction():
+        await asyncio.wait_for(collector.run(asyncio.Event()), timeout=2)
+    assert waits == [120]
+    assert await db.fetch("SELECT id FROM sync_runs") == []
+
+
 async def test_schedule_survives_restart_and_skips_missed_ticks(db: Database) -> None:
     """기한 전 재실행을 막고 절전 후에도 한 번만 실행한다."""
-    from src.infrastructure.sqlite.schedules import SQLiteSchedules
-
     clock = Clock()
     await configure(db, clock)
     store = SQLiteSnapshots(db, scheduled=True, clock=clock)
@@ -36,20 +68,18 @@ async def test_schedule_survives_restart_and_skips_missed_ticks(db: Database) ->
     await store.complete_run(first, [], clock.now().isoformat())
     restarted = SQLiteSchedules(db, clock=clock)
     await restarted.configure((SOURCE,), 300)
-    assert await restarted.next_delay((SOURCE,)) == 300
+    assert await restarted.due_sources_and_delay((SOURCE,)) == ((), 300)
     with pytest.raises(SnapshotError, match="source_not_due"):
         await store.begin_run(SOURCE, clock.now().isoformat())
     clock.value += 3600
     second = await store.begin_run(SOURCE, clock.now().isoformat())
     await store.complete_run(second, [], clock.now().isoformat())
-    assert await restarted.next_delay((SOURCE,)) == 300
+    assert await restarted.due_sources_and_delay((SOURCE,)) == ((), 300)
     assert len(await db.fetch("SELECT id FROM sync_runs")) == 2
 
 
 async def test_schedule_concurrency_manual_sync_and_old_generation(db: Database) -> None:
     """수동 실행·경쟁자·이전 실행 실패가 현재 예약을 훼손하지 않는다."""
-    from src.infrastructure.sqlite.schedules import SQLiteSchedules
-
     clock = Clock()
     await configure(db, clock)
     scheduled = SQLiteSnapshots(db, scheduled=True, clock=clock)
@@ -68,22 +98,20 @@ async def test_schedule_concurrency_manual_sync_and_old_generation(db: Database)
     first = next(result for result in results if not isinstance(result, BaseException))
     await manual.fail_run(first, "source_failed")
     await scheduled.complete_run(second, [], clock.now().isoformat())
-    assert await SQLiteSchedules(db, clock=clock).next_delay((SOURCE,)) == 300
+    assert await SQLiteSchedules(db, clock=clock).due_sources_and_delay((SOURCE,)) == ((), 300)
 
 
 async def test_failure_and_interval_changes_are_persisted(db: Database) -> None:
     """실패에도 다음 주기를 기록하고 변경 간격은 마지막 종료를 기준으로 적용한다."""
-    from src.infrastructure.sqlite.schedules import SQLiteSchedules
-
     clock = Clock()
     await configure(db, clock)
     store = SQLiteSnapshots(db, scheduled=True, clock=clock)
     run = await store.begin_run(SOURCE, OBSERVED)
     await store.fail_run(run, "source_failed")
     schedules = SQLiteSchedules(db, clock=clock)
-    assert await schedules.next_delay((SOURCE,)) == 300
+    assert await schedules.due_sources_and_delay((SOURCE,)) == ((), 300)
     await schedules.configure((SOURCE,), 60)
-    assert await schedules.next_delay((SOURCE,)) == 60
+    assert await schedules.due_sources_and_delay((SOURCE,)) == ((), 60)
     status = await schedules.read_status((SOURCE,))
     assert status["failedSources"] == 1
     assert SOURCE.source_id not in str(status)

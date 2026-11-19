@@ -20,8 +20,10 @@ class ScheduleReader(Protocol):
         """현재 소스의 주기와 사용자 선호값을 원자적으로 저장한다."""
         ...
 
-    async def next_delay(self, sources: Sequence[SourceMapping]) -> float:
-        """현재 소스의 다음 시각까지 남은 초를 반환한다."""
+    async def due_sources_and_delay(
+        self, sources: Sequence[SourceMapping]
+    ) -> tuple[tuple[SourceMapping, ...], float]:
+        """지금 실행할 소스와 다음 예약까지 남은 초를 함께 읽는다."""
         ...
 
     async def read_status(self, sources: Sequence[SourceMapping]) -> dict[str, object]:
@@ -71,7 +73,13 @@ class PeriodicCollector:
         self._enabled = True
         try:
             while not stop.is_set():
-                for source in self._sources:
+                # 조회 도중에 바뀐 주기도 대기에 들어가자마자 반영한다.
+                self._changed.clear()
+                due, delay = await self._schedules.due_sources_and_delay(self._sources)
+                if not due:
+                    await self._wait_for_change(stop, delay)
+                    continue
+                for source in due:
                     if stop.is_set():
                         break
                     self._running = True
@@ -81,8 +89,6 @@ class PeriodicCollector:
                             raise SnapshotError("storage_failed")
                     finally:
                         self._running = False
-                if not stop.is_set():
-                    await self._wait_for_change(stop)
         finally:
             self._enabled = False
             self._running = False
@@ -93,10 +99,8 @@ class PeriodicCollector:
         self._changed.set()
         return await self.read_status()
 
-    async def _wait_for_change(self, stop: asyncio.Event) -> None:
+    async def _wait_for_change(self, stop: asyncio.Event, delay: float) -> None:
         """종료·예약 시각·화면 주기 변경 중 먼저 도착한 신호를 처리한다."""
-        self._changed.clear()
-        delay = await self._schedules.next_delay(self._sources)
         waiting = asyncio.ensure_future(self._wait(stop, delay))
         changed = asyncio.create_task(self._changed.wait())
         try:

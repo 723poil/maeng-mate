@@ -126,7 +126,27 @@ async def test_cached_snapshot_respects_selected_columns(db: Database) -> None:
     first, second = await asyncio.gather(
         reader.read_sources((visible,)), reader.read_sources((visible,))
     )
-    assert first is second
+    assert first[0] is second[0]
     assert first[0].items[0].display_values == {"t": "가상 제목"}
     assert (await reader.read_sources((mapping,)))[0].items[0].display_values == {}
-    assert (await reader.read_sources((visible,)))[0].items[0].display_values == {"t": "가상 제목"}
+    assert (await reader.read_sources((visible,)))[0] is first[0]
+
+
+async def test_shares_only_current_sources_across_search_scopes(db: Database) -> None:
+    """범위·순서를 바꿔도 같은 복원본을 쓰고 재수집된 소스만 새 자료로 교체한다."""
+    one, two = source(), source()
+    await publish(db, one)
+    await publish(db, two)
+    reader = SQLiteWorkReader(db, active_sources=(one, two))
+    first, second = await reader.read_sources((one, two))
+    subset = await reader.read_sources((two,))
+    assert len(subset) == 1 and subset[0] is second
+    reverse = await reader.read_sources((two, one))
+    assert reverse[0] is second and reverse[1] is first
+
+    store = SQLiteSnapshots(db)
+    run = await store.begin_run(one, OBSERVED)
+    await store.complete_run(run, [], OBSERVED)
+    refreshed, retained = await reader.read_sources((one, two))
+    assert not refreshed.items and first.items
+    assert retained is second

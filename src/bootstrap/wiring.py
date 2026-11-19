@@ -10,7 +10,7 @@ from src.application.mcp_access import McpSettingsService
 from src.application.models import SystemStatusContext
 from src.application.notion_page_links import NotionPageLinksClient
 from src.application.periodic import IntervalUpdate
-from src.application.ports import PeriodicStatusQuery, TodayQuery
+from src.application.ports import PeriodicStatusQuery, SnapshotReader, TodayQuery
 from src.application.runtime_settings_service import RuntimeSettingsService
 from src.application.source_settings import SourceSettingsService
 from src.application.task_search import TaskSearch, TaskSearchQuery
@@ -102,6 +102,11 @@ def build_api(
         if environment.database
         else None
     )
+    work_reader = (
+        SQLiteWorkReader(Database(environment.database), active_sources=settings.active_sources)
+        if environment.database and settings
+        else None
+    )
     return create_app(
         environment.token,
         query_status,
@@ -109,12 +114,14 @@ def build_api(
         mcp_access=access,
         mcp_server=mcp_server,
         on_mcp_ready=set_mcp_ready,
-        query_today=build_today_query(environment, settings, page_links=page_links),
+        query_today=build_today_query(
+            environment, settings, reader=work_reader, page_links=page_links
+        ),
         query_desktop_today=build_today_query(
-            environment, settings, page_links=page_links, desktop=True
+            environment, settings, reader=work_reader, page_links=page_links, desktop=True
         ),
         page_links_service=page_links,
-        query_tasks=build_task_search_query(environment, settings),
+        query_tasks=build_task_search_query(environment, settings, reader=work_reader),
         query_periodic=periodic_status,
         update_interval=update_interval,
         day_service=day_service,
@@ -156,6 +163,7 @@ def build_today_query(
     settings: Settings | None,
     *,
     page_links: NotionPageLinksClient | None = None,
+    reader: SnapshotReader | None = None,
     desktop: bool = False,
 ) -> TodayQuery | None:
     """캐시 조회에 필요한 사용자·파일·소스만 확인하며 Notion 토큰은 요구하지 않는다."""
@@ -170,7 +178,8 @@ def build_today_query(
     )
     if not sources and not desktop:
         return None
-    reader = SQLiteWorkReader(Database(environment.database))
+    if reader is None:
+        reader = SQLiteWorkReader(Database(environment.database))
     context = TodayContext(
         user or "",
         sources,
@@ -215,6 +224,8 @@ def build_today_query(
 def build_task_search_query(
     environment: AppEnvironment,
     settings: Settings | None,
+    *,
+    reader: SnapshotReader | None = None,
 ) -> TaskSearchQuery | None:
     """업무·QA 검색에도 현재 설정 소스와 본인 ID만 주입한다."""
     if environment.database is None or environment.notion_user_id is None or settings is None:
@@ -226,7 +237,8 @@ def build_task_search_query(
     )
     if not sources:
         return None
-    reader = SQLiteWorkReader(Database(environment.database))
+    if reader is None:
+        reader = SQLiteWorkReader(Database(environment.database))
     context = TodayContext(
         environment.notion_user_id,
         sources,

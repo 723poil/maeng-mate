@@ -11,8 +11,9 @@ def test_layer_dependencies_point_inward() -> None:
     allowed = {
         "domain": {"domain"},
         "application": {"domain", "application"},
-        "infrastructure": {"domain", "application", "infrastructure"},
-        "presentation": {"domain", "application", "presentation"},
+        # 알림 발신 앱과 설정 미리보기는 같은 아이콘 원본을 사용한다.
+        "infrastructure": {"domain", "application", "infrastructure", "assets"},
+        "presentation": {"domain", "application", "presentation", "assets"},
         "bootstrap": {"domain", "application", "infrastructure", "presentation", "bootstrap"},
     }
     external_io = {

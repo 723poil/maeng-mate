@@ -23,9 +23,7 @@ from src.bootstrap.storage import require_migrated_database
 from src.bootstrap.wiring import build_api
 from src.bootstrap.work_rules import build_work_rules
 from src.bootstrap.work_settings import load_work_settings
-from src.domain.daily_work import FlexibleDeparturePolicy
 from src.infrastructure.sqlite.connection import Database
-from src.infrastructure.sqlite.day_records import SQLiteDayStore
 from src.infrastructure.sqlite.schedules import SQLiteSchedules
 
 
@@ -134,7 +132,6 @@ async def _run_resident(env: Mapping[str, str]) -> None:
     database = Database(path)
     await require_migrated_database(database)
     settings = load_work_settings(database, prepare_categories=True)
-    rules_service = build_work_rules(settings)
     stop = asyncio.Event()
     committed = asyncio.Event() if pending_restore(application_directory()) else None
     # 포트 충돌 시 예약 등록이나 원천 조회까지 진행하지 않는다.
@@ -147,9 +144,7 @@ async def _run_resident(env: Mapping[str, str]) -> None:
             listener.setblocking(False)
         except OSError:
             raise ConfigError("로컬 API 포트를 사용할 수 없습니다: LOCAL_API_PORT") from None
-        await SQLiteDayStore(
-            database, policy=FlexibleDeparturePolicy()
-        ).reconcile_today_notifications()
+        rules_service = build_work_rules(settings, database)
         schedules = SQLiteSchedules(database)
         sources = settings.active_sources
         async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:

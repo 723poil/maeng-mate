@@ -12,7 +12,6 @@ from src.domain.daily_work import (
     DayRecord,
     DeparturePolicy,
     LeaveType,
-    WorkRules,
     departure_due,
     parse_clock,
     parse_leave,
@@ -210,13 +209,12 @@ class WorkRecordsService:
     def __init__(
         self,
         store: WorkRecordsStore,
-        rules: WorkRules | None,
         *,
         now: Callable[[], datetime],
         policy: DeparturePolicy,
     ) -> None:
-        """현재 규칙은 새 기록의 기본값으로만 사용한다."""
-        self._store, self._rules, self._now = store, rules, now
+        """저장소에서 가져온 해당 날짜의 규칙으로 예정 시각을 계산한다."""
+        self._store, self._now = store, now
         self._policy = policy
 
     async def month(self, value: str | None) -> WorkRecordsMonth:
@@ -333,7 +331,6 @@ class WorkRecordsService:
             attendance=attendance,
             checkout_at=checkout,
             leave=leave,
-            rules=current.rules if current.revision else self._rules,
             overtime=overtime,
         )
         await self._store.correct(record, revision)

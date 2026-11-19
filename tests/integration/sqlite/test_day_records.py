@@ -70,7 +70,7 @@ async def test_history_compares_fiftieth_change_and_preserves_current_rules(db: 
     clock = Clock(datetime(2026, 11, 16, 10, tzinfo=UTC).timestamp())
     day = clock.now().date()
     store = SQLiteDayStore(db, now=clock.now)
-    service = WorkRecordsService(store, None, now=clock.now, policy=FlexibleDeparturePolicy())
+    service = WorkRecordsService(store, now=clock.now, policy=FlexibleDeparturePolicy())
     record = DayRecord(day, plan="가상 계획", rules=DEFAULT_WORK_RULES)
     for minute in range(51):
         record = await store.correct(

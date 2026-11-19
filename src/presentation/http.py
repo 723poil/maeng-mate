@@ -5,7 +5,7 @@ import hashlib
 import hmac
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -67,6 +67,7 @@ def create_app(
     mcp_service: McpSettingsClient | None = None,
     mcp_access: McpAccessStore | None = None,
     mcp_server: FastMCP | None = None,
+    mcp_query_client: AbstractAsyncContextManager[object] | None = None,
     on_mcp_ready: Callable[[bool], None] | None = None,
     work_records_service: WorkRecordsService | None = None,
     work_rules_service: WorkRulesClient | None = None,
@@ -82,7 +83,8 @@ def create_app(
         if mcp_server is None:
             yield
             return
-        async with mcp_server.session_manager.run():
+        # 도구 세션을 먼저 종료한 뒤 그 세션들이 사용한 루프백 연결을 닫는다.
+        async with mcp_query_client or nullcontext(), mcp_server.session_manager.run():
             if on_mcp_ready is not None:
                 on_mcp_ready(True)
             try:

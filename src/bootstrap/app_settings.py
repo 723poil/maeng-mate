@@ -1,10 +1,8 @@
 """앱 지원 파일과 Keychain에서 시작에 필요한 연결 정보만 읽는다."""
 
 import json
-import os
 import re
 import secrets
-import stat
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -13,7 +11,7 @@ from src.application.credentials import CredentialError, CredentialSecret, Crede
 from src.bootstrap.environment import ConfigError, database_path
 from src.bootstrap.instance import application_directory
 from src.bootstrap.keychain import KeychainAccount
-from src.infrastructure.private_files import write_private_file
+from src.infrastructure.private_files import read_private_file, write_private_file
 
 
 def bootstrap_path() -> "Path":
@@ -30,25 +28,16 @@ def data_environment(env: Mapping[str, str], *, profile_path: Path | None = None
     }
     path = profile_path or bootstrap_path()
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        data = read_private_file(path, max_bytes=16384)
     except FileNotFoundError:
         pass
     except OSError:
         raise ConfigError("앱 시작 설정을 읽지 못했습니다.") from None
+    except ValueError:
+        raise ConfigError("앱 시작 설정 형식·권한을 확인하세요.") from None
     else:
         try:
-            with os.fdopen(descriptor, "rb") as stream:
-                info = os.fstat(stream.fileno())
-                if (
-                    not stat.S_ISREG(info.st_mode)
-                    or info.st_uid != os.getuid()
-                    or info.st_mode & 0o077
-                ):
-                    raise ValueError
-                data = stream.read(16385)
-                if len(data) > 16384:
-                    raise ValueError
-                raw: object = json.loads(data)
+            raw: object = json.loads(data)
             if (
                 not isinstance(raw, dict)
                 or type(raw.get("version")) is not int

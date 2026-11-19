@@ -1,11 +1,8 @@
 """근무 규칙만 보호된 JSON 파일에 버전 조건부로 저장한다."""
 
 import json
-import os
-import stat
 from dataclasses import replace
 from pathlib import Path
-from threading import Lock
 
 from src.application.work_rules_settings import (
     WorkRulesConflictError,
@@ -13,7 +10,11 @@ from src.application.work_rules_settings import (
     document_payload,
     parse_document,
 )
-from src.infrastructure.private_files import write_private_file
+from src.infrastructure.private_files import (
+    private_file_lock,
+    read_private_file,
+    write_private_file,
+)
 
 MAX_WORK_RULES_BYTES = 16384
 
@@ -24,21 +25,14 @@ class WorkRulesFile:
     def __init__(self, path: Path) -> None:
         """설치 경로를 시작 경계에서 주입한다."""
         self._path = path
-        self._lock = Lock()
+        self._lock_path = path.with_name(f".{path.name}.lock")
 
     def read(self) -> WorkRulesDocument | None:
         """링크를 따라가지 않고 권한이 제한된 기존 문서만 읽는다."""
         try:
-            descriptor = os.open(self._path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            data = read_private_file(self._path, max_bytes=MAX_WORK_RULES_BYTES)
         except FileNotFoundError:
             return None
-        with os.fdopen(descriptor, "rb") as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-                raise ValueError("근무 규칙 파일의 권한을 확인하세요.")
-            data = stream.read(MAX_WORK_RULES_BYTES + 1)
-        if len(data) > MAX_WORK_RULES_BYTES:
-            raise ValueError("근무 규칙 파일이 너무 큽니다.")
         value = parse_document(json.loads(data))
         if value.revision < 1:
             raise ValueError("저장된 근무 규칙의 버전을 확인하세요.")
@@ -46,7 +40,8 @@ class WorkRulesFile:
 
     def save(self, document: WorkRulesDocument) -> WorkRulesDocument:
         """현재 버전 확인과 원자 교체를 같은 잠금 안에서 수행한다."""
-        with self._lock:
+        # 규칙 파일은 저장 때마다 교체되므로 같은 디렉터리의 고정 잠금 파일을 쓴다.
+        with private_file_lock(self._lock_path):
             current = self.read()
             revision = current.revision if current else 0
             if revision != document.revision:

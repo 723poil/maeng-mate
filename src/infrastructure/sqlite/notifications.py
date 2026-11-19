@@ -184,7 +184,6 @@ class SQLiteNotifications:
         now = self._now().timestamp()
         with self._database.transaction() as connection:
             finish_deliveries(connection, now)
-            preferences = read_preferences(connection, self._channels)
             connection.execute(
                 "UPDATE notification_jobs SET state='unknown' WHERE state IN ('delivering','obsolete') AND token IS NOT NULL AND claimed_at<?",
                 (now - 30,),
@@ -202,19 +201,20 @@ class SQLiteNotifications:
                     scope_values = tuple(self._source_keys)
                 else:
                     scope = " AND job.kind='departure'"
-            rows = connection.execute(
+            row = connection.execute(
                 """SELECT job.* FROM notification_jobs AS job
                 WHERE job.state='pending' AND job.due_at<=? AND job.expires_at>=?
                 """
                 + scope
                 + " ORDER BY CASE WHEN job.kind='departure' THEN 0 WHEN job.kind='meeting' THEN 1 WHEN job.kind='sync_error' THEN 2 ELSE 3 END,due_at,id LIMIT 1",
                 (now, now, *scope_values),
-            ).fetchall()
-            for row in rows:
+            ).fetchone()
+            if row is not None:
+                # 새 전달 채널을 정할 때만 아이콘을 포함한 설정 문서를 읽는다.
                 prepare_deliveries(
                     connection,
                     row,
-                    preferences,
+                    read_preferences(connection, self._channels),
                     self._channels_for(row["source_key"]),
                     self._qa_scopes,
                     self._source_types.get(row["source_key"]),
@@ -231,10 +231,8 @@ class SQLiteNotifications:
         """한 DB 스냅샷에서 근무 버전과 구독 선택을 함께 확인한다."""
         now = self._now()
         with self._database.transaction(read_only=True) as connection:
-            rows: list[dict[str, object]] = [
-                dict(row)
-                for row in connection.execute(
-                    """SELECT job.day,job.revision,job.kind,job.source_key,record.revision AS current_revision,
+            row = connection.execute(
+                """SELECT job.day,job.revision,job.kind,job.source_key,record.revision AS current_revision,
                 job.meeting_source_id,job.meeting_item_id,job.meeting_mapping_hash,job.meeting_start_at,
                 failure.status AS sync_failure_status,failure.mapping_hash AS sync_failure_mapping,
                 job.sync_mapping_hash,delivery.channel,delivery.kinds,
@@ -252,24 +250,25 @@ class SQLiteNotifications:
                 ON snapshot.source_id=COALESCE(event.source_id,job.meeting_source_id,field.source_id)
                 AND snapshot.item_id=COALESCE(event.item_id,job.meeting_item_id,field.item_id)
             WHERE delivery.id=? AND delivery.token=? AND delivery.state='delivering' AND delivery.revoked=0 AND job.state='delivering' AND job.expires_at>=? AND job.due_at<=?""",
-                    (identifier, token, now.timestamp(), now.timestamp()),
-                ).fetchall()
-            ]
+                (identifier, token, now.timestamp(), now.timestamp()),
+            ).fetchone()
+            # 만료되거나 정정된 실행권은 구독 설정과 무관하게 발송할 수 없다.
+            if row is None:
+                return False
+            facts: dict[str, object] = dict(row)
             preferences = read_preferences(connection, self._channels)
-        if not rows:
-            return False
-        raw_kinds = rows[0]["kinds"]
+        raw_kinds = facts["kinds"]
         if not isinstance(raw_kinds, str):
             return False
         kinds: object = json.loads(raw_kinds)
         if not isinstance(kinds, list):
             return False
         selected = tuple(kind for kind in kinds if isinstance(kind, str))
-        source_key = rows[0]["source_key"]
+        source_key = facts["source_key"]
         allowed_types = self._source_types.get(source_key) if isinstance(source_key, str) else None
         if allowed_types is not None:
             selected = tuple(kind for kind in selected if kind in allowed_types)
-        channel = rows[0]["channel"]
+        channel = facts["channel"]
         if (
             not isinstance(channel, str)
             or not preferences.permits(
@@ -277,38 +276,38 @@ class SQLiteNotifications:
                 selected,
                 self._notification_groups.get(source_key) if isinstance(source_key, str) else None,
             )
-            or channel not in self._channels_for(rows[0]["source_key"])
+            or channel not in self._channels_for(source_key)
         ):
             return False
         if (
-            rows[0]["kind"] != "departure"
+            facts["kind"] != "departure"
             and self._source_keys is not None
-            and rows[0]["source_key"] not in self._source_keys
+            and facts["source_key"] not in self._source_keys
         ):
             return False
-        if rows[0]["kind"] == "sync_error":
+        if facts["kind"] == "sync_error":
             return (
-                rows[0]["sync_failure_status"] == "failed"
-                and rows[0]["sync_failure_mapping"] == rows[0]["sync_mapping_hash"]
-                and rows[0]["sync_recovered"] == 0
+                facts["sync_failure_status"] == "failed"
+                and facts["sync_failure_mapping"] == facts["sync_mapping_hash"]
+                and facts["sync_recovered"] == 0
             )
-        if rows[0]["kind"] == "meeting":
-            return meeting_job_current(rows[0], self._user_id, now)
-        if rows[0]["kind"] == "task":
-            return task_job_current(rows[0], self._user_id)
-        if rows[0]["kind"] == "source_change":
-            return field_alert_current(rows[0], self._user_id)
-        if rows[0]["kind"] == "departure":
-            day = rows[0]["day"]
+        if facts["kind"] == "meeting":
+            return meeting_job_current(facts, self._user_id, now)
+        if facts["kind"] == "task":
+            return task_job_current(facts, self._user_id)
+        if facts["kind"] == "source_change":
+            return field_alert_current(facts, self._user_id)
+        if facts["kind"] == "departure":
+            day = facts["day"]
             if not isinstance(day, str):
                 return False
             recorded_day = date.fromisoformat(day)
             # 예약 생성은 기록의 휴무일 규칙을 검사한다. 전달은 같은 기록 버전만 허용한다.
             return (
                 recorded_day == now.astimezone(SEOUL).date()
-                and rows[0]["revision"] == rows[0]["current_revision"]
+                and facts["revision"] == facts["current_revision"]
             )
-        return rows[0]["day"] is None or rows[0]["revision"] == rows[0]["current_revision"]
+        return facts["day"] is None or facts["revision"] == facts["current_revision"]
 
     async def reserve_slack(self, identifier: str, token: str) -> NotificationJob | None:
         """현재 사실을 확인한 실행권만 발송 시작 표식을 얻는다."""

@@ -63,7 +63,5 @@ def labelled_values(
 
 
 def display_line(title: str, fields: tuple[tuple[str, str], ...]) -> str:
-    """메뉴바와 설정 미리보기에 같은 칼럼 순서를 적용한다."""
-    return "   ·   ".join(
-        (title or "제목 없음", *(f"{name} {value or '—'}" for name, value in fields))
-    )
+    """메뉴바 행에는 제목과 선택한 칼럼의 값만 표시 순서대로 담는다."""
+    return "   ·   ".join((title or "제목 없음", *(value or "—" for _, value in fields)))

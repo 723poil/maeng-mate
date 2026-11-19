@@ -38,6 +38,7 @@ from src.domain.category_configuration import (
     CategoryConfiguration,
 )
 from src.domain.category_event_alerts import EventAlertSelection
+from src.domain.display_columns import display_line
 from src.domain.source_display import SOURCE_COLORS, SourceCategory
 from src.presentation.category_sheet_controls import field, popup, set_entries
 from src.presentation.column_alert_editor import ColumnAlertEditor
@@ -531,7 +532,7 @@ def display_help_popover() -> NSPopover:
     content = NSView.alloc().initWithFrame_(frame(0, 0, width, height))
     label(content, "추가 표시", 16, 126, width - 32, size=14, bold=True)
     label(content, "표시 예시", 16, 49, 62, secondary=True)
-    label(content, "항목 제목 · 장소 3층", 82, 49, width - 98, bold=True)
+    label(content, display_line("항목 제목", (("장소", "3층"),)), 82, 49, width - 98, bold=True)
     for text, y, lines_height, secondary in (
         (
             "체크한 칼럼은 메뉴바와 캘린더 상세에 표시돼요. 메뉴바에서 상태 배지를 고르면 값이 제목 앞에 나와요.",

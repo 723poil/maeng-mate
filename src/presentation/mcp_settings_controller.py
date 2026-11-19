@@ -7,6 +7,7 @@ from src.application.ai_skills import (
     SkillInstallError,
     SkillInstallResult,
     SkillTarget,
+    SkillVersions,
 )
 from src.application.credentials import CredentialSecret
 from src.application.mcp_access import (
@@ -26,6 +27,8 @@ class McpSettingsController:
         self._client = client
         self._skills = skills
         self._installing: Future[SkillInstallResult] | None = None
+        self._reading_versions: Future[SkillVersions] | None = None
+        self.skill_versions: SkillVersions | None = None
         self.skill_message: str | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-settings")
         self._pending: Future[McpSettingsState] | None = None
@@ -48,7 +51,10 @@ class McpSettingsController:
     def busy(self) -> bool:
         """조회·발급·폐기를 동시에 실행하지 않는다."""
         return (
-            self._pending is not None or self._issuing is not None or self._installing is not None
+            self._pending is not None
+            or self._issuing is not None
+            or self._installing is not None
+            or self._reading_versions is not None
         )
 
     @property
@@ -83,6 +89,12 @@ class McpSettingsController:
         self._writing = False
         self._read_retry.cancel()
         self._pending = self._executor.submit(self._client.read)
+        self._refresh_versions()
+
+    def _refresh_versions(self) -> None:
+        """화면 갱신마다 파일을 읽지 않고 최초 조회·재조회·설치 직후에 확인한다."""
+        if self._skills is not None:
+            self._reading_versions = self._executor.submit(self._skills.versions)
 
     def set_enabled(self, enabled: bool) -> None:
         """MCP 사용 변경을 저장하고 중복 클릭을 막는다."""
@@ -135,15 +147,21 @@ class McpSettingsController:
             installing, self._installing = self._installing, None
             try:
                 result = installing.result()
-                self.skill_message = "·".join(result.targets) + " 스킬 설치됨"
+                self.skill_message = f"{'·'.join(result.targets)} 스킬 {result.version} 설치됨"
             except SkillInstallError as error:
-                self.skill_message = (
-                    "설치 폴더에 다른 내용이 있어 기존 파일을 그대로 두었습니다."
-                    if error.code == "modified"
-                    else "스킬 설치 폴더와 쓰기 권한을 확인하세요."
-                )
+                self.skill_message = {
+                    "modified": "설치 폴더에 다른 내용이 있어 기존 파일을 그대로 두었습니다.",
+                    "newer": "선택한 대상에 더 높은 스킬 버전이 설치되어 있습니다.",
+                }.get(error.code, "스킬 설치 폴더와 쓰기 권한을 확인하세요.")
             except Exception:
                 self.skill_message = "스킬을 설치하지 못했습니다."
+            self._refresh_versions()
+        if self._reading_versions is not None and self._reading_versions.done():
+            reading, self._reading_versions = self._reading_versions, None
+            try:
+                self.skill_versions = reading.result()
+            except Exception:
+                self.skill_versions = None
         if self._read_retry.due:
             self.reload()
         if self._issuing is not None and self._issuing.done():

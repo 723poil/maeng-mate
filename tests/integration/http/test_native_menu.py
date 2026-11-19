@@ -275,3 +275,41 @@ def test_native_menu_renders_and_saves_attendance(
         )
     finally:
         app.close()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS 네이티브 필터")
+def test_calendar_filters_restore_rejected_click_and_refresh_replaced_controls() -> None:
+    """거부된 클릭과 새로 만든 행은 이전에 그린 선택값과 같아도 다시 반영한다."""
+    pytest.importorskip("AppKit")
+    from AppKit import NSApplication, NSView
+
+    from src.domain.calendar import CalendarPreferences
+    from src.presentation.calendar_controls import CalendarFilterChoice, CalendarFilters
+    from src.presentation.native_views import frame
+
+    NSApplication.sharedApplication()
+    parent = NSView.alloc().initWithFrame_(frame(0, 0, 200, 300))
+    requests: list[tuple[str, bool]] = []
+
+    def changed(key: str, visible: bool) -> None:
+        """변경 요청은 기록하되 거부된 경우처럼 확정값을 유지한다."""
+        requests.append((key, visible))
+
+    filters = CalendarFilters(parent, 0, 200, changed)
+    choice = CalendarFilterChoice("category:fixture", "가상 일정", "meeting")
+    preferences = CalendarPreferences(hidden_categories=(choice.key,))
+    filters.update_choices((choice,))
+    filters.render(preferences, True)
+    control = filters.controls[choice.key]
+    control.performClick_(None)
+    assert requests == [(choice.key, True)]
+    filters.render(preferences, True)
+    assert control.state() == 0
+
+    filters.render(preferences, False)
+    filters.update_choices((CalendarFilterChoice(choice.key, "수정한 이름", "task"),))
+    filters.render(preferences, False)
+    replacement = filters.controls[choice.key]
+    assert replacement is not control
+    assert not replacement.isEnabled() and replacement.state() == 0
+    assert replacement.accessibilityLabel() == "수정한 이름"

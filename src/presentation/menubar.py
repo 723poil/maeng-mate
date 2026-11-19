@@ -243,6 +243,7 @@ class MenuBarApp:
             SettingsEditor(work_rules_client, restart_services) if work_rules_client else None
         )
         self._source_display: tuple[SourceDisplay, ...] = ()
+        self._calendar_choices = calendar_filter_choices(self._source_display)
         self._source_groups: dict[str, tuple[SourceDisplay, ...]] = {}
         self._section_order: tuple[SectionPreference, ...] = ()
         self._custom_sections: dict[str, EntrySection] = {}
@@ -962,6 +963,7 @@ class MenuBarApp:
     def _apply_source_display(self, display: tuple[SourceDisplay, ...]) -> None:
         """확정된 카테고리 카드만 배치에 추가한다."""
         self._source_display = display
+        self._calendar_choices = calendar_filter_choices(display)
         groups = display_groups(display)
         self._source_groups = groups
         # 숨김 선택은 뷰를 보존하고, 연결이 사라진 카드는 네이티브 컨트롤까지 제거한다.
@@ -1059,7 +1061,7 @@ class MenuBarApp:
 
     def _calendar_filter_choices(self) -> tuple[CalendarFilterChoice, ...]:
         """두 달력에 같은 카테고리 선택지를 제공한다."""
-        return calendar_filter_choices(self._source_display)
+        return self._calendar_choices
 
     def _toggle_calendar_filter(self, key: str, visible: bool) -> None:
         """카테고리와 출근 기록 표시만 저장한다."""

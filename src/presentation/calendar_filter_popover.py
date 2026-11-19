@@ -47,9 +47,9 @@ class CalendarFilterPopover:
             return
         if not self._enabled:
             return
-        self.render(True)
         self._opening = True
         try:
+            self.render(True)
             self.popover.showRelativeToRect_ofView_preferredEdge_(
                 anchor.bounds(), anchor, NSMinYEdge
             )
@@ -59,6 +59,9 @@ class CalendarFilterPopover:
     def render(self, enabled: bool) -> None:
         """열린 상태에서도 다른 화면에서 바꾼 선택을 바로 반영한다."""
         self._enabled = enabled
+        # 닫힌 동안 바뀐 설정은 다음 show에서 최신 값으로 한 번 반영한다.
+        if not self.is_open:
+            return
         self.filters.update_choices(self._choices())
         self.filters.render(self._preferences(), enabled)
 

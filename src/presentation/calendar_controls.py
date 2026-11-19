@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from AppKit import (
+    NSAppearance,
     NSBox,
     NSButton,
     NSColor,
@@ -152,9 +153,7 @@ class FilterActions(NSObject):
 
     def toggle_(self, sender: NSButton) -> None:
         """종류 키 하나만 확정 설정의 새 초안으로 전달한다."""
-        index = sender.tag()
-        if 0 <= index < len(self.owner.choices):
-            self.owner.changed(self.owner.choices[index].key, sender.state() == 1)
+        self.owner.toggle(sender.tag(), sender.state() == 1)
 
 
 class FilterLabel(NSTextField):
@@ -211,6 +210,7 @@ class CalendarFilters:
         self._actions.owner = self
         self._width, self._viewport = row_width, viewport
         self.choices: tuple[CalendarFilterChoice, ...] = ()
+        self._rendered: tuple[CalendarPreferences, bool, NSAppearance] | None = None
         self.controls: dict[str, NSButton] = {}
         self._dots: dict[str, NSBox] = {}
         self._labels: dict[str, FilterLabel] = {}
@@ -230,6 +230,7 @@ class CalendarFilters:
         if self.choices == choices:
             return
         self.choices = choices
+        self._rendered = None
         self._rows.setSubviews_([])
         self.controls.clear()
         self._labels.clear()
@@ -267,8 +268,17 @@ class CalendarFilters:
             )
         self._rows.scrollPoint_((0, max(0, height - self._viewport)))
 
+    def toggle(self, index: int, visible: bool) -> None:
+        """버튼이 먼저 바뀌므로 저장 요청이 거부돼도 다음 갱신에서 실제 선택을 반영한다."""
+        if 0 <= index < len(self.choices):
+            self._rendered = None
+            self.changed(self.choices[index].key, visible)
+
     def render(self, value: CalendarPreferences, enabled: bool) -> None:
-        """선택창에서도 라벨 색과 선택 상태를 명확히 유지한다."""
+        """선택·잠금·시스템 외관이 바뀐 경우에만 네이티브 컨트롤을 갱신한다."""
+        state = (value, enabled, self._rows.effectiveAppearance())
+        if state == self._rendered:
+            return
         for choice in self.choices:
             control = self.controls[choice.key]
             visible = value.is_visible(choice.key)
@@ -282,3 +292,4 @@ class CalendarFilters:
                     1 if visible else 0.2
                 )
             )
+        self._rendered = state

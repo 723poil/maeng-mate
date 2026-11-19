@@ -1,12 +1,30 @@
 """월별 달력의 관리자용 읽기 API다."""
 
 import json
+from json.encoder import encode_basestring_ascii
 
 from fastapi import APIRouter, HTTPException
 
 from src.application.calendar import CalendarService
 from src.application.errors import QueryReadError, SnapshotError
 from src.domain.calendar import CalendarItem, CalendarMonth
+
+# 문자열 자체(양쪽 따옴표 포함)를 제외한 필드 객체의 고정 JSON 길이다.
+_FIELD_OVERHEAD = len(json.dumps({"label": "", "value": ""})) - 2 * len('""')
+
+
+def detail_size_within_budget(fields: tuple[tuple[str, str], ...], budget: int) -> int | None:
+    """남은 한도를 넘으면 그 행의 나머지 칼럼은 변환하지 않는다."""
+    # 배열·구분자·객체 키의 고정 비용은 문자열을 읽기 전에 알 수 있다.
+    size = len("[]") + max(0, len(fields) - 1) * len(", ") + len(fields) * _FIELD_OVERHEAD
+    if size > budget:
+        return None
+    for name, value in fields:
+        # 표준 JSON 이스케이프를 적용해 한글·이모지·제어문자도 기존 예산과 똑같이 센다.
+        size += len(encode_basestring_ascii(name)) + len(encode_basestring_ascii(value))
+        if size > budget:
+            return None
+    return size
 
 
 def calendar_payload(value: CalendarMonth) -> dict[str, object]:
@@ -17,11 +35,12 @@ def calendar_payload(value: CalendarMonth) -> dict[str, object]:
     for item in value.items:
         row = calendar_item_payload(item)
         if item.display_fields is not None:
-            fields = [{"label": name, "value": text} for name, text in item.display_fields]
-            size = len(json.dumps(fields, ensure_ascii=True))
-            if size <= detail_budget:
+            size = detail_size_within_budget(item.display_fields, detail_budget)
+            if size is not None:
                 detail_budget -= size
-                row["displayFields"] = fields
+                row["displayFields"] = [
+                    {"label": name, "value": text} for name, text in item.display_fields
+                ]
             else:
                 row["displayFields"] = []
                 truncated = True  # 월 격자와 제목은 보존하고 긴 상세만 한도를 둔다.
@@ -80,7 +99,7 @@ def create_calendar_router(service: CalendarService | None) -> APIRouter:
             raise HTTPException(503, "캘린더 DB가 필요합니다.")
         try:
             result = calendar_payload(await service.month(month))
-            if len(json.dumps(result, ensure_ascii=True).encode()) > 2 * 1024 * 1024:
+            if len(json.dumps(result, ensure_ascii=True)) > 2 * 1024 * 1024:
                 raise QueryReadError()
             return result
         except (QueryReadError, SnapshotError):

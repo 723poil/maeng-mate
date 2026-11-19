@@ -66,7 +66,7 @@ class PeriodicCollector:
         self._wait = wait
         self._changed = asyncio.Event()
         self._enabled = False
-        self._running = False
+        self._active_source_id: str | None = None
 
     async def run(self, stop: asyncio.Event) -> None:
         """소스별 실패는 기록하되 저장 실패는 상주 감독자에게 전달한다."""
@@ -82,16 +82,16 @@ class PeriodicCollector:
                 for source in due:
                     if stop.is_set():
                         break
-                    self._running = True
+                    self._active_source_id = source.source_id
                     try:
                         result = await synchronize(source, self._reader, self._store, self._now)
                         if result["status"] == "failed" and result["code"] == "storage_failed":
                             raise SnapshotError("storage_failed")
                     finally:
-                        self._running = False
+                        self._active_source_id = None
         finally:
             self._enabled = False
-            self._running = False
+            self._active_source_id = None
 
     async def set_interval(self, seconds: int) -> dict[str, object]:
         """저장 후 대기를 깨워 새 예약을 읽으며 수집 자체는 재시작하지 않는다."""
@@ -119,5 +119,10 @@ class PeriodicCollector:
         return {
             **await self._schedules.read_status(self._sources),
             "enabled": self._enabled,
-            "running": self._running,
+            "running": self._active_source_id is not None,
         }
+
+    async def read_desktop_status(self) -> dict[str, object]:
+        """메뉴바가 활성 설정에서 표시명을 찾도록 현재 소스 키를 함께 전달한다."""
+        status = await self.read_status()
+        return {**status, "activeSourceId": self._active_source_id}

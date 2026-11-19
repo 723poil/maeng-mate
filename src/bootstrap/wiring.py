@@ -1,6 +1,7 @@
 """설정과 구체 구현을 연결하는 조립부다."""
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import replace
 
 from fastapi import FastAPI
@@ -49,9 +50,11 @@ def build_api(
     settings: Settings | None = None,
     *,
     periodic_status: PeriodicStatusQuery | None = None,
+    desktop_periodic_status: PeriodicStatusQuery | None = None,
     update_interval: IntervalUpdate | None = None,
     notion_legacy_token: str | None = None,
     work_rules_service: WorkRulesService | None = None,
+    restore_committed: Callable[[], bool] | None = None,
 ) -> FastAPI:
     """비밀값은 인증에만 전달하고 업무 조회에는 설정 여부만 주입한다."""
     context = SystemStatusContext(
@@ -115,6 +118,7 @@ def build_api(
         mcp_server=mcp_server,
         mcp_query_client=mcp_query_client,
         on_mcp_ready=set_mcp_ready,
+        restore_committed=restore_committed,
         query_today=build_today_query(
             environment, settings, reader=work_reader, page_links=page_links
         ),
@@ -124,6 +128,7 @@ def build_api(
         page_links_service=page_links,
         query_tasks=build_task_search_query(environment, settings, reader=work_reader),
         query_periodic=periodic_status,
+        query_desktop_periodic=desktop_periodic_status,
         update_interval=update_interval,
         day_service=day_service,
         calendar_service=build_calendar_service(environment, settings),

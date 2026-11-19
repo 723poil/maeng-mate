@@ -69,7 +69,7 @@ class MenuEntry:
 
 @dataclass(frozen=True)
 class CollectionView:
-    """개인 식별자 없는 수집 상태 집계다."""
+    """수집 집계와 메뉴바의 표시명 조회에 쓰는 활성 소스 키다."""
 
     enabled: bool
     running: bool
@@ -80,6 +80,7 @@ class CollectionView:
     interval_seconds: int | None = None
     retrying: int = 0
     retry_attempt: int = 0
+    active_source_id: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)

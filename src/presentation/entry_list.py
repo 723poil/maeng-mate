@@ -67,85 +67,110 @@ class EntryList:
         self._height = height
         self._target = target
         self._values: tuple[MenuEntry, ...] | None = None
+        self._rows: list[NSView] = []
         parent.addSubview_(self._scroll)
 
     def update(self, values: tuple[MenuEntry, ...]) -> None:
         """같은 자료의 새로고침은 사용자의 스크롤 위치를 바꾸지 않는다."""
-        if self._values == values:
+        previous = self._values
+        if previous == values:
             return
-        self._values = values
         height = max(self._height, len(values) * 29)
-        document = NSView.alloc().initWithFrame_(frame(0, 0, self._width, height))
-        if not values:
-            label(document, "없음", 2, height - 24, self._width - 12, size=12, secondary=True)
-        cursor = height
-        for item in values:
-            cursor -= 29
-            title_x = 0.0
-            if item.display_fields is None:
-                if item.status is not None:
-                    badge_width = status_badge(document, item.status, cursor + 5.5)
-                    label(document, "-", badge_width + 7, cursor + 5.5, 9, size=11, secondary=True)
-                    title_x = badge_width + 21
-                # 상태를 사용하지 않는 소스도 독립적으로 연결한 기한·차시를 표시한다.
-                middle = item.deadline or item.round_name
-                if middle is not None:
-                    middle_label = label(
-                        document,
-                        middle,
-                        title_x,
-                        cursor + 5.5,
-                        120,
-                        size=11,
-                        secondary=True,
-                    )
-                    date_width = min(120.0, middle_label.fittingSize()[0] + 2)
-                    place_label(middle_label, title_x, cursor + 5.5, date_width, 18)
-                    label(
-                        document,
-                        "-",
-                        title_x + date_width + 4,
-                        cursor + 5.5,
-                        9,
-                        size=11,
-                        secondary=True,
-                    )
-                    title_x += date_width + 18
-            fields = item.display_fields
-            title = (
-                display_line(item.title, fields)
-                if fields is not None
-                else " ".join(
-                    (
-                        item.title if item.status is not None else f"{item.detail}  {item.title}"
-                    ).split()
+        document = self._scroll.documentView()
+        if document is None or not previous or not values:
+            # 첫 표시·빈 상태 전환·가로 폭 변경은 문서 전체를 배치한다.
+            document = NSView.alloc().initWithFrame_(frame(0, 0, self._width, height))
+            self._rows.clear()
+            if not values:
+                empty = label(
+                    document, "없음", 2, height - 24, self._width - 12, size=12, secondary=True
                 )
+                empty.setAutoresizingMask_(NSViewMinYMargin)
+        elif document.frame()[1][1] != height:
+            document.setFrameSize_((self._width, height))
+        # 기존 행은 위쪽 여백을 유지하므로 문서가 늘거나 줄어도 같은 순번에 남는다.
+        for row in self._rows[len(values) :]:
+            row.removeFromSuperview()
+        del self._rows[len(values) :]
+        for index, item in enumerate(values):
+            if index < len(self._rows) and previous is not None and item == previous[index]:
+                continue
+            # 창에 붙이기 전에 글꼴을 측정해 첫 표시와 부분 갱신에서 같은 폭을 사용한다.
+            row = NSView.alloc().initWithFrame_(
+                frame(0, height - (index + 1) * 29, self._width, 29)
             )
-            title_y = cursor + 2
-            row = button(
-                document,
-                title,
-                title_x,
-                title_y,
-                self._width - title_x - 12,
-                self._target,
-                "open:",
-                bordered=False,
-            )
-            row.setFrame_(frame(title_x, title_y, self._width - title_x - 12, 25))
-            row.setAlignment_(0)
-            row.cell().setRepresentedObject_(item.url)
-            row.setEnabled_(item.url is not None)
-            row.setToolTip_(
-                "\n".join((item.title, *(f"{name}  {value or '—'}" for name, value in fields)))
-                if fields
-                else item.title
-            )
-        # 문서 높이가 바뀌어도 배지·제목·빈 상태를 위쪽 여백에 고정한다.
-        for child in document.subviews():
-            child.setAutoresizingMask_(NSViewMinYMargin)
-        self._scroll.setDocumentView_(document)
+            row.setAutoresizingMask_(NSViewMinYMargin)
+            self._render_row(row, item)
+            if index == len(self._rows):
+                document.addSubview_(row)
+                self._rows.append(row)
+            else:
+                document.replaceSubview_with_(self._rows[index], row)
+                self._rows[index] = row
+        if document is not self._scroll.documentView():
+            self._scroll.setDocumentView_(document)
+        self._values = values
         document.scrollPoint_((0, max(0, height - self._height)))
+
+    def _render_row(self, view: NSView, item: MenuEntry) -> None:
+        """변경된 행의 현재 표시 방식과 원본 링크로 배지·기한·버튼을 배치한다."""
+        title_x = 0.0
+        if item.display_fields is None:
+            if item.status is not None:
+                badge_width = status_badge(view, item.status, 5.5)
+                label(view, "-", badge_width + 7, 5.5, 9, size=11, secondary=True)
+                title_x = badge_width + 21
+            # 상태를 사용하지 않는 소스도 독립적으로 연결한 기한·차시를 표시한다.
+            middle = item.deadline or item.round_name
+            if middle is not None:
+                middle_label = label(
+                    view,
+                    middle,
+                    title_x,
+                    5.5,
+                    120,
+                    size=11,
+                    secondary=True,
+                )
+                date_width = min(120.0, middle_label.fittingSize()[0] + 2)
+                place_label(middle_label, title_x, 5.5, date_width, 18)
+                label(
+                    view,
+                    "-",
+                    title_x + date_width + 4,
+                    5.5,
+                    9,
+                    size=11,
+                    secondary=True,
+                )
+                title_x += date_width + 18
+        fields = item.display_fields
+        title = (
+            display_line(item.title, fields)
+            if fields is not None
+            else " ".join(
+                (item.title if item.status is not None else f"{item.detail}  {item.title}").split()
+            )
+        )
+        row = button(
+            view,
+            title,
+            title_x,
+            2,
+            self._width - title_x - 12,
+            self._target,
+            "open:",
+            bordered=False,
+        )
+        row.setFrame_(frame(title_x, 2, self._width - title_x - 12, 25))
+        row.setAlignment_(0)
+        row.cell().setRepresentedObject_(item.url)
+        row.setEnabled_(item.url is not None)
+        row.setToolTip_(
+            "\n".join((item.title, *(f"{name}  {value or '—'}" for name, value in fields)))
+            if fields
+            else item.title
+        )
 
     def resize(self, x: float, y: float, width: float, height: float) -> None:
         """확대·축소해도 위에서 읽던 항목의 위치를 유지한다."""

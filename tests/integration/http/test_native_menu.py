@@ -146,10 +146,11 @@ def test_native_menu_renders_and_saves_attendance(
         document = scroll.documentView()
         from AppKit import NSBox, NSColor, NSTextField
 
-        fields = [view for view in document.subviews() if isinstance(view, NSTextField)]
+        controls = [control for row in document.subviews() for control in row.subviews()]
+        fields = [view for view in controls if isinstance(view, NSTextField)]
         review = next(view for view in fields if view.stringValue() == "리뷰")
         assert any(view.stringValue() == "홀드" for view in fields)
-        badges = [view for view in document.subviews() if isinstance(view, NSBox)]
+        badges = [view for view in controls if isinstance(view, NSBox)]
         assert badges[0].fillColor() == NSColor.systemPurpleColor().colorWithAlphaComponent_(0.14)
         assert badges[1].fillColor() == NSColor.systemOrangeColor().colorWithAlphaComponent_(0.14)
         deadline = next(view for view in fields if view.stringValue() == "2026.11.20")
@@ -157,7 +158,7 @@ def test_native_menu_renders_and_saves_attendance(
 
         title = next(
             view
-            for view in document.subviews()
+            for view in controls
             if isinstance(view, NSButton) and view.title() == "테스트 업무 0"
         )
         assert review.frame().origin.x < deadline.frame().origin.x < title.frame().origin.x
@@ -175,21 +176,35 @@ def test_native_menu_renders_and_saves_attendance(
         # 짧은 목록은 문서가 뷰포트와 함께 늘어나도 버튼과 위쪽 여백을 유지한다.
         meeting_scroll = meeting_card.entries._scroll
         short_doc = meeting_scroll.documentView()
-        short_button = next(v for v in short_doc.subviews() if isinstance(v, NSButton))
-        margin = short_doc.frame().size.height - short_button.frame().origin.y
+        short_button = next(
+            v for row in short_doc.subviews() for v in row.subviews() if isinstance(v, NSButton)
+        )
+        margin = (
+            short_doc.frame().size.height
+            - short_button.convertRect_toView_(short_button.bounds(), short_doc).origin.y
+        )
         before = meeting_scroll.frame().size.height
         app.expand_source(1)
         assert meeting_scroll.frame().size.height == pytest.approx(before + 144)
         assert meeting_scroll.documentView() == short_doc
-        assert short_doc.frame().size.height - short_button.frame().origin.y == pytest.approx(
-            margin, abs=0.5
-        )
+        assert short_doc.frame().size.height - short_button.convertRect_toView_(
+            short_button.bounds(), short_doc
+        ).origin.y == pytest.approx(margin, abs=0.5)
         app.expand_source(1)
         # 앞 카드의 행 수와 링크가 달라져도 뒤 카드의 문서와 클릭 목적지는 유지한다.
         snapshot = app._controller.snapshot
         assert snapshot is not None
         from dataclasses import replace
 
+        # 한 행의 링크·배지가 바뀌어도 같은 카드의 다른 행은 기존 버튼을 계속 쓴다.
+        existing = snapshot.category_areas[tasks_card.key].entries
+        changed = replace(existing[1], status="완료", url="https://www.notion.so/changed")
+        task_card.entries.update((existing[0], changed, *existing[2:]))
+        assert scroll.documentView() == document
+        assert title in document.subviews()[0].subviews()
+        updated = next(v for v in document.subviews()[1].subviews() if isinstance(v, NSButton))
+        updated.performClick_(None)
+        assert opened[-1] == changed.url
         app._render_source_lists(
             replace(
                 snapshot,

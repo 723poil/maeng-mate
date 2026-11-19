@@ -13,10 +13,9 @@ from src.infrastructure.local_http import response_json
 class LocalStatusReader:
     """조회 포트의 HTTP 구현이며 다른 서비스 자격정보는 보유하지 않는다."""
 
-    def __init__(self, address: str, token: str) -> None:
-        """조립부가 검증한 주소와 조회 토큰만 받는다."""
-        self._address = address
-        self._token = token
+    def __init__(self, client: httpx.AsyncClient) -> None:
+        """MCP 실행 수명에 연결된 로컬 조회 클라이언트를 받는다."""
+        self._client = client
 
     async def read_status(self) -> dict[str, object]:
         """리다이렉트와 프록시 환경을 사용하지 않고 원본 HTTP 오류를 숨긴다."""
@@ -47,17 +46,13 @@ class LocalStatusReader:
     ) -> dict[str, object]:
         """인증된 읽기 경로의 응답 크기와 JSON 객체를 확인한다."""
         try:
-            async with httpx.AsyncClient(
-                trust_env=False, follow_redirects=False, timeout=10
-            ) as client:
-                headers = {"Authorization": f"Bearer {self._token}"}
-                response = (
-                    await client.get(self._address + path, params=parameters, headers=headers)
-                    if payload is None
-                    else await client.post(self._address + path, json=payload, headers=headers)
-                )
-                response.raise_for_status()
-                response_payload: object = response_json(response, max_bytes=1024 * 1024)
-                return json_object(response_payload)
+            response = (
+                await self._client.get(path, params=parameters)
+                if payload is None
+                else await self._client.post(path, json=payload)
+            )
+            response.raise_for_status()
+            response_payload = response_json(response, max_bytes=1024 * 1024)
+            return json_object(response_payload)
         except (httpx.HTTPError, ValueError):
             raise StatusReadError("로컬 업무 앱 조회에 실패했습니다.") from None

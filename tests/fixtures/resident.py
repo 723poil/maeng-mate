@@ -50,7 +50,8 @@ def start() -> None:
             from src.infrastructure.macos_keychain import MacKeychain
 
             isolated.enter_context(patch.object(MacKeychain, "read", return_value=None))
-        isolated.enter_context(patch.object(httpx, "AsyncClient", FakeClient))
+        # 수집기가 만드는 외부 연결만 가상화하고 MCP의 내부 루프백 연결은 그대로 둔다.
+        isolated.enter_context(patch("src.bootstrap.resident.httpx", AsyncClient=FakeClient))
         isolated.enter_context(patch.object(sys, "argv", ["maeng-mate", "run"]))
         main()
 

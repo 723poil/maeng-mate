@@ -69,9 +69,9 @@ def main() -> None:
             return
         if args.command == "mcp":
             from src.bootstrap.environment import mcp_environment
-            from src.bootstrap.mcp_wiring import build_mcp
+            from src.bootstrap.mcp_wiring import run_stdio_mcp
 
-            build_mcp(mcp_environment(os.environ)).run(transport="stdio")
+            asyncio.run(run_stdio_mcp(mcp_environment(os.environ)))
         elif args.command == "menubar":
             from src.bootstrap.desktop import run_menubar
             from src.bootstrap.instance import instance_lock

@@ -73,10 +73,10 @@ def build_api(
     mcp_service = (
         McpSettingsService(access, f"http://127.0.0.1:{environment.port}/mcp/") if access else None
     )
-    mcp_server = (
+    mcp_server, mcp_query_client = (
         build_mcp(McpEnvironment(f"http://127.0.0.1:{environment.port}", environment.token))
         if access
-        else None
+        else (None, None)
     )
 
     def set_mcp_ready(ready: bool) -> None:
@@ -113,6 +113,7 @@ def build_api(
         mcp_service=mcp_service,
         mcp_access=access,
         mcp_server=mcp_server,
+        mcp_query_client=mcp_query_client,
         on_mcp_ready=set_mcp_ready,
         query_today=build_today_query(
             environment, settings, reader=work_reader, page_links=page_links

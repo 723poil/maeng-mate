@@ -6,9 +6,22 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.application.ai_skills import SkillInstallError, SkillInstallResult, SkillTarget
+from src.application.ai_skills import (
+    SkillInstallError,
+    SkillInstallResult,
+    SkillTarget,
+    SkillVersions,
+    UnversionedSkill,
+    version_numbers,
+)
 from src.infrastructure.private_files import write_private_file
-from src.infrastructure.skill_bundle import MARKER, bundled_files, install_marker, installed_hashes
+from src.infrastructure.skill_bundle import (
+    MARKER,
+    SKILL_VERSION,
+    bundled_files,
+    install_marker,
+    installed_manifest,
+)
 
 _TARGETS = {"codex": ("Codex", ".agents"), "claude": ("Claude Code", ".claude")}
 
@@ -57,17 +70,47 @@ class UserSkillInstaller:
                 raise SkillInstallError("path")
         return path
 
+    def _read_marker(self, destination: Path) -> bytes | None:
+        """설치 이력이 없는 빈 경로와 다른 스킬이 있는 경로를 구분한다."""
+        marker = destination / MARKER
+        if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+            raise SkillInstallError("path")
+        if marker.is_file():
+            return marker.read_bytes()
+        if destination.exists() and any(destination.iterdir()):
+            raise SkillInstallError("modified")
+        return None
+
+    def _installed_version(self, root: str) -> str | UnversionedSkill:
+        """한 대상의 설치 기록 오류가 다른 대상의 버전 조회를 막지 않게 한다."""
+        try:
+            marker = self._read_marker(self._path(root))
+            if marker is None:
+                return UnversionedSkill.MISSING
+            version, _ = installed_manifest(marker)
+            return version or UnversionedSkill.LEGACY
+        except (SkillInstallError, OSError, ValueError):
+            return UnversionedSkill.UNKNOWN
+
+    def versions(self) -> SkillVersions:
+        """설정 화면에 동봉 버전과 각 AI의 마지막 설치 버전을 제공한다."""
+        return SkillVersions(
+            SKILL_VERSION,
+            self._installed_version(_TARGETS["codex"][1]),
+            self._installed_version(_TARGETS["claude"][1]),
+        )
+
     def _prepare(
         self, destination: Path, content: dict[str, bytes], manifest: bytes
     ) -> list[_InstallFile]:
-        """기존 설치 해시와 실제 파일을 비교하고 대상별 교체 순서를 정한다."""
-        marker = destination / MARKER
-        if marker.is_symlink():
-            raise SkillInstallError("path")
-        previous_marker = marker.read_bytes() if marker.exists() else None
-        expected = installed_hashes(previous_marker) if previous_marker is not None else {}
-        if previous_marker is None and destination.exists() and any(destination.iterdir()):
-            raise SkillInstallError("modified")
+        """기존 설치 버전과 해시를 검증하고 대상별 교체 순서를 정한다."""
+        previous_marker = self._read_marker(destination)
+        version, expected = (
+            installed_manifest(previous_marker) if previous_marker is not None else (None, {})
+        )
+        # 이전 앱을 다시 실행해도 더 높은 스킬 버전은 보존한다.
+        if version and version_numbers(version) > version_numbers(SKILL_VERSION):
+            raise SkillInstallError("newer")
         planned = []
         for name, data in content.items():
             path = destination / name
@@ -86,7 +129,7 @@ class UserSkillInstaller:
                 raise SkillInstallError("modified")
             planned.append(_InstallFile(path, old, data))
         # 해시 목록은 이 대상의 리소스가 모두 준비된 뒤에만 교체한다.
-        planned.append(_InstallFile(marker, previous_marker, manifest))
+        planned.append(_InstallFile(destination / MARKER, previous_marker, manifest))
         return planned
 
     def _apply(self, change: _InstallFile, rollback: ExitStack) -> None:
@@ -129,4 +172,4 @@ class UserSkillInstaller:
                 rollback.pop_all()
         except (OSError, ValueError):
             raise SkillInstallError("storage") from None
-        return SkillInstallResult(tuple(name for name, _ in selected))
+        return SkillInstallResult(tuple(name for name, _ in selected), SKILL_VERSION)

@@ -26,7 +26,11 @@ from src.infrastructure.sqlite.connection import Database
 
 def check_skill_install(home: Path) -> None:
     """임시 홈에 두 AI용 스킬을 설치해 번들에서 읽은 모든 파일과 대조한다."""
-    UserSkillInstaller(home).install("both")
+    installer = UserSkillInstaller(home)
+    result = installer.install("both")
+    versions = installer.versions()
+    if not versions.codex == versions.claude == versions.bundled == result.version:
+        raise RuntimeError("두 대상의 스킬 설치 버전이 동봉 버전과 다릅니다.")
     expected = bundled_files()
     for root in (".agents", ".claude"):
         destination = home / root / "skills/maeng-mate"

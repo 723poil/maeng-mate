@@ -4,7 +4,7 @@
 
 Mac 메뉴바에서 내 Notion 업무와 회의를 확인하고 출퇴근을 기록하는 앱입니다. 여러 표에 흩어진 마감일과 회의를 달력 하나에 모아 보고, 항목을 누르면 Notion 원본으로 이동합니다.
 
-[최신 버전 다운로드](https://github.com/723poil/maeng-mate/releases/latest) · [사용 가이드](docs/usage.md) · [릴리스 노트](https://github.com/723poil/maeng-mate/releases)
+[공식 사이트](https://maeng-mate.lucidalpaca32.chatgpt.site) · [최신 버전 다운로드](https://github.com/723poil/maeng-mate/releases/latest) · [사용 가이드](docs/usage.md) · [릴리스 노트](https://github.com/723poil/maeng-mate/releases)
 
 ## 주요 기능
 

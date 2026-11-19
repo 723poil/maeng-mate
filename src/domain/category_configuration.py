@@ -18,6 +18,7 @@ class CategoryColumn:
     kind: str
     visible: bool = True
     legacy_kind: str | None = None
+    status_badge: bool | None = None
 
 
 @dataclass(frozen=True)

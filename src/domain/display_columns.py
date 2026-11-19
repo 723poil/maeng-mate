@@ -34,6 +34,12 @@ class DisplayColumn:
     origin: str | None = None
     time_only: bool = False
     full_text: bool = False
+    status_badge: bool | None = None
+
+    @property
+    def shows_status_badge(self) -> bool:
+        """자동 표시는 이름에 관계없이 원본 상태 타입을 따르고 직접 고른 방식을 우선한다."""
+        return self.kind == "status" if self.status_badge is None else self.status_badge
 
     @property
     def property_id(self) -> str:

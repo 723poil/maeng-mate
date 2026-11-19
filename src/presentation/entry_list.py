@@ -4,6 +4,7 @@ from AppKit import (
     NSBox,
     NSColor,
     NSFont,
+    NSLineBreakByTruncatingTail,
     NSTextAlignmentCenter,
     NSTextField,
     NSView,
@@ -17,7 +18,9 @@ from src.presentation.native_views import button, frame, label, place_label
 from src.presentation.task_appearance import status_tone
 
 
-def status_badge(parent: NSView, status: str, y: float) -> float:
+def status_badge(
+    parent: NSView, status: str, y: float, *, x: float = 2, max_width: float = 128
+) -> float:
     """색과 원문 상태를 함께 표시해 색상만으로 구별하지 않게 한다."""
     from AppKit import NSBoxCustom, NSNoBorder, NSNoTitle
 
@@ -32,8 +35,8 @@ def status_badge(parent: NSView, status: str, y: float) -> float:
     caption = NSTextField.labelWithString_(status)
     caption.setFont_(NSFont.boldSystemFontOfSize_(10))
     # 글꼴과 셀 안쪽 여백까지 측정해 영문 글자의 끝이 잘리지 않게 한다.
-    width = min(128.0, max(36.0, caption.fittingSize()[0] + 16))
-    background = NSBox.alloc().initWithFrame_(frame(2, y, width, 18))
+    width = min(max_width, max(36.0, caption.fittingSize()[0] + 16))
+    background = NSBox.alloc().initWithFrame_(frame(x, y, width, 18))
     background.setBoxType_(NSBoxCustom)
     background.setTitlePosition_(NSNoTitle)
     background.setBorderType_(NSNoBorder)
@@ -42,7 +45,8 @@ def status_badge(parent: NSView, status: str, y: float) -> float:
     background.setFillColor_(color.colorWithAlphaComponent_(0.14))
     parent.addSubview_(background)
     caption.setAlignment_(NSTextAlignmentCenter)
-    place_label(caption, 2, y, width, 18)
+    caption.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
+    place_label(caption, x, y, width, 18)
     caption.setTextColor_(color)
     caption.setToolTip_(status)
     parent.addSubview_(caption)
@@ -115,7 +119,10 @@ class EntryList:
     def _render_row(self, view: NSView, item: MenuEntry) -> None:
         """변경된 행의 현재 표시 방식과 원본 링크로 배지·기한·버튼을 배치한다."""
         title_x = 0.0
-        if item.display_fields is None:
+        fields = item.display_fields
+        if fields is not None:
+            title_x, title = self._custom_title(view, item, fields)
+        else:
             if item.status is not None:
                 badge_width = status_badge(view, item.status, 5.5)
                 label(view, "-", badge_width + 7, 5.5, 9, size=11, secondary=True)
@@ -144,14 +151,9 @@ class EntryList:
                     secondary=True,
                 )
                 title_x += date_width + 18
-        fields = item.display_fields
-        title = (
-            display_line(item.title, fields)
-            if fields is not None
-            else " ".join(
+            title = " ".join(
                 (item.title if item.status is not None else f"{item.detail}  {item.title}").split()
             )
-        )
         row = button(
             view,
             title,
@@ -171,6 +173,22 @@ class EntryList:
             if fields
             else item.title
         )
+
+    def _custom_title(
+        self, view: NSView, item: MenuEntry, fields: tuple[tuple[str, str], ...]
+    ) -> tuple[float, str]:
+        """상태 배지를 앞에 고정하고 나머지 칼럼은 지정한 순서대로 제목 옆에 둔다."""
+        x = 0.0
+        inline = []
+        for index, (name, value) in enumerate(fields):
+            # 긴 배지나 여러 상태가 있어도 제목과 원본 열기 버튼의 공간을 남긴다.
+            available = self._width - 110 - x
+            if index in item.badge_field_indices and value and available >= 36:
+                x += status_badge(view, value, 5.5, x=x + 2, max_width=min(128, available)) + 6
+            else:
+                # 빈칸과 폭을 넘는 상태도 제목·도움말에서 확인할 수 있다.
+                inline.append((name, value))
+        return x, display_line(item.title, tuple(inline))
 
     def resize(self, x: float, y: float, width: float, height: float) -> None:
         """확대·축소해도 위에서 읽던 항목의 위치를 유지한다."""

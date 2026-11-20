@@ -66,7 +66,6 @@ TIME_COMPARISONS = {
     "gte": "해당 시각부터",
 }
 NO_VALUE = {"empty", "not_empty", "today"}
-HEIGHT = 388
 ROW_HEIGHT = 36
 VALUE_HEIGHT = 29
 
@@ -257,11 +256,12 @@ class MainListEditor:
         self._value_positions: list[tuple[int, int]] = []
         self._match: Choice | None = None
 
+        self._height = page.bounds()[1][1] - 39
         self._clear = button(
             page,
             "칼럼 조건 지우기" if alert_scope else "규칙 모두 지우기",
             479,
-            395,
+            self._height + 7,
             145,
             self._actions,
             "reset:",
@@ -271,7 +271,7 @@ class MainListEditor:
             if alert_scope
             else "표시 필터, 숨김 조건, 정렬을 모두 지웁니다. 저장 후 앱을 다시 시작하면 적용됩니다."
         )
-        self._list = scroll(page, 0, 0, 642, HEIGHT)
+        self._list = scroll(page, 0, 0, 642, self._height)
         self._render()
 
     def update_columns(self, columns: tuple[CategoryColumn, ...]) -> None:
@@ -514,7 +514,7 @@ class MainListEditor:
         document = self._list.documentView()
         if document is not None:
             origin = self._list.contentView().bounds()[0][1]
-            document.scrollPoint_((0, max(0, min(y - 5, max(origin, y + 32 - HEIGHT)))))
+            document.scrollPoint_((0, max(0, min(y - 5, max(origin, y + 32 - self._height)))))
 
     def _listen(self, control: NSButton, action: str, index: int) -> None:
         """행 번호와 네이티브 선택 이벤트를 연결한다."""
@@ -542,7 +542,9 @@ class MainListEditor:
         offset = (
             0.0
             if old is None
-            else max(0.0, old.frame()[1][1] - HEIGHT - self._list.contentView().bounds()[0][1])
+            else max(
+                0.0, old.frame()[1][1] - self._height - self._list.contentView().bounds()[0][1]
+            )
         )
         filter_height = 59 + ROW_HEIGHT * max(1, len(self._rules.filters))
         # 숨김 조건이 없으면 제목과 추가 버튼만 있는 한 줄로 둔다.
@@ -553,7 +555,7 @@ class MainListEditor:
         )
         if self._alert_scope:
             sort_height = 0
-        height = max(HEIGHT, filter_height + exclusion_height + sort_height + 34)
+        height = max(self._height, filter_height + exclusion_height + sort_height + 34)
         view = NSView.alloc().initWithFrame_(frame(0, 0, 626, height))
         top = height - 2
         self._clear.setEnabled_(
@@ -570,7 +572,7 @@ class MainListEditor:
         if not self._alert_scope:
             self._sort_card(view, exclusion_top - exclusion_height - 12, sort_height)
         self._list.setDocumentView_(view)
-        view.scrollPoint_((0, max(0, height - HEIGHT - offset)))
+        view.scrollPoint_((0, max(0, height - self._height - offset)))
         if old is not None:
             self.clear_status()
 

@@ -378,16 +378,13 @@ class CategoryConfigurationSheet:
         """소스와 무관하게 공유 칼럼에서 규칙의 조건을 선택한다."""
         self._alert_body.setSubviews_([])
         columns = tuple(item for item in self._columns if item.name)
-        editor = ColumnAlertEditor(
+        self._alert_editor = ColumnAlertEditor(
             self._alert_body,
             columns,
             self._alert_rules,
-            False,
             self.clear_status,
             people_columns=self._people_columns,
         )
-        editor.set_scope_description("기준 데이터와 조건을 선택하세요.")
-        self._alert_editor = editor
 
     def clear_status(self) -> None:
         """다른 입력을 시작하면 이전 오류를 지운다."""

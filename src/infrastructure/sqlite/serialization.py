@@ -31,10 +31,23 @@ def source_fingerprint(source: SourceMapping) -> str:
     if source.provider != "notion":
         payload["provider"] = source.provider
     if column := source.classification_column:
+        # 단일 칼럼의 고유 값 매핑은 이전과 같은 의미이므로 정상 스냅샷을 재사용한다.
+        values = dict(source.classification_values)
+        for rule in source.classification_rules:
+            condition = rule.conditions[0]
+            if (
+                len(rule.conditions) != 1
+                or condition.property_id != column.property_id
+                or condition.value in values
+                or condition.kind not in (column.kind, "status_or_select")
+            ):
+                payload["classificationRules"] = [asdict(r) for r in source.classification_rules]
+                break
+            values[condition.value] = rule.result
         payload["classification"] = (
             column.value_key,
             column.kind,
-            dict(source.classification_values),
+            values,
             *((source.classification_default,) if source.classification_default else ()),
         )
     if source.event_types:

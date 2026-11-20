@@ -13,6 +13,29 @@ EventType = Literal["meeting", "leave", "other"]
 
 
 @dataclass(frozen=True)
+class ClassificationCondition:
+    """원본 속성의 표시 문자열과 비교할 값을 보관한다."""
+
+    property_id: str
+    kind: str
+    value: str
+
+
+@dataclass(frozen=True)
+class ClassificationRule:
+    """조건 결합 방식에 따라 결과 이름을 선택한다."""
+
+    match: str
+    conditions: tuple[ClassificationCondition, ...]
+    result: str
+
+    def matches(self, originals: Mapping[str, str]) -> bool:
+        """빈 문자열도 명시적인 비교값으로 평가한다."""
+        matches = (originals[c.property_id] == c.value for c in self.conditions)
+        return all(matches) if self.match == "all" else any(matches)
+
+
+@dataclass(frozen=True)
 class SourceMapping:
     """회사별 속성 ID와 업무 의미의 연결을 표현한다."""
 
@@ -36,6 +59,7 @@ class SourceMapping:
 
     classification_column: DisplayColumn | None = None
     classification_values: Mapping[str, str] = field(default_factory=dict)
+    classification_rules: tuple[ClassificationRule, ...] = ()
     classification_default: str | None = None
 
     @property
@@ -54,6 +78,9 @@ class SourceMapping:
         columns.update(
             {rule.column_id: rule.column_kind for rule in self.alert_rules if rule.enabled}
         )
+        for rule in self.classification_rules:
+            for condition in rule.conditions:
+                columns.setdefault(condition.property_id, condition.kind)
         return columns
 
     @property

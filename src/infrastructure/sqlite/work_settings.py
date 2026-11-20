@@ -249,7 +249,7 @@ class SQLiteWorkSettings:
             preferences = read_preferences(connection, SOURCE_CHANNELS)
             statuses = (
                 _migration_status_options(connection, settings)
-                if current.payload.get("classificationVersion") != 3
+                if current.payload.get("classificationVersion") not in (3, 4)
                 else {}
             )
             upgrade = upgrade_work_settings(current, preferences, statuses)

@@ -23,7 +23,7 @@ from src.domain.category_event_alerts import (
 from src.domain.daily_work import WorkRules, parse_rules
 from src.domain.display_columns import DISPLAY_COLUMN_TYPES, MAX_DISPLAY_COLUMNS, DisplayColumn
 from src.domain.main_list import FIELD_KINDS, ListFilter, ListSort, MainListRules
-from src.domain.models import EventType, SourceMapping
+from src.domain.models import ClassificationCondition, ClassificationRule, EventType, SourceMapping
 from src.domain.source_alerts import (
     COLLECTION_STATE,
     MAX_SOURCE_ALERT_RULES,
@@ -99,7 +99,7 @@ def parse_settings(value: object) -> Settings:
             or value.get("timezone") != "Asia/Seoul"
             or value.get("categoryAssignmentVersion") not in (None, 1)
             or type(value.get("classificationVersion", 1)) is not int
-            or value.get("classificationVersion", 1) not in (1, 2, 3)
+            or value.get("classificationVersion", 1) not in (1, 2, 3, 4)
             or type(rules_version) is not int
             or rules_version != 1
         ):
@@ -174,6 +174,33 @@ def parse_settings(value: object) -> Settings:
         return replace(settings, retention_confirmed=confirmed, history_days=days, log_days=logs)
     except (ValueError, TypeError, KeyError):
         raise WorkSettingsError("invalid") from None
+
+
+def parse_classification_rules(raw: object, provider: str) -> tuple[ClassificationRule, ...]:
+    """앞선 규칙부터 적용하도록 입력 순서를 보존하고 빈 규칙을 거부한다."""
+    if not isinstance(raw, list):
+        raise ValueError
+    rules = []
+    for row in raw:
+        if not isinstance(row, dict) or set(row) != {"match", "conditions", "result"}:
+            raise ValueError
+        mode = nonblank(row["match"])
+        items = row["conditions"]
+        if mode not in ("all", "any") or not isinstance(items, list) or not items:
+            raise ValueError
+        conditions = []
+        for item in items:
+            if not isinstance(item, dict) or set(item) != {"property", "kind", "value"}:
+                raise ValueError
+            kind = nonblank(item["kind"])
+            if kind != "status_or_select" and not accepts_column_type(provider, "text", kind):
+                raise ValueError
+            value = item["value"]
+            if not isinstance(value, str):
+                raise ValueError
+            conditions.append(ClassificationCondition(nonblank(item["property"]), kind, value))
+        rules.append(ClassificationRule(mode, tuple(conditions), nonblank(row["result"])))
+    return tuple(rules)
 
 
 def parse_source(item: dict[str, object]) -> SourceMapping:
@@ -290,11 +317,12 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
     column = None
     classes: dict[str, str] = {}
     fallback = None
+    rules: tuple[ClassificationRule, ...] = ()
     if "classification" in item:
         if not isinstance(classification, dict) or set(classification) - {
             "default",
             "storageId",
-        } != {"property", "kind", "name", "values"}:
+        } not in ({"property", "kind", "name", "values"}, {"property", "kind", "name", "rules"}):
             raise ValueError
         prop = nonblank(classification["property"])
         origin_kind = nonblank(classification["kind"])
@@ -311,7 +339,8 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
             origin_kind,
             prop if "storageId" in classification else None,
         )
-        pairs = classification["values"]
+        rules = parse_classification_rules(classification.get("rules", []), provider)
+        pairs = classification.get("values", {})
         if not isinstance(pairs, dict):
             raise ValueError
         for key, result in pairs.items():
@@ -338,6 +367,7 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         parse_alert_rules(item["alertRules"]) if "alertRules" in item else (),
         classification_column=column,
         classification_values=classes,
+        classification_rules=rules,
         classification_default=fallback,
     )
 
@@ -1414,16 +1444,16 @@ def empty_work_settings() -> dict[str, object]:
         "timezone": "Asia/Seoul",
         "sources": [],
         "mainListRulesVersion": 1,
-        "classificationVersion": 3,
+        "classificationVersion": 4,
     }
 
 
 def is_initial_document(document: WorkSettingsDocument) -> bool:
     """새 설치의 빈 문서만 최초 가져오기 대상으로 구분한다."""
     # 표시 규칙 버전만 없던 초기 문서도 한 번의 파일 가져오기를 허용한다.
-    normalized = {"mainListRulesVersion": 1, "classificationVersion": 3, **document.payload}
-    if normalized["classificationVersion"] in (1, 2):
-        normalized["classificationVersion"] = 3
+    normalized = {"mainListRulesVersion": 1, "classificationVersion": 4, **document.payload}
+    if normalized["classificationVersion"] in (1, 2, 3):
+        normalized["classificationVersion"] = 4
     return document.revision == 1 and normalized == empty_work_settings()
 
 

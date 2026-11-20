@@ -275,10 +275,11 @@ def normalize_page(
         """회사별 매핑을 통해 원천 속성을 선택한다."""
         return props.by_id(source.properties[name])
 
-    values = {
-        identifier: " ".join(column_text(props.by_id(identifier), kind).split())
+    originals = {
+        identifier: column_text(props.by_id(identifier), kind)
         for identifier, kind in source.collected_columns().items()
     }
+    values = {identifier: " ".join(value.split()) for identifier, value in originals.items()}
     display = {
         column.value_key: (
             clock_text(column_period(props.by_id(column.property_id), column.kind))
@@ -295,6 +296,11 @@ def normalize_page(
         original = column_text(props.by_id(column.property_id), column.kind)
         classification = source.classification_values.get(
             original, source.classification_default or original
+        )
+        # 조건은 표시용 생략이나 분류 결과 대입 전의 원문을 비교한다.
+        classification = next(
+            (rule.result for rule in source.classification_rules if rule.matches(originals)),
+            classification,
         )
         display[column.value_key] = (
             classification if column.full_text else classification[:DISPLAY_VALUE_LIMIT]

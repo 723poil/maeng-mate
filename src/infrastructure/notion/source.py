@@ -244,6 +244,21 @@ class NotionSource:
                     display_columns=resolved if not source.stored_columns else None,
                     stored_columns=resolved if source.stored_columns else (),
                     alert_rules=resolved_rules,
+                    classification_rules=tuple(
+                        replace(
+                            rule,
+                            conditions=tuple(
+                                replace(
+                                    c,
+                                    property_id=text(
+                                        record(properties.get(c.property_id)).get("id")
+                                    ),
+                                )
+                                for c in rule.conditions
+                            ),
+                        )
+                        for rule in source.classification_rules
+                    ),
                     classification_column=resolved[layout.index(source.classification_column)]
                     if source.classification_column
                     else None,

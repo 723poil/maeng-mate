@@ -343,7 +343,7 @@ def _upgrade_classification_v2(payload: dict[str, object]) -> dict[str, object]:
     }
 
 
-def upgrade_classification(
+def _upgrade_classification_v3(
     payload: dict[str, object], status_options: Mapping[str, tuple[str, ...]]
 ) -> dict[str, object] | None:
     """기존 카드의 암묵적인 상태 분류를 수집 소스의 편집 가능한 값으로 이전한다."""
@@ -383,3 +383,30 @@ def upgrade_classification(
                 values[name] = STATUS_GROUP_NAMES[group]
         raw["classification"] = {**rule, "values": values}
     return {**payload, "classificationVersion": 3, "sources": sources}
+
+
+def upgrade_classification(
+    payload: dict[str, object], status_options: Mapping[str, tuple[str, ...]]
+) -> dict[str, object] | None:
+    """기존 값별 매핑을 동일한 결과의 단일 조건 규칙으로 한 번 이전한다."""
+    if payload.get("classificationVersion") == 4:
+        return None
+    payload = _upgrade_classification_v3(payload, status_options) or payload
+    sources = source_documents(payload)
+    for source in sources:
+        old = source.get("classification")
+        if isinstance(old, dict) and "values" in old:
+            rule = dict(old)
+            pairs = rule.pop("values")
+            rule["rules"] = [
+                {
+                    "match": "all",
+                    "result": result,
+                    "conditions": [
+                        {"property": rule["property"], "kind": rule["kind"], "value": key}
+                    ],
+                }
+                for key, result in pairs.items()
+            ]
+            source["classification"] = rule
+    return {**payload, "classificationVersion": 4, "sources": sources}

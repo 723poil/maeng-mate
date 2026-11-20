@@ -23,7 +23,12 @@ from src.domain.daily_work import WorkRules, parse_rules
 from src.domain.display_columns import DISPLAY_COLUMN_TYPES, MAX_DISPLAY_COLUMNS, DisplayColumn
 from src.domain.main_list import FIELD_KINDS, ListFilter, ListSort, MainListRules
 from src.domain.models import EventType, SourceMapping
-from src.domain.source_alerts import MAX_SOURCE_ALERT_RULES, AlertDelivery, SourceAlertRule
+from src.domain.source_alerts import (
+    MAX_SOURCE_ALERT_RULES,
+    AlertDelivery,
+    AlertSchedule,
+    SourceAlertRule,
+)
 from src.domain.source_display import (
     SOURCE_CHANNELS,
     SOURCE_COLORS,
@@ -344,6 +349,18 @@ def alert_delivery_payload(delivery: AlertDelivery | None) -> dict[str, object]:
     return {"delivery": {"message": delivery.message, "channels": list(delivery.channels)}}
 
 
+def parse_alert_schedule(raw: object, kind: str, target: object) -> AlertSchedule:
+    """날짜·시간 칼럼만 예약 대상으로 받고 값 변경 조건과 혼용하지 않는다."""
+    if kind not in {"date", "time", "created_time", "last_edited_time"} or target is not None:
+        raise ValueError("예약 규칙에는 날짜 또는 시간 칼럼을 선택하세요.")
+    if not isinstance(raw, dict) or set(raw) != {"mode", "value"}:
+        raise ValueError("알림 예약 조건을 확인하세요.")
+    mode, value = raw["mode"], raw["value"]
+    if mode not in ("same_day", "previous_day", "before_start") or not isinstance(value, str):
+        raise ValueError("알림 예약 입력을 확인하세요.")
+    return AlertSchedule(mode, value)
+
+
 def parse_alert_rules(
     raw: object, kinds: tuple[str, ...] = DISPLAY_COLUMN_TYPES
 ) -> tuple[SourceAlertRule, ...]:
@@ -352,7 +369,7 @@ def parse_alert_rules(
         raise ValueError
     rules = []
     for item in raw:
-        if not isinstance(item, dict) or set(item) - {"delivery"} != {
+        if not isinstance(item, dict) or set(item) - {"delivery", "schedule"} != {
             "id",
             "name",
             "columnId",
@@ -381,6 +398,9 @@ def parse_alert_rules(
                 value,
                 enabled,
                 delivery=parse_alert_delivery(item["delivery"]) if "delivery" in item else None,
+                schedule=parse_alert_schedule(item["schedule"], kind, target)
+                if "schedule" in item
+                else None,
             )
         )
     if len({rule.id for rule in rules}) != len(rules):
@@ -399,6 +419,11 @@ def alert_rules_payload(rules: tuple[SourceAlertRule, ...]) -> list[dict[str, ob
             "target": rule.target,
             "enabled": rule.enabled,
             **alert_delivery_payload(rule.delivery),
+            **(
+                {"schedule": {"mode": rule.schedule.mode, "value": rule.schedule.value}}
+                if rule.schedule
+                else {}
+            ),
         }
         for rule in rules
     ]

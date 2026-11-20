@@ -9,8 +9,9 @@ from src.application.models import SyncRun
 from src.application.notion_links import notion_link
 from src.application.work_settings import Settings, parse_settings
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
-from src.domain.source_alerts import SourceAlertRule
+from src.domain.source_alerts import AlertSchedule, SourceAlertRule
 from src.domain.work_dates import canonical_identity
+from src.infrastructure.sqlite.notification_deliveries import logical_completed
 from src.infrastructure.sqlite.notification_keys import notification_key
 from src.infrastructure.sqlite.serialization import fingerprint, source_fingerprint
 
@@ -31,6 +32,7 @@ def field_alert_scopes(source: SourceMapping, user: str | None) -> dict[str, Sou
                 rule.column_id,
                 rule.comparison_kind,
                 rule.target,
+                *((rule.schedule.mode, rule.schedule.value) if rule.schedule else ()),
             )
         ): rule
         for rule in source.alert_rules
@@ -40,13 +42,14 @@ def field_alert_scopes(source: SourceMapping, user: str | None) -> dict[str, Sou
 
 def saved_rule_bindings(
     settings: Settings,
-) -> dict[tuple[str, str], tuple[str, str, str | None, str]]:
+) -> dict[tuple[str, str], tuple[str, str, str | None, AlertSchedule | None, str]]:
     """규칙 이름을 제외한 실제 조건을 저장값과 실행값 사이에서 비교한다."""
     return {
         (source.source_id, rule.notification_kind): (
             rule.column_id,
             rule.comparison_kind,
             rule.target,
+            rule.schedule,
             source_fingerprint(source),
         )
         for source in settings.active_sources
@@ -153,18 +156,31 @@ def record_field_alerts(
             if digest is None:
                 continue
             before = previous.pop(item.id, None)
-            if before == digest:
-                continue
-            connection.execute(
-                """INSERT INTO source_alert_baselines(source_id,scope,item_id,value_hash,kind_key) VALUES(?,?,?,?,?)
-                ON CONFLICT(source_id,scope,item_id) DO UPDATE SET value_hash=excluded.value_hash""",
-                (source.source_id, scope, item.id, digest, rule.notification_kind),
-            )
-            if before is None:
-                continue
-            invalidate_field_alert(connection, source.source_id, scope, item.id)
-            if rule.accepts(digest):
-                enqueue_field_alert(connection, run, item, scope, rule, digest, now)
+            if before != digest:
+                connection.execute(
+                    """INSERT INTO source_alert_baselines(source_id,scope,item_id,value_hash,kind_key) VALUES(?,?,?,?,?)
+                    ON CONFLICT(source_id,scope,item_id) DO UPDATE SET value_hash=excluded.value_hash""",
+                    (source.source_id, scope, item.id, digest, rule.notification_kind),
+                )
+                if before is not None:
+                    invalidate_field_alert(connection, source.source_id, scope, item.id)
+            if rule.schedule is not None:
+                # 처음 본 미래 시각과 누락 후 다시 나타난 미래 시각도 한 번만 예약한다.
+                due = item.alert_due_at.get(rule.id)
+                if due is not None and due.timestamp() >= now:
+                    enqueue_field_alert(
+                        connection,
+                        run,
+                        item,
+                        scope,
+                        rule,
+                        digest,
+                        due.timestamp(),
+                        rule.schedule.expires_at(due).timestamp(),
+                        scheduled=True,
+                    )
+            elif before is not None and before != digest and rule.accepts(digest):
+                enqueue_field_alert(connection, run, item, scope, rule, digest, now, now + 86400)
         # 관측했지만 사람 범위에서 빠지거나 비교값이 사라진 항목만 기준에서 제거한다.
         for item_id in previous:
             invalidate_field_alert(connection, source.source_id, scope, item_id)
@@ -221,15 +237,48 @@ def enqueue_field_alert(
     scope: str,
     rule: SourceAlertRule,
     digest: str,
-    now: float,
+    due: float,
+    expires: float,
+    *,
+    scheduled: bool = False,
 ) -> None:
     """수집 세대별 알림과 최신 값 확인에 필요한 근거를 저장한다."""
     job = notification_key(f"source-change:{scope}:{item.id}:{run.id}")
     title = item.title if not isinstance(item, Leave) else "항목 값 변경"
+    logical = job
+    if scheduled:
+        logical = notification_key(f"scheduled:{scope}:{item.id}:{digest}")
+        # 같은 시각을 다시 수집하면 대기 중인 안내만 갱신한다. 취소된 미래 예약은 복구할 수 있다.
+        current = connection.execute(
+            """SELECT id,state,body,notion_url FROM notification_jobs
+            WHERE logical_key=? AND state IN ('pending','delivering') LIMIT 1""",
+            (logical,),
+        ).fetchone()
+        if current is not None:
+            url = notion_link(item.url)
+            if current["state"] == "pending" and (
+                current["body"] != title[:160] or current["notion_url"] != url
+            ):
+                connection.execute(
+                    "UPDATE notification_jobs SET body=?,notion_url=? WHERE id=?",
+                    (title[:160], url, current["id"]),
+                )
+            return
+        if logical_completed(connection, logical):
+            return
     connection.execute(
         """INSERT INTO notification_jobs(id,logical_key,kind,title,body,notion_url,due_at,expires_at,state,source_key)
         VALUES(?,?,'source_change',?,?,?, ?,?,'pending',?)""",
-        (job, job, rule.name, title[:160], notion_link(item.url), now, now + 86400, scope),
+        (
+            job,
+            logical,
+            rule.name,
+            title[:160],
+            notion_link(item.url),
+            due,
+            expires,
+            scope,
+        ),
     )
     connection.execute(
         """INSERT INTO source_alert_events(job_id,source_id,item_id,field_id,value_hash,mapping_hash,kind_key,person_scoped)

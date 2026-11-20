@@ -207,6 +207,14 @@ class SourceSettingsForm:
         )
         self.parent_display = self._check("부모 제목 표시", 102, 39, 168, "changed:")
         self.parent_sort = self._popup(self._advanced, 284, 38, 254, ["부모 정렬 없음"], "changed:")
+        self._parent_hint = label(
+            self._advanced,
+            "카드 정렬을 지정했다면 ‘부모 정렬값’을 추가하세요.",
+            12,
+            8,
+            400,
+            secondary=True,
+        )
         self._parent_orders: list[tuple[str, str | None]] = []
         self._remove = button(self._advanced, "소스 제거", 425, 5, 113, self._actions, "remove:")
         self._round_title: NSPopUpButton | None = None
@@ -608,6 +616,7 @@ class SourceSettingsForm:
         nested = self._uses_rounds()
         self.parent_display.setHidden_(not nested)
         self.parent_sort.setHidden_(not nested)
+        self._parent_hint.setHidden_(not nested)
         if not nested:
             return
         saved = self._original if self._uses_saved_layout() else {}

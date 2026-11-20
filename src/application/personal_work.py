@@ -13,6 +13,7 @@ from src.application.ports import SnapshotReader
 from src.application.today_metadata import source_metadata, utc_string
 from src.application.today_models import MainListCard, SourceSnapshot, TodayContext
 from src.domain.display_columns import DisplayColumn, labelled_values
+from src.domain.main_list import ListSort
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
 from src.domain.policies import RelevancePolicy
 from src.domain.work_dates import SEOUL, canonical_identity, deadline_flags, meeting_on_day
@@ -320,12 +321,26 @@ def desktop_card_previews(
     preview = partial(
         desktop_preview, limit=limit, budget=budget, context=context, preview_values=preview_values
     )
+    parent_sorted = {
+        source.source_id
+        for source in context.sources
+        if source.parent_order in ("suffix", "column")
+    }
     for source_id, items in areas.items():
         order = ordering[source_id]
         if order == "title":
             items.sort(key=lambda item: str(item["title"]).casefold())
         elif order == "date":
             items.sort(key=desktop_date_key)
+        elif source_id in parent_sorted and not (
+            source_id in cards and cards[source_id].rules.sorts
+        ):
+            # 카드와 소스의 명시 정렬이 없을 때만 해당 표 안에서 부모 숫자를 비교한다.
+            ranked: list[tuple[dict[str, object], Mapping[str, str]]] = [
+                (item, sort_values[(source_id, str(item["id"]))]) for item in items
+            ]
+            ListSort("parentOrder", descending=True).apply(ranked, "number")
+            items[:] = [item for item, _ in ranked]
         if source_id in cards:
             categories.setdefault(cards[source_id].key, []).extend(items)
             continue
@@ -423,7 +438,18 @@ class PersonalWorkSelection:
         """모든 행의 경고를 확인하고, 카드 미리보기는 정렬 후 표시값을 만들도록 원본을 남긴다."""
         for batch in self.batches:
             source = batch.source
+            card = context.main_cards.get(source.source_id)
+            use_parent_order = (
+                preview_values is not None
+                and context.desktop_areas.get(source.source_id) == "default"
+                and source.parent_order in ("suffix", "column")
+                and not (card and card.rules.sorts)
+            )
             for group, item, row in batch.rows:
+                if use_parent_order and isinstance(item, Task):
+                    self.sort_values[(source.source_id, item.id)] = {
+                        "parentOrder": item.parent_order or ""
+                    }
                 columns = context.display_columns.get(item.source_id)
                 if columns is not None:
                     if preview_values is not None and source.source_id in context.desktop_areas:

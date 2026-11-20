@@ -4,13 +4,13 @@
 
 Mac 메뉴바에서 내 Notion 업무와 회의를 확인하고 출퇴근을 기록하는 앱입니다. 여러 표에 흩어진 마감일과 회의를 달력 하나에 모아 보고, 항목을 누르면 Notion 원본으로 이동합니다.
 
-[최신 버전 다운로드](https://github.com/723poil/maeng-mate/releases/latest) · [사용 가이드](docs/usage.md) · [릴리스 노트](https://github.com/723poil/maeng-mate/releases)
+[공식 사이트](https://maeng-mate.lucidalpaca32.chatgpt.site) · [최신 버전 다운로드](https://github.com/723poil/maeng-mate/releases/latest) · [사용 가이드](docs/usage.md) · [릴리스 노트](https://github.com/723poil/maeng-mate/releases)
 
 ## 주요 기능
 
 - **업무와 일정** — 업무·QA·회의를 카드별로 모아 봅니다. 자주 보는 카드를 위에 두거나 마감일과 우선순위로 목록을 정렬할 수 있습니다.
 - **출퇴근 기록** — 출근 시각을 입력하면 휴게 시간과 휴가를 반영해 퇴근 예정 시각을 계산합니다. 실제 퇴근 시각은 월별 기록에서 확인하고 수정할 수 있습니다.
-- **알림** — 새 업무가 배정됐을 때, 회의 시작 10분 전, 퇴근을 앞둔 시각에 macOS 알림이나 Slack DM을 받을 수 있습니다.
+- **알림** — 카테고리별로 알림 규칙을 등록하고 macOS 알림이나 Slack DM으로 받습니다. 퇴근 알림 시각은 알림 설정에서 선택합니다.
 - **AI에서 조회** — Codex나 Claude Code를 읽기 전용 MCP에 연결하면 “오늘 내 회의가 뭐야?”처럼 물어볼 수 있습니다. 앱 설정에서 두 클라이언트의 업무 조회 스킬을 설치하고 업데이트할 수 있습니다.
 
 ## 앱 설치

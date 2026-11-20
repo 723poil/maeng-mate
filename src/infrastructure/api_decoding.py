@@ -55,12 +55,23 @@ def strings(value: object) -> tuple[str, ...]:
 
 def parse_display_fields(value: object) -> tuple[tuple[str, str], ...] | None:
     """기본 표시와 직접 비워 둔 사용자 표시를 구분한다."""
+    fields, _ = parse_menu_display_fields(value)
+    return fields
+
+
+def parse_menu_display_fields(
+    value: object,
+) -> tuple[tuple[tuple[str, str], ...] | None, frozenset[int]]:
+    """칼럼 순서로 배지를 식별하고 표시 방식이 없는 이전 응답은 텍스트로 읽는다."""
     if value is None:
-        return None
+        return None, frozenset()
     if not isinstance(value, list):
         raise ValueError
     fields = []
-    for raw in value:
+    badges: set[int] = set()
+    for index, raw in enumerate(value):
         field = json_object(raw)
         fields.append((text(field["label"]), text(field["value"])))
-    return tuple(fields)
+        if boolean(field.get("badge", False)):
+            badges.add(index)
+    return tuple(fields), frozenset(badges)

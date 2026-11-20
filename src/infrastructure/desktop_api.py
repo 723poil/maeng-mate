@@ -20,7 +20,7 @@ from src.infrastructure.api_decoding import (
     instant,
     integer,
     json_object,
-    parse_display_fields,
+    parse_menu_display_fields,
     strings,
     text,
 )
@@ -58,7 +58,7 @@ def entries(
     result: list[MenuEntry] = []
     for item in value:
         raw = json_object(item)
-        display_fields = parse_display_fields(raw.get("displayFields"))
+        display_fields, badge_indices = parse_menu_display_fields(raw.get("displayFields"))
         title = text(raw["title"])
         if "cancelled" in raw and boolean(raw["cancelled"]):
             title = f"[취소] {title}"
@@ -105,6 +105,7 @@ def entries(
                 text(raw["qaRound"]) if raw.get("qaRound") is not None else None,
                 text(raw["sourceId"]) if raw.get("sourceId") is not None else None,
                 display_fields,
+                badge_indices,
             )
         )
     return tuple(result)

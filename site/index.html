@@ -9,6 +9,7 @@
   <link rel="icon" href="assets/app-icon.svg">
   <link rel="preload" href="assets/fonts/PretendardVariable.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
+  <script src="download.js" defer></script>
 </head>
 <body id="top">
   <svg class="symbols" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
@@ -20,13 +21,13 @@
     <symbol id="chat" viewBox="0 0 24 24"><g stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" fill="none"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-5 3v-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M7 9h10M7 13h6"/></g></symbol>
   </svg>
   <a class="skip" href="#main">본문으로 이동</a>
-  <header class="wrap"><a class="brand" href="#top"><img src="assets/app-icon.svg" alt="">Maeng Mate</a><nav aria-label="주 메뉴"><a href="#features">사용 화면</a><a href="#install">설치 안내</a><a class="nav-download" href="https://github.com/723poil/maeng-mate/releases/download/v0.6.0/Maeng-Mate-0.6.0-macOS-arm64.dmg">다운로드</a></nav></header>
+  <header class="wrap"><a class="brand" href="#top"><img src="assets/app-icon.svg" alt="">Maeng Mate</a><nav aria-label="주 메뉴"><a href="#features">사용 화면</a><a href="#install">설치 안내</a><a class="nav-download" data-release-download href="https://github.com/723poil/maeng-mate/releases/latest">다운로드</a></nav></header>
   <main id="main">
     <div class="hero-surface"><section class="hero wrap" aria-labelledby="hero-title">
       <div class="hero-copy">
         <h1 id="hero-title">메뉴바 업무 수첩</h1>
         <p>내 Notion 표에서 메뉴바에 표시할 열을 고르세요.<br>출퇴근도 메뉴바에서 기록합니다.</p>
-        <div class="actions"><a class="button" href="https://github.com/723poil/maeng-mate/releases/download/v0.6.0/Maeng-Mate-0.6.0-macOS-arm64.dmg"><svg aria-hidden="true"><use href="#download"/></svg>Mac용 다운로드</a></div>
+        <div class="actions"><a class="button" data-release-download href="https://github.com/723poil/maeng-mate/releases/latest"><svg aria-hidden="true"><use href="#download"/></svg>Mac용 다운로드</a></div>
         <small>Apple Silicon · macOS 26 이상</small>
       </div>
       <div class="hero-preview">
@@ -51,13 +52,13 @@
       <div class="integrations"><div><svg aria-hidden="true"><use href="#bell"/></svg><div><h3>알림 설정</h3><p>카테고리별로 알림 조건을 정하고, Mac 알림과 Slack DM 중 받을 곳을 고르세요.</p></div></div><div><svg aria-hidden="true"><use href="#chat"/></svg><div><h3>Codex · Claude Code</h3><p>읽기 전용 MCP로 내 업무와 회의 일정을 조회합니다.</p></div></div></div>
     </section>
     <section class="install wrap" id="install" aria-labelledby="install-title">
-      <div class="install-lead"><img src="assets/app-icon.svg" width="72" height="72" alt=""><h2 id="install-title">Mac에 설치하기</h2><p>Apple Silicon Mac · macOS 26 이상</p><a class="button" href="https://github.com/723poil/maeng-mate/releases/download/v0.6.0/Maeng-Mate-0.6.0-macOS-arm64.dmg"><svg aria-hidden="true"><use href="#download"/></svg>v0.6.0 DMG 다운로드</a></div>
+      <div class="install-lead"><img src="assets/app-icon.svg" width="72" height="72" alt=""><h2 id="install-title">Mac에 설치하기</h2><p>Apple Silicon Mac · macOS 26 이상</p><a class="button" data-release-download href="https://github.com/723poil/maeng-mate/releases/latest"><svg aria-hidden="true"><use href="#download"/></svg><span data-release-label>DMG 다운로드</span></a></div>
       <div><ol>
         <li>DMG를 열고 <strong>Maeng Mate.app</strong>을 응용 프로그램 폴더로 옮기세요.</li>
         <li>앱을 실행하고 메뉴바의 수첩 아이콘을 누르세요.</li>
         <li><strong>설정 → 연동 → Notion</strong>에 토큰과 사용자 ID를 입력하세요. ‘카테고리’에서 카드를 만든 뒤 ‘수집 소스’에서 표와 열을 연결하세요.</li>
       </ol>
-        <details class="install-note"><summary>처음 실행할 때 보안 경고가 뜬다면</summary><p>현재 버전은 Apple 공증을 받지 않았습니다. DMG와 체크섬은 <a href="https://github.com/723poil/maeng-mate/releases/tag/v0.6.0">공식 릴리스</a>에서 확인하세요. <a href="https://support.apple.com/ko-kr/102445">Apple의 보안 경고 안내</a></p></details>
+        <details class="install-note"><summary>처음 실행할 때 보안 경고가 뜬다면</summary><p>현재 버전은 Apple 공증을 받지 않았습니다. DMG와 체크섬은 <a data-release-notes href="https://github.com/723poil/maeng-mate/releases/latest">공식 릴리스</a>에서 확인하세요. <a href="https://support.apple.com/ko-kr/102445">Apple의 보안 경고 안내</a></p></details>
       </div>
     </section>
   </main>

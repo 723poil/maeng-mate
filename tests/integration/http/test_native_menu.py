@@ -143,7 +143,7 @@ def test_native_menu_renders_and_saves_attendance(
         app.open_source_board(0)
         app.open_source_board(1)
         assert opened == ["https://www.notion.so/fake-tasks", "https://www.notion.so/fake-meetings"]
-        assert "완료" in app._collection_detail.stringValue()
+        assert "완료 기준 없음" not in app._collection_detail.stringValue()
         assert "미기록" in app._message.stringValue()
         assert app._departure.stringValue() == "18:00"
         assert asyncio.run(service.read())["revision"] == 0

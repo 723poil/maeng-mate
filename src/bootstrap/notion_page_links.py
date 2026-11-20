@@ -24,9 +24,7 @@ def build_page_links(database: Database, settings: Settings | None) -> NotionPag
             definitions.append(
                 (source.source_id, section, page_url(settings.source_pages.get(source.source_id)))
             )
-            summaries[source.source_id] = source_summary(
-                source, settings.completed_statuses.get(source.source_id)
-            )
+            summaries[source.source_id] = source_summary(source)
     counts = Counter(section for _, section, _ in definitions)
     index: Counter[str] = Counter()
     result: list[NotionPageLink] = []

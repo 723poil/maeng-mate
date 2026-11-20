@@ -994,8 +994,6 @@ class MenuBarApp:
             detail = f"저장된 자료 표시 중  ·  최근 수집 {clock_label(collection.last_success)}"
         if snapshot.work_error:
             detail = "수집한 항목을 불러오지 못했습니다."
-        elif "completion_status_unconfigured" in snapshot.warnings:
-            detail += "  ·  완료 기준 없음"
         self._collection_detail.setStringValue_(detail)
         self._collection_detail.setToolTip_(detail)
         seconds = collection.interval_seconds

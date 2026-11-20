@@ -549,7 +549,7 @@ class SourceSettingsForm:
         return result
 
     def _default_choices(self) -> dict[str, int]:
-        """이미 저장된 상태와 일정 분류를 같은 이름으로 복원한다."""
+        """이미 저장된 일정 분류와 휴가 승인 값을 같은 이름으로 복원한다."""
         kind = self._mode()
         if kind == "meeting":
             rules = self._original.get("eventTypes", {})
@@ -559,8 +559,11 @@ class SourceSettingsForm:
                     for name, value in rules.items()
                     if value in EVENT_CHOICES
                 }
-        values = self._original.get("approvedValues" if kind == "leave" else "completedStatuses")
-        return {str(name): 1 for name in values} if isinstance(values, list) else {}
+        if kind == "leave":
+            values = self._original.get("approvedValues")
+            if isinstance(values, list):
+                return {str(name): 1 for name in values}
+        return {}
 
     def _draw_mapping(self) -> None:
         """기존 매핑에 맞는 칼럼이나 조회 안내를 표시한다."""
@@ -603,12 +606,16 @@ class SourceSettingsForm:
             for role in ROLES[kind]
             if role.key in selected or any(column.kind in role.types for column in schema.columns)
         )
-        rule_key = {"task": "status", "leave": "approval", "meeting": "category"}[kind]
-        options_column = next(
-            (col for col in schema.columns if self._same_value(col, selected.get(rule_key, ""))),
-            None,
+        # 업무의 상태는 원문을 수집한다. 옵션별 지정은 일정 분류와 휴가 승인에만 필요하다.
+        rule_property = selected.get("category") or selected.get("approval")
+        options = next(
+            (
+                col.options
+                for col in schema.columns
+                if rule_property is not None and self._same_value(col, rule_property)
+            ),
+            (),
         )
-        options = options_column.options if options_column else ()
         height = 48 + 32 * (len(roles) + bool(schema.round_titles) + len(options))
         card(body, 0, 0, 628, height)
         label(body, "원본 칼럼 선택", 12, height - 32, 360, bold=True)
@@ -633,9 +640,8 @@ class SourceSettingsForm:
                 control.selectItemAtIndex_(self._choices.get(name, 0))
                 self._options[name] = control
             else:
-                prefix = "완료" if kind == "task" else "승인"
                 check = NSButton.checkboxWithTitle_target_action_(
-                    f"{prefix} · {name}", self._actions, "changed:"
+                    f"승인 · {name}", self._actions, "changed:"
                 )
                 check.setFrame_(frame(12, y, 526, 26))
                 check.setState_(self._choices.get(name, 0))
@@ -894,12 +900,20 @@ class SourceSettingsForm:
                 value["eventTypes"] = {
                     name: EVENT_CHOICES[index] for name, index in choices.items() if index
                 }
-            if kind in {"task", "leave"}:
+            if kind == "leave":
                 selected = [name for name, index in choices.items() if index == 1]
-                if kind == "leave" and not selected:
+                if not selected:
                     raise SourceSettingsError("승인된 휴가에 쓰는 상태를 하나 이상 선택하세요.")
-                if kind == "leave" or selected or "completedStatuses" in old:
-                    value["approvedValues" if kind == "leave" else "completedStatuses"] = selected
+                value["approvedValues"] = selected
+            # 같은 표의 같은 상태 칼럼에 한해 메인 목록에서 쓰던 완료 기준을 보존한다.
+            old_properties = old.get("properties")
+            if (
+                kind == "task"
+                and "completedStatuses" in old
+                and isinstance(old_properties, dict)
+                and values.get("status") == old_properties.get("status")
+            ):
+                value["completedStatuses"] = old["completedStatuses"]
         value.pop("columnMappings", None)
         if self._category_links:
             value["columnMappings"] = column_bindings_payload(self._category_links)

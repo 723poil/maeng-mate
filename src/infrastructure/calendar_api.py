@@ -20,7 +20,7 @@ from src.infrastructure.api_decoding import (
     boolean,
     instant,
     json_object,
-    parse_display_fields,
+    parse_menu_display_fields,
     text,
 )
 from src.infrastructure.local_http import local_client, response_json
@@ -74,6 +74,7 @@ def parse_calendar(value: object) -> CalendarMonth:
             not isinstance(category_key, str) or not category_key.startswith("category:")
         ):
             raise ValueError
+        fields, badge_indices = parse_menu_display_fields(item.get("displayFields"))
         items.append(
             CalendarItem(
                 identifier,
@@ -95,7 +96,8 @@ def parse_calendar(value: object) -> CalendarMonth:
                 color=color,
                 category_key=category_key,
                 category=text(item["category"]) if item.get("category") is not None else None,
-                display_fields=parse_display_fields(item.get("displayFields")),
+                display_fields=fields,
+                badge_field_indices=badge_indices,
             )
         )
     attendance: list[CalendarAttendance] = []

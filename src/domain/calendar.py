@@ -55,6 +55,7 @@ class CalendarItem:
     category_key: str | None = None
     display_fields: tuple[tuple[str, str], ...] | None = None
     category: str | None = None
+    badge_field_indices: frozenset[int] = frozenset()
 
     def occurs_on(self, day: date) -> bool:
         """자정 종료를 반영해 미리 정규화한 날짜 구간으로 판정한다."""

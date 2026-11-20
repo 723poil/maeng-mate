@@ -13,10 +13,13 @@ from src.domain.calendar import CalendarItem, CalendarMonth
 _FIELD_OVERHEAD = len(json.dumps({"label": "", "value": ""})) - 2 * len('""')
 
 
-def detail_size_within_budget(fields: tuple[tuple[str, str], ...], budget: int) -> int | None:
+def detail_size_within_budget(
+    fields: tuple[tuple[str, str], ...], budget: int, badge_count: int = 0
+) -> int | None:
     """남은 한도를 넘으면 그 행의 나머지 칼럼은 변환하지 않는다."""
     # 배열·구분자·객체 키의 고정 비용은 문자열을 읽기 전에 알 수 있다.
     size = len("[]") + max(0, len(fields) - 1) * len(", ") + len(fields) * _FIELD_OVERHEAD
+    size += badge_count * len(', "badge": true')
     if size > budget:
         return None
     for name, value in fields:
@@ -35,11 +38,18 @@ def calendar_payload(value: CalendarMonth) -> dict[str, object]:
     for item in value.items:
         row = calendar_item_payload(item)
         if item.display_fields is not None:
-            size = detail_size_within_budget(item.display_fields, detail_budget)
+            size = detail_size_within_budget(
+                item.display_fields, detail_budget, len(item.badge_field_indices)
+            )
             if size is not None:
                 detail_budget -= size
                 row["displayFields"] = [
-                    {"label": name, "value": text} for name, text in item.display_fields
+                    {
+                        "label": name,
+                        "value": text,
+                        **({"badge": True} if index in item.badge_field_indices else {}),
+                    }
+                    for index, (name, text) in enumerate(item.display_fields)
                 ]
             else:
                 row["displayFields"] = []

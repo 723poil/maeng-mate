@@ -188,6 +188,12 @@ def project_item(
         if mapping.display_columns is not None
         else None,
         category=item.category if isinstance(item, CalendarEvent) else None,
+        # 표시 순번을 사용해 이름이 같은 칼럼도 메인 목록과 같은 방식으로 구분한다.
+        badge_field_indices=frozenset(
+            index
+            for index, column in enumerate(mapping.display_columns or ())
+            if column.shows_status_badge
+        ),
     )
 
 

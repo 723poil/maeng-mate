@@ -69,7 +69,7 @@ class ColumnSetupSheet:
         rounds: bool = False,
         classification: dict[str, object] | None = None,
     ) -> None:
-        """현재 카테고리와 소스 조회기의 결과로 두 페이지를 구성한다."""
+        """현재 카테고리와 소스 조회기의 결과로 수집 속성·분류·저장 칼럼 연결을 구성한다."""
         self.parent, self._apply, self._closed = parent, apply, closed
         self._links, self._rounds = links, rounds
         self._connections: dict[str, tuple[NSPopUpButton, tuple[SourceColumn, ...]]] = {}
@@ -84,7 +84,7 @@ class ColumnSetupSheet:
         self.window.setContentView_(content)
         label(content, source_name, 22, 485, 642, size=17, bold=True)
         label(content, f"카테고리 · {category_name}", 22, 457, 642, secondary=True)
-        titles = ("카테고리 칼럼", "수집에 사용할 속성", "분류 기준")
+        titles = ("수집에 사용할 속성", "분류 기준", "카테고리 칼럼 연결")
         self._tabs = NSSegmentedControl.alloc().initWithFrame_(frame(22, 411, 454, 32))
         self._tabs.setSegmentCount_(len(titles))
         self._tabs.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
@@ -98,9 +98,10 @@ class ColumnSetupSheet:
             page = NSView.alloc().initWithFrame_(frame(22, 54, 642, 342))
             content.addSubview_(page)
             self._pages.append(page)
-        self._layout_columns(self._pages[0], columns, available, links)
+        roles, classification_page, category_columns = self._pages
+        self._layout_columns(category_columns, columns, available, links)
         label(
-            self._pages[1],
+            roles,
             "항목 제목과 날짜·필터에 사용할 원본 속성을 고르세요.",
             9,
             310,
@@ -108,13 +109,13 @@ class ColumnSetupSheet:
             secondary=True,
         )
         self.classification = SourceClassificationEditor(
-            self._pages[2],
-            scroll(self._pages[2], 0, 39, 642, 210),
+            classification_page,
+            scroll(classification_page, 0, 39, 642, 210),
             available,
             classification or {},
             self.same_property,
         )
-        self._roles = scroll(self._pages[1], 0, 0, 642, 290)
+        self._roles = scroll(roles, 0, 0, 642, 290)
         self._status = label(content, "", 22, 18, 413, size=12, secondary=True)
         button(content, "취소", 465, 15, 90, self._actions, "cancel:").setKeyEquivalent_("\x1b")
         button(content, "적용", 568, 15, 96, self._actions, "apply:").setKeyEquivalent_("\r")
@@ -212,13 +213,13 @@ class ColumnSetupSheet:
         try:
             self.classification.draft()
         except SourceSettingsError as error:
-            self.select_tab(2)
+            self.select_tab(1)
             self._status.setStringValue_(str(error))
             return
         message = self._apply(links)
         if message:
             self._status.setStringValue_(message)
-            self.select_tab(1)
+            self.select_tab(0)
             return
         self.finish(True)
 

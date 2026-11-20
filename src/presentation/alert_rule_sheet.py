@@ -10,6 +10,7 @@ from AppKit import (
     NSButton,
     NSColor,
     NSPanel,
+    NSTextView,
     NSView,
     NSWindow,
     NSWindowStyleMaskTitled,
@@ -73,6 +74,10 @@ class AlertRuleActions(NSObject):
         """특정 값 조건에만 변경될 값의 입력을 받는다."""
         self.owner.render_condition()
         self.owner.input_changed()
+
+    def insertVariable_(self, sender: object) -> None:
+        """표시한 변수를 알림 문구의 편집 위치에 넣는다."""
+        self.owner.insert_variable()
 
     def target_(self, sender: object) -> None:
         """사용자가 후속 값을 선택하면 이전 오류를 지운다."""
@@ -146,7 +151,7 @@ class AlertRuleSheet:
         self._visible_column: CategoryColumn | None = None
         self._target_values: tuple[str, ...] = ()
 
-        self.scope_view = NSView.alloc().initWithFrame_(frame(22, 132, 642, 320))
+        self.scope_view = NSView.alloc().initWithFrame_(frame(22, 160, 642, 292))
         view.addSubview_(self.scope_view)
         self.status = label(view, "", 22, 20, 427)
         self.status.setTextColor_(NSColor.systemRedColor())
@@ -162,8 +167,11 @@ class AlertRuleSheet:
             received_choices=self.update_observed,
         )
         self.scope = self.source_scope.common
-        label(view, "알림 문구", 22, 105, 88)
-        self.message = field(view, "", 118, 101, 546, "보낼 본문 입력")
+        label(view, "알림 문구", 22, 133, 88)
+        self.message = field(view, "", 118, 129, 546, "보낼 본문 입력")
+        self._variable_label = label(view, "사용 가능 변수", 22, 103, 90, secondary=True)
+        self._variable = button(view, "", 118, 99, 200, self._actions, "insertVariable:")
+        self._variable.setRefusesFirstResponder_(True)
         label(view, "전달 채널", 22, 72, 88)
         self.delivery_channel = popup(view, 118, 68, 546)
         self.delivery_channel.setToolTip_("전체 및 카테고리 설정에서 허용한 채널로 보냅니다.")
@@ -260,11 +268,60 @@ class AlertRuleSheet:
         elif rule:
             self._body_token = alert_body_token(rule.column_id, rule.previous_kind)
             self._initial_message = self._body_token
+        self._initial_body_token = self._body_token
         self.message.setStringValue_(self._initial_message)
-        if self._body_token:
-            self.message.setToolTip_(
-                f"{self._body_token} 자리에 발송할 항목의 실제 내용이 들어갑니다."
-            )
+        self._update_variable()
+
+    def _available_variable(self) -> str | None:
+        """현재 기준 데이터와 이 규칙의 발송 본문에 대응하는 변수를 찾는다."""
+        column = self._chosen()
+        if column is None:
+            return None
+        rule = self.original
+        if rule and rule.column_id == column.id:
+            if rule.delivery and rule.delivery.body_token:
+                return rule.delivery.body_token
+            return alert_body_token(column.id, rule.previous_kind)
+        return alert_body_token(column.id, None)
+
+    def _update_variable(self) -> None:
+        """기준 데이터가 바뀌면 안내와 이미 삽입한 변수를 함께 맞춘다."""
+        token = self._available_variable()
+        self._variable.setHidden_(token is None)
+        self._variable_label.setHidden_(token is None)
+        if token is None:
+            return
+        message = self.message.stringValue()
+        previous = self._message_variable(message, self._variable.title())
+        if previous and previous != token:
+            self.message.setStringValue_(message.replace(previous, token))
+            self._body_token = token
+        self._variable.setTitle_(token)
+        self._variable.setAccessibilityLabel_(f"{token} 변수 삽입")
+        self._variable.setToolTip_(
+            "클릭하면 알림 문구에 삽입됩니다. 발송 시 실제 값으로 채워집니다."
+        )
+
+    def insert_variable(self) -> None:
+        """편집 중에는 선택 영역을 교체하고, 편집을 시작하기 전에는 끝에 추가한다."""
+        token = self._available_variable()
+        if token is None:
+            return
+        self._body_token = token
+        editor = self.message.currentEditor()
+        if isinstance(editor, NSTextView):
+            editor.insertText_replacementRange_(token, editor.selectedRange())
+        else:
+            self.message.setStringValue_(self.message.stringValue() + token)
+        self.input_changed()
+
+    def _message_variable(self, message: str, available: str | None) -> str | None:
+        """버튼 삽입과 직접 입력을 지원하고 저장된 일반 텍스트는 그대로 해석한다."""
+        if self._body_token and self._body_token in message:
+            return self._body_token
+        if available and available in message and available not in self._initial_message:
+            return available
+        return None
 
     def _read_delivery(self) -> AlertDelivery | None:
         """문구와 채널을 독립적으로 편집하고 그대로 둔 값은 상속 상태까지 보존한다."""
@@ -277,15 +334,21 @@ class AlertRuleSheet:
             self.original
             and index == self._initial_channel_index
             and message == self._initial_message
+            and self._body_token == self._initial_body_token
         ):
             return original
         channels: tuple[str, ...] | None = DELIVERY_CHOICES[index][1]
         if self.original and index == self._initial_channel_index:
             channels = original.channels if original else None
         # 동적 표시만 있으면 큐에서 만든 원래 본문을 사용하고, 덧붙인 문구도 함께 처리한다.
-        body_token = self._body_token if self._body_token and self._body_token in message else None
+        body_token = self._message_variable(message, self._available_variable())
         try:
-            if body_token and message == body_token:
+            if (
+                body_token
+                and body_token == self._initial_body_token
+                and message == body_token
+                and (original is None or original.message is None)
+            ):
                 return AlertDelivery(None, channels)
             return AlertDelivery(message, channels, body_token)
         except ValueError as error:
@@ -338,6 +401,7 @@ class AlertRuleSheet:
         if self._visible_column != self._chosen():
             self._load_conditions()
             self._load_target(None)
+            self._update_variable()
         self.input_changed()
         self.render_condition()
 

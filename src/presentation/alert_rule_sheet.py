@@ -17,7 +17,7 @@ from AppKit import (
 from Foundation import NSObject
 
 from src.application.errors import COLLECTION_FAILURE_CODES
-from src.application.source_settings import SourceSettingsError
+from src.application.source_settings import SourceSettingsClient, SourceSettingsError
 from src.domain.category_configuration import CategoryColumn
 from src.domain.source_alerts import (
     COLLECTION_STATE,
@@ -26,9 +26,16 @@ from src.domain.source_alerts import (
     AlertSchedule,
     ScheduleMode,
     SourceAlertRule,
+    alert_body_token,
 )
-from src.presentation.category_sheet_controls import field, popup, set_entries
-from src.presentation.main_list_editor import MainListEditor
+from src.presentation.alert_source_scope_editor import AlertSource, AlertSourceScopeEditor
+from src.presentation.category_sheet_controls import (
+    field,
+    observed_field,
+    popup,
+    set_entries,
+    set_observed_choices,
+)
 from src.presentation.native_views import button, frame, label
 
 CHANGE_CONDITIONS = ("조건 선택", "값이 바뀔 때", "특정 값으로 바뀔 때", "값이 비워질 때")
@@ -86,10 +93,16 @@ class AlertRuleSheet:
         original: SourceAlertRule | None,
         people_columns: frozenset[str],
         completed: Callable[[SourceAlertRule | None], None],
+        *,
+        sources: tuple[AlertSource, ...] = (),
+        category_id: str | None = None,
+        client: SourceSettingsClient | None = None,
+        default_channels: tuple[str, ...] = ("macos", "slack"),
     ) -> None:
         """기존 규칙 또는 빈 초안으로 발송 입력과 대상 조건을 함께 연다."""
         self.parent = parent
         self.original = original
+        self._default_channels = default_channels
         self._completed = completed
         self._result: SourceAlertRule | None = None
         self._columns = (*columns, CategoryColumn(COLLECTION_STATE, "수집 상태", "collection"))
@@ -97,60 +110,58 @@ class AlertRuleSheet:
         self._actions = AlertRuleActions.alloc().init()
         self._actions.owner = proxy(self)
         self.window = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            frame(0, 0, 686, 544), NSWindowStyleMaskTitled, NSBackingStoreBuffered, False
+            frame(0, 0, 686, 584), NSWindowStyleMaskTitled, NSBackingStoreBuffered, False
         )
         self.window.setReleasedWhenClosed_(False)
         self.window.setTitle_("알림 규칙 편집" if original else "새 알림 규칙")
-        view = NSView.alloc().initWithFrame_(frame(0, 0, 686, 544))
+        view = NSView.alloc().initWithFrame_(frame(0, 0, 686, 584))
         self.window.setContentView_(view)
-        label(view, "규칙 이름", 22, 502, 88)
-        self.name = field(view, "", 118, 499, 390, "알림에 표시할 이름")
+        label(view, "규칙 이름", 22, 542, 88)
+        self.name = field(view, "", 118, 539, 390, "알림에 표시할 이름")
         self.enabled = NSButton.checkboxWithTitle_target_action_(
             "이 규칙 사용", self._actions, "target:"
         )
-        self.enabled.setFrame_(frame(528, 498, 136, 26))
+        self.enabled.setFrame_(frame(528, 538, 136, 26))
         view.addSubview_(self.enabled)
 
-        label(view, "기준 데이터", 22, 465, 88)
-        self.column = popup(view, 118, 461, 546)
+        label(view, "기준 데이터", 22, 505, 88)
+        self.column = popup(view, 118, 501, 546)
         self.column.setTarget_(self._actions)
         self.column.setAction_("column:")
-        label(view, "언제 보낼지", 22, 431, 88)
-        self.condition = popup(view, 118, 427, 252)
+        label(view, "언제 보낼지", 22, 471, 88)
+        self.condition = popup(view, 118, 467, 252)
         self.condition.setTarget_(self._actions)
         self.condition.setAction_("condition:")
-        self._target_label = label(view, "", 379, 431, 80)
-        self.target = field(view, "", 460, 428, 204, "변경 후 값")
-        self._target_choice = popup(view, 460, 427, 204)
+        self._target_label = label(view, "", 379, 471, 80)
+        self.target = field(view, "", 460, 468, 204, "변경 후 값")
+        self._typed_target = self.target
+        self._observed_target = observed_field(view, "", 460, 468, 204, ())
+        self._observed_target.setHidden_(True)
+        self._observed: dict[str, tuple[str, ...]] = {}
+        self._target_suggestions: tuple[str, ...] = ()
+        self._target_choice = popup(view, 460, 467, 204)
         self._target_choice.setTarget_(self._actions)
         self._target_choice.setAction_("target:")
         self._schedule_choices: tuple[tuple[ScheduleMode, str], ...] = ()
         self._visible_column: CategoryColumn | None = None
         self._target_values: tuple[str, ...] = ()
 
-        self.scope_view = NSView.alloc().initWithFrame_(frame(22, 146, 642, 266))
+        self.scope_view = NSView.alloc().initWithFrame_(frame(22, 132, 642, 320))
         view.addSubview_(self.scope_view)
         self.status = label(view, "", 22, 20, 427)
         self.status.setTextColor_(NSColor.systemRedColor())
-        self.scope = MainListEditor(
+        self.source_scope = AlertSourceScopeEditor(
             self.scope_view,
             columns,
             original.scope if original else None,
+            original.source_scopes if original else None,
+            sources,
+            client,
             self.input_changed,
-            alert_scope=True,
+            category_id=category_id,
+            received_choices=self.update_observed,
         )
-        label(self.scope_view, "어떤 항목에", 0, 234, 104, bold=True)
-        self.legacy: NSButton | None = None
-        if original and original.item_filter:
-            title = (
-                "기존 범위 유지 · 회의로 분류된 항목"
-                if original.item_filter == "meeting"
-                else "기존 범위 유지 · 지나지 않은 일정"
-            )
-            self.legacy = NSButton.checkboxWithTitle_target_action_(title, self._actions, "target:")
-            self.legacy.setFrame_(frame(106, 232, 360, 26))
-            self.legacy.setState_(1)
-            self.scope_view.addSubview_(self.legacy)
+        self.scope = self.source_scope.common
         label(view, "알림 문구", 22, 105, 88)
         self.message = field(view, "", 118, 101, 546, "보낼 본문 입력")
         label(view, "전달 채널", 22, 72, 88)
@@ -158,7 +169,7 @@ class AlertRuleSheet:
         self.delivery_channel.setToolTip_("전체 및 카테고리 설정에서 허용한 채널로 보냅니다.")
         self.delivery_channel.setTarget_(self._actions)
         self.delivery_channel.setAction_("target:")
-        for control in (self.name, self.target, self.message):
+        for control in (self.name, self.target, self._observed_target, self.message):
             control.setDelegate_(self._actions)
         button(view, "취소", 464, 15, 92, self._actions, "cancel:").setKeyEquivalent_("\x1b")
         button(view, "적용", 568, 15, 96, self._actions, "apply:").setKeyEquivalent_("\r")
@@ -171,6 +182,7 @@ class AlertRuleSheet:
 
     def _finish(self, response: int) -> None:
         """취소하거나 창을 닫으면 편집 전 목록을 유지한다."""
+        self.source_scope.close()
         self.window.orderOut_(None)
         self._completed(self._result if response == 1 else None)
 
@@ -217,7 +229,7 @@ class AlertRuleSheet:
             mode = 4 if rule.member == "self" else 5
         self.condition.selectItemAtIndex_(mode)
         self.enabled.setState_(int(rule is not None and rule.enabled))
-        self._fill_delivery(rule.delivery if rule else None, existing=rule is not None)
+        self._fill_delivery(rule)
         self._load_target(
             rule.schedule.value
             if rule and rule.schedule
@@ -230,33 +242,52 @@ class AlertRuleSheet:
         self.render_condition()
         self.status.setStringValue_("")
 
-    def _fill_delivery(self, delivery: AlertDelivery | None, *, existing: bool) -> None:
-        """새 규칙은 빈 입력으로 열고 이전 문서의 전달 방식만 별도로 표시한다."""
-        titles = [title for title, _ in DELIVERY_CHOICES]
-        index = 0
-        if delivery is not None:
-            index = next(
-                i
-                for i, (_, keys) in enumerate(DELIVERY_CHOICES)
-                if set(keys) == set(delivery.channels)
-            )
-        elif existing:
-            index = len(titles)
-            titles.append("기존 문구와 채널 유지")
-        set_entries(self.delivery_channel, titles)
+    def _fill_delivery(self, rule: SourceAlertRule | None) -> None:
+        """기존 규칙의 실제 문구와 채널을 복원하고 신규 규칙은 빈 값으로 연다."""
+        delivery = rule.delivery if rule else None
+        channels = delivery.channels if delivery is not None else None
+        if channels is None:
+            channels = self._default_channels if rule else ()
+        self._initial_channel_index = index = next(
+            i for i, (_, keys) in enumerate(DELIVERY_CHOICES) if set(keys) == set(channels)
+        )
+        set_entries(self.delivery_channel, [title for title, _ in DELIVERY_CHOICES])
         self.delivery_channel.selectItemAtIndex_(index)
-        self.message.setStringValue_(delivery.message if delivery else "")
+        self._body_token = delivery.body_token if delivery else None
+        self._initial_message = ""
+        if delivery is not None and delivery.message is not None:
+            self._initial_message = delivery.message
+        elif rule:
+            self._body_token = alert_body_token(rule.column_id, rule.previous_kind)
+            self._initial_message = self._body_token
+        self.message.setStringValue_(self._initial_message)
+        if self._body_token:
+            self.message.setToolTip_(
+                f"{self._body_token} 자리에 발송할 항목의 실제 내용이 들어갑니다."
+            )
 
     def _read_delivery(self) -> AlertDelivery | None:
-        """기존 동작 유지와 사용자가 명시적으로 비운 채널을 구분한다."""
+        """문구와 채널을 독립적으로 편집하고 그대로 둔 값은 상속 상태까지 보존한다."""
         index = self.delivery_channel.indexOfSelectedItem()
+        if not 0 <= index < len(DELIVERY_CHOICES):
+            raise SourceSettingsError("전달 채널을 선택하세요.")
         message = self.message.stringValue().strip()
-        if index == len(DELIVERY_CHOICES):
-            if message:
-                raise SourceSettingsError("직접 입력한 문구를 받을 채널을 선택하세요.")
-            return None
+        original = self.original.delivery if self.original else None
+        if (
+            self.original
+            and index == self._initial_channel_index
+            and message == self._initial_message
+        ):
+            return original
+        channels: tuple[str, ...] | None = DELIVERY_CHOICES[index][1]
+        if self.original and index == self._initial_channel_index:
+            channels = original.channels if original else None
+        # 동적 표시만 있으면 큐에서 만든 원래 본문을 사용하고, 덧붙인 문구도 함께 처리한다.
+        body_token = self._body_token if self._body_token and self._body_token in message else None
         try:
-            return AlertDelivery(message, DELIVERY_CHOICES[index][1])
+            if body_token and message == body_token:
+                return AlertDelivery(None, channels)
+            return AlertDelivery(message, channels, body_token)
         except ValueError as error:
             raise SourceSettingsError(str(error)) from error
 
@@ -315,6 +346,11 @@ class AlertRuleSheet:
         self.status.setStringValue_("")
         self.status.setToolTip_(None)
 
+    def update_observed(self, choices: dict[str, tuple[str, ...]]) -> None:
+        """공통 칼럼의 실제 수집값을 발송 조건 입력에도 반영한다."""
+        self._observed = choices
+        self.render_condition()
+
     def render_condition(self) -> None:
         """모든 변경을 알리는 조건이면 값 선택을 접는다."""
         column = self._chosen()
@@ -326,6 +362,16 @@ class AlertRuleSheet:
         failure = bool(column and column.id == COLLECTION_STATE)
         specific = self.condition.indexOfSelectedItem() == 2 or person
         mode = self._schedule_mode()
+        suggest = column is not None and column.kind == "text" and specific and not person
+        active = self._observed_target if suggest else self._typed_target
+        if active is not self.target:
+            active.setStringValue_(self.target.stringValue())
+            self.target.setHidden_(True)
+            self.target = active
+        suggestions = self._observed.get(column.id, ()) if suggest and column else ()
+        if suggestions != self._target_suggestions:
+            set_observed_choices(self._observed_target, suggestions)
+            self._target_suggestions = suggestions
         self._target_label.setStringValue_(
             "사람 ID"
             if person
@@ -346,6 +392,8 @@ class AlertRuleSheet:
             if mode == "before_start"
             else "HH:MM · 서울 시간"
             if mode
+            else "수집값 선택 또는 직접 입력"
+            if suggest
             else "알림을 받을 값 입력"
         )
         self._target_label.setHidden_(not specific and mode is None)
@@ -364,10 +412,8 @@ class AlertRuleSheet:
                     existing,
                     name=name,
                     delivery=self._read_delivery(),
-                    scope=self.scope.draft(),
-                    item_filter=existing.item_filter
-                    if self.legacy and self.legacy.state() == 1
-                    else None,
+                    scope=self.source_scope.common_draft(),
+                    source_scopes=self.source_scope.draft(),
                 )
             raise SourceSettingsError("규칙에 사용할 기준 데이터를 선택하세요.")
         mode = self.condition.indexOfSelectedItem()
@@ -412,13 +458,8 @@ class AlertRuleSheet:
             delivery=self._read_delivery(),
             schedule=schedule,
             member=member,
-            item_filter=existing.item_filter
-            if existing
-            and self.legacy
-            and self.legacy.state() == 1
-            and column.id != COLLECTION_STATE
-            else None,
-            scope=self.scope.draft() if column.id != COLLECTION_STATE else None,
+            scope=self.source_scope.common_draft() if column.id != COLLECTION_STATE else None,
+            source_scopes=self.source_scope.draft() if column.id != COLLECTION_STATE else None,
         )
         if (
             existing
@@ -432,4 +473,16 @@ class AlertRuleSheet:
             == proposed
         ):
             return replace(proposed, previous_kind=existing.previous_kind)
+        if (
+            existing
+            and self._body_token
+            and self._body_token != alert_body_token(proposed.column_id, proposed.previous_kind)
+            and self.message.stringValue().strip() == self._body_token
+            and (proposed.delivery is None or proposed.delivery.message is None)
+        ):
+            # 조건을 바꿔 이전 발송 식별자를 끊어도 편집란의 동적 본문은 그대로 보존한다.
+            channels = proposed.delivery.channels if proposed.delivery else None
+            return replace(
+                proposed, delivery=AlertDelivery(self._body_token, channels, self._body_token)
+            )
         return proposed

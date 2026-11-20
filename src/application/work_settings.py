@@ -40,7 +40,9 @@ from src.domain.source_display import (
     SourceDisplay,
     source_notifications,
 )
+from src.domain.source_scope import SourceScope, calendar_conditions
 from src.domain.task_display import QATaskDisplayPolicy
+from src.domain.work_dates import canonical_identity
 
 
 class WorkSettingsError(ValueError):
@@ -336,20 +338,30 @@ def display_columns_payload(columns: tuple[DisplayColumn, ...]) -> list[dict[str
 
 def parse_alert_delivery(value: object) -> AlertDelivery:
     """명시적인 빈 채널을 보존하고 알림 발신에 사용할 값만 허용한다."""
-    if not isinstance(value, dict) or set(value) != {"message", "channels"}:
+    if not isinstance(value, dict) or set(value) - {"bodyToken"} != {"message", "channels"}:
         raise ValueError
     channels = category_channels(value["channels"])
     message = value["message"]
-    if channels is None or not isinstance(message, str):
+    body_token = value.get("bodyToken")
+    if body_token is not None and not isinstance(body_token, str):
         raise ValueError
-    return AlertDelivery(message.strip(), channels)
+    if message is not None and not isinstance(message, str):
+        raise ValueError
+    return AlertDelivery(message.strip() if message is not None else None, channels, body_token)
 
 
 def alert_delivery_payload(delivery: AlertDelivery | None) -> dict[str, object]:
     """기존 문서는 전달 설정을 생략해 원래 본문과 채널 선택을 유지한다."""
     if delivery is None:
         return {}
-    return {"delivery": {"message": delivery.message, "channels": list(delivery.channels)}}
+    channels = list(delivery.channels) if delivery.channels is not None else None
+    return {
+        "delivery": {
+            "message": delivery.message,
+            "channels": channels,
+            **({"bodyToken": delivery.body_token} if delivery.body_token is not None else {}),
+        }
+    }
 
 
 def parse_alert_schedule(raw: object, kind: str, target: object) -> AlertSchedule:
@@ -386,6 +398,31 @@ def parse_alert_scope(
     return rules if rules.fields else None
 
 
+def parse_source_scopes(raw: object) -> tuple[SourceScope, ...]:
+    """표별 조건과 원본 칼럼 참조를 검증하고 표 중복을 막는다."""
+    if not isinstance(raw, list):
+        raise ValueError
+    result = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) - {"exclusions"} != {
+            "sourceId",
+            "match",
+            "filters",
+        }:
+            raise ValueError
+        rules = MainListRules(
+            nonblank(item["match"]),
+            parse_list_filters(item["filters"], source_options=True),
+            exclusions=parse_list_filters(item.get("exclusions", []), source_options=True),
+        )
+        scope = SourceScope(canonical_identity(nonblank(item["sourceId"])), rules)
+        scope.validate()
+        result.append(scope)
+    if len({item.source_id for item in result}) != len(result):
+        raise ValueError
+    return tuple(result)
+
+
 def parse_alert_rules(
     raw: object,
     kinds: tuple[str, ...] = DISPLAY_COLUMN_TYPES,
@@ -402,6 +439,7 @@ def parse_alert_rules(
             "schedule",
             "member",
             "itemFilter",
+            "sourceScopes",
             "scope",
             "previousKind",
         } != {
@@ -440,6 +478,10 @@ def parse_alert_rules(
         item_filter = item.get("itemFilter")
         if item_filter not in (None, "meeting", "upcoming"):
             raise ValueError
+        if "sourceScopes" in item and (
+            scope_columns is None or item_filter is not None or column == COLLECTION_STATE
+        ):
+            raise ValueError
         value = None if target is None else " ".join(target.split())
         rules.append(
             SourceAlertRule(
@@ -452,6 +494,9 @@ def parse_alert_rules(
                 delivery=parse_alert_delivery(item["delivery"]) if "delivery" in item else None,
                 member=member,
                 item_filter=item_filter,
+                source_scopes=parse_source_scopes(item["sourceScopes"])
+                if "sourceScopes" in item
+                else None,
                 scope=parse_alert_scope(item["scope"], scope_columns) if "scope" in item else None,
                 previous_kind=prior,
                 schedule=parse_alert_schedule(item["schedule"], kind, target)
@@ -478,6 +523,16 @@ def alert_rules_payload(rules: tuple[SourceAlertRule, ...]) -> list[dict[str, ob
             **({"previousKind": rule.previous_kind} if rule.previous_kind else {}),
             **({"member": rule.member} if rule.member is not None else {}),
             **({"scope": filter_conditions_payload(rule.scope)} if rule.scope else {}),
+            **(
+                {
+                    "sourceScopes": [
+                        {"sourceId": sc.source_id, **filter_conditions_payload(sc.conditions)}
+                        for sc in rule.source_scopes
+                    ]
+                }
+                if rule.source_scopes is not None
+                else {}
+            ),
             **({"itemFilter": rule.item_filter} if rule.item_filter is not None else {}),
             **(
                 {"schedule": {"mode": rule.schedule.mode, "value": rule.schedule.value}}
@@ -743,20 +798,26 @@ def parse_category_configuration(raw: object) -> CategoryConfiguration:
     )
 
 
-def parse_list_filters(raw: object) -> tuple[ListFilter, ...]:
+def parse_list_filters(raw: object, *, source_options: bool = False) -> tuple[ListFilter, ...]:
     """같은 형식으로 저장한 포함·제외 조건의 입력을 검사한다."""
     if not isinstance(raw, list):
         raise ValueError
     conditions: list[ListFilter] = []
+    optional = {"optionId"} if source_options else set()
     for item in raw:
         if (
             not isinstance(item, dict)
-            or set(item) != {"field", "operator", "value"}
+            or set(item) - optional != {"field", "operator", "value"}
             or not isinstance(item["value"], str)
         ):
             raise ValueError
         conditions.append(
-            ListFilter(nonblank(item["field"]), nonblank(item["operator"]), item["value"])
+            ListFilter(
+                nonblank(item["field"]),
+                nonblank(item["operator"]),
+                item["value"],
+                nonblank(item["optionId"]) if "optionId" in item else None,
+            )
         )
     return tuple(conditions)
 
@@ -803,18 +864,22 @@ def parse_main_list(raw: object, columns: tuple[CategoryColumn, ...]) -> MainLis
 
 def filter_conditions_payload(rules: MainListRules) -> dict[str, object]:
     """목록과 알림의 포함·제외 조건을 같은 형식으로 기록한다."""
+
+    def condition(item: ListFilter) -> dict[str, str]:
+        """원본 옵션 ID가 있는 조건만 이름 변경을 추적하도록 저장한다."""
+        return {
+            "field": item.field,
+            "operator": item.operator,
+            "value": item.value,
+            **({"optionId": item.option_id} if item.option_id is not None else {}),
+        }
+
     payload: dict[str, object] = {
         "match": rules.match,
-        "filters": [
-            {"field": item.field, "operator": item.operator, "value": item.value}
-            for item in rules.filters
-        ],
+        "filters": [condition(item) for item in rules.filters],
     }
     if rules.exclusions:
-        payload["exclusions"] = [
-            {"field": item.field, "operator": item.operator, "value": item.value}
-            for item in rules.exclusions
-        ]
+        payload["exclusions"] = [condition(item) for item in rules.exclusions]
     return payload
 
 
@@ -953,6 +1018,20 @@ def inherited_options(config: CategoryConfiguration, source_id: str) -> Category
     )
 
 
+def bind_scope(rule: SourceAlertRule, source: SourceMapping) -> SourceAlertRule | None:
+    """연결한 표의 조건만 실행하며 같은 의미의 이전 예약은 같은 키로 이어받는다."""
+    if rule.source_scopes is None:
+        return rule
+    scope = rule.scope_for(source.source_id)
+    if scope is None:
+        return None
+    if calendar_conditions(source, "meeting") == scope.conditions:
+        return replace(rule, source_scopes=(scope,), item_filter="meeting")
+    if calendar_conditions(source, "upcoming") == scope.conditions:
+        return replace(rule, source_scopes=(scope,), item_filter="upcoming")
+    return replace(rule, source_scopes=(scope,), item_filter=None)
+
+
 def resolve_category_mapping(
     source: SourceMapping, raw: dict[str, object], category: SourceCategory | None
 ) -> SourceMapping:
@@ -965,9 +1044,10 @@ def resolve_category_mapping(
         raise ValueError
     rule_fields = config.main_list.fields if config.main_list is not None else set()
     applicable_alerts = tuple(
-        entry.rule
+        bound
         for entry in config.alerts
-        if entry.sources is None or source.source_id in entry.sources
+        if (entry.sources is None or source.source_id in entry.sources)
+        and (bound := bind_scope(entry.rule, source)) is not None
     )
     for rule in applicable_alerts:
         if rule.enabled and rule.scope:

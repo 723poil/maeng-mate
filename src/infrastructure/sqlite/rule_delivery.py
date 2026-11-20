@@ -20,6 +20,15 @@ class RuleRoute:
     title: str
     message: str | None
     channels: tuple[str, ...] | None
+    body_token: str | None = None
+
+    def body(self, generated: str) -> str:
+        """규칙 문구에서 동적 표시가 있는 자리만 실제 알림 본문으로 바꾼다."""
+        if self.message is None:
+            return generated
+        if self.body_token is not None:
+            return self.message.replace(self.body_token, generated)
+        return self.message
 
 
 type DeliveryRules = Mapping[str, RuleRoute]
@@ -35,24 +44,27 @@ def category_rules(category: SourceCategory) -> dict[str, RuleRoute]:
 
     def route(rule: SourceAlertRule | CategoryEventAlert) -> RuleRoute:
         """이전 문서에 개별 설정이 없으면 원래 채널과 본문을 유지한다."""
-        if rule.delivery is None:
-            return RuleRoute(rule.name, None, None)
-        channels = tuple(
-            key
-            for key in rule.delivery.channels
-            if category_channels is None or key in category_channels
+        delivery = rule.delivery
+        # 상속 중인 규칙은 실행 소스마다 다른 상위 채널을 그대로 따른다.
+        channels = None
+        if delivery is not None and delivery.channels is not None:
+            channels = tuple(
+                key
+                for key in delivery.channels
+                if category_channels is None or key in category_channels
+            )
+        return RuleRoute(
+            rule.name,
+            delivery.message if delivery else None,
+            channels,
+            delivery.body_token if delivery else None,
         )
-        return RuleRoute(rule.name, rule.delivery.message, channels)
 
     rules = {
         entry.rule.notification_kind: route(entry.rule)
         for entry in config.alerts
         if entry.rule.enabled
     }
-    # 이전 실행본이 만든 대기 건만 이어받고 새 수집은 UUID 규칙으로 발송한다.
-    for entry in config.alerts:
-        if entry.rule.enabled and entry.rule.previous_kind:
-            rules[entry.rule.previous_kind] = route(entry.rule)
     for event in config.event_alerts or ():
         for kind in EVENT_ALERT_TRIGGERS[event.trigger].kinds:
             rules[kind] = route(event)
@@ -94,10 +106,12 @@ def channel_kinds(
     )
 
 
-def channel_messages(rules: DeliveryRules, channel: str) -> dict[str, tuple[str, str | None]]:
+def channel_messages(
+    rules: DeliveryRules, channel: str
+) -> dict[str, tuple[str, str | None, str | None]]:
     """설정 변경 전후에 이 채널에 보낼 수 있는 제목·본문만 비교한다."""
     return {
-        kind: (rules[kind].title, rules[kind].message)
+        kind: (rules[kind].title, rules[kind].message, rules[kind].body_token)
         for kind in channel_kinds(tuple(rules), channel, rules)
     }
 
@@ -112,11 +126,7 @@ def delivery_job(row: sqlite3.Row, token: str, rules: DeliveryRules | None) -> N
     if selected:
         if any(rule.message is not None for rule in selected):
             title = " · ".join(dict.fromkeys(rule.title for rule in selected))
-            body = "\n".join(
-                dict.fromkeys(
-                    rule.message if rule.message is not None else body for rule in selected
-                )
-            )
+            body = "\n".join(dict.fromkeys(rule.body(body) for rule in selected))
         else:
             title = selected[0].title
     return NotificationJob(

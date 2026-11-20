@@ -34,7 +34,9 @@ def settings_up_to_date(document: WorkSettingsDocument, settings: Settings) -> b
         categories_ready
         and payload.get("mainListRulesVersion") == 1
         and all(
-            item.configuration is not None and item.configuration.event_alerts == ()
+            item.configuration is not None
+            and item.configuration.event_alerts == ()
+            and not any(entry.rule.item_filter for entry in item.configuration.alerts)
             for item in settings.categories
         )
     )

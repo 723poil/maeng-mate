@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from weakref import proxy
 
-from AppKit import NSButton, NSColor, NSImage, NSPopUpButton, NSTextField, NSView
+from AppKit import NSButton, NSColor, NSComboBox, NSImage, NSPopUpButton, NSTextField, NSView
 from Foundation import NSObject
 
 from src.domain.category_configuration import CategoryColumn
@@ -16,7 +16,12 @@ from src.domain.main_list import (
     MainListRules,
     operators_for,
 )
-from src.presentation.category_sheet_controls import field, popup
+from src.presentation.category_sheet_controls import (
+    field,
+    observed_field,
+    popup,
+    set_observed_choices,
+)
 from src.presentation.column_setup_sheet import scroll
 from src.presentation.native_views import button, card, frame, label
 
@@ -54,6 +59,7 @@ OPERATOR_NAMES = {
     "empty": "값이 비어 있음",
     "not_empty": "값이 있음",
     "today": "오늘",
+    "not_ended": "기간이 끝나지 않음",
     "past_days": "최근 N일 (오늘 포함)",
     "next_days": "오늘부터 N일",
     "since_days_ago": "N일 전부터",
@@ -65,7 +71,7 @@ TIME_COMPARISONS = {
     "gt": "해당 시각 후",
     "gte": "해당 시각부터",
 }
-NO_VALUE = {"empty", "not_empty", "today"}
+NO_VALUE = {"empty", "not_empty", "today", "not_ended"}
 ROW_HEIGHT = 36
 VALUE_HEIGHT = 29
 
@@ -100,23 +106,54 @@ def choice(
     return Choice(control, keys)
 
 
+type OptionValues = tuple[tuple[str, str | None], ...]
+
+
+@dataclass
+class OptionInput:
+    """표시 이름이 바뀌거나 재사용되어도 원본 선택값의 ID를 보존한다."""
+
+    control: NSPopUpButton
+    values: OptionValues
+    original: tuple[str, str | None] | None
+    initial_index: int
+
+    def selected(self) -> tuple[str, str | None]:
+        """현재 표시 이름과 안정적인 원본 ID를 함께 읽는다."""
+        index = self.control.indexOfSelectedItem()
+        # 자동 조회와 실제 사용자 선택을 구분해 무변경 적용 시 비교 기준을 보존한다.
+        if self.original is not None and index == self.initial_index:
+            return self.original
+        return self.values[index]
+
+
 @dataclass
 class FilterRow:
     """조건 행에 보이는 입력과 오류 시 이동할 위치를 보관한다."""
 
     column: Choice
     operator: Choice
-    value: NSTextField | Choice | None
+    value: NSTextField | Choice | OptionInput | None
     y: float
+    original: ListFilter
 
     def read(self) -> ListFilter:
         """입력 도중의 값도 편집 초안에 보존한다."""
         value = ""
-        if isinstance(self.value, Choice):
+        option_id = None
+        if isinstance(self.value, OptionInput):
+            value, option_id = self.value.selected()
+        elif isinstance(self.value, Choice):
             value = self.value.selected()
         elif self.value is not None:
             value = self.value.stringValue()
-        return ListFilter(self.column.selected(), self.operator.selected(), value)
+        field, operator = self.column.selected(), self.operator.selected()
+        # 오프라인 편집에서는 그대로 둔 값의 식별자만 이어받는다.
+        if field != self.original.field or operator not in {"eq", "ne", "exact"}:
+            option_id = None
+        elif not isinstance(self.value, OptionInput) and value == self.original.value:
+            option_id = self.original.option_id
+        return ListFilter(field, operator, value, option_id)
 
 
 @dataclass
@@ -225,6 +262,10 @@ class MainListActions(NSObject):
         """값을 고치는 동안 이전 저장 오류를 지운다."""
         self.owner.clear_status()
 
+    def picked_(self, sender: NSPopUpButton) -> None:
+        """같은 표시값을 명시적으로 골라도 원본 옵션 ID를 연결한다."""
+        self.owner.pick_value(sender)
+
     def reset_(self, sender: object) -> None:
         """현재 카테고리의 필터와 정렬 초안을 비운다."""
         self.owner.reset()
@@ -241,9 +282,13 @@ class MainListEditor:
         clear_status: Callable[[], None],
         *,
         alert_scope: bool = False,
+        source_fields: bool = False,
     ) -> None:
         """저장 전까지 시트에만 남는 별도 편집 상태를 만든다."""
         self._alert_scope = alert_scope
+        self._source_fields = source_fields
+        self._observed: dict[str, tuple[str, ...]] = {}
+        self._options: Mapping[str, OptionValues] = {}
         self.clear_status = clear_status
         self._actions = MainListActions.alloc().init()
         self._actions.owner = proxy(self)
@@ -274,12 +319,25 @@ class MainListEditor:
         self._list = scroll(page, 0, 0, 642, self._height)
         self._render()
 
-    def update_columns(self, columns: tuple[CategoryColumn, ...]) -> None:
+    def update_observed(self, choices: dict[str, tuple[str, ...]]) -> None:
+        """조건 목록을 다시 만들지 않고 수집한 선택값만 갱신한다."""
+        self._observed = choices
+        for row in (*self._filter_rows, *self._exclusion_rows):
+            if isinstance(row.value, NSComboBox):
+                set_observed_choices(row.value, choices.get(row.column.selected(), ()))
+
+    def update_columns(
+        self,
+        columns: tuple[CategoryColumn, ...],
+        options: Mapping[str, OptionValues] | None = None,
+    ) -> None:
         """다른 탭의 칼럼 변경을 반영하면서 삭제된 참조는 고칠 수 있게 남긴다."""
-        if columns == self._columns:
+        if columns == self._columns and (options is None or self._options == options):
             return
         self._capture()
         self._columns = columns
+        if options is not None:
+            self._options = options
         self._last_names.update({item.id: item.name for item in columns if item.name})
         self._render()
 
@@ -294,7 +352,12 @@ class MainListEditor:
         """내장 필드와 사용자가 이름 붙인 저장 칼럼을 구분한다."""
         return {
             **({} if self._alert_scope else FIELD_NAMES),
-            **{item.id: f"저장 칼럼 · {item.name or '이름 없음'}" for item in self._columns},
+            **{
+                item.id: item.name
+                if self._source_fields
+                else f"저장 칼럼 · {item.name or '이름 없음'}"
+                for item in self._columns
+            },
         }
 
     def _field_choice(
@@ -309,9 +372,19 @@ class MainListEditor:
     ) -> Choice:
         """삭제된 칼럼을 임의로 대체하지 않고 명시적인 재선택을 허용한다."""
         if selected not in names:
-            previous = self._last_names.get(selected) or "다시 선택"
+            previous = self._last_names.get(selected) or (
+                selected.partition(":")[2] if self._source_fields else "다시 선택"
+            )
             names = {selected: f"삭제된 칼럼 · {previous}", **names}
         return choice(view, x, y, width, names, selected, description)
+
+    def pick_value(self, sender: NSPopUpButton) -> None:
+        """직접 조작한 선택값만 현재 원본 이름과 ID로 저장한다."""
+        for row in (*self._filter_rows, *self._exclusion_rows):
+            if isinstance(row.value, OptionInput) and row.value.control == sender:
+                row.value.original = None
+                break
+        self.clear_status()
 
     def _capture(self) -> None:
         """화면을 갱신하기 전에 입력 중인 다른 모든 행까지 함께 읽는다."""
@@ -438,7 +511,13 @@ class MainListEditor:
         if not kinds:
             return
         field = next(iter(kinds)) if self._alert_scope else "title"
-        operator = "contains" if kinds[field] == "text" else operators_for(kinds[field])[0]
+        operator = (
+            "exact"
+            if field in self._options
+            else "contains"
+            if kinds[field] == "text"
+            else operators_for(kinds[field])[0]
+        )
         self._set_conditions(
             (*conditions, ListFilter(field, operator, "예" if kinds[field] == "boolean" else "")),
             exclude=exclude,
@@ -465,17 +544,27 @@ class MainListEditor:
         operator = updated.operator
         if field_changed and kind and operator not in operators_for(kind):
             operator = operators_for(kind)[0]
+        if field_changed and updated.field in self._options:
+            operator = "exact"
         value = updated.value
         # 날짜와 일수처럼 입력 의미가 달라질 때만 종전 값을 비운다.
         if (
             operator in NO_VALUE
+            or (field_changed and updated.field in self._options)
             or kinds.get(old.field) != kind
             or (old.operator in RELATIVE_DAY_OPERATORS) != (operator in RELATIVE_DAY_OPERATORS)
         ):
             value = ""
         if kind == "boolean" and operator not in NO_VALUE and value not in ("예", "아니요"):
             value = "예"
-        filters[index] = ListFilter(updated.field, operator, value)
+        filters[index] = ListFilter(
+            updated.field,
+            operator,
+            value,
+            updated.option_id
+            if operator in {"eq", "exact", "ne"} and value == updated.value
+            else None,
+        )
         self._set_conditions(tuple(filters), exclude=exclude)
         self._render()
 
@@ -663,7 +752,7 @@ class MainListEditor:
                 **OPERATOR_NAMES,
                 **(
                     DATE_COMPARISONS
-                    if kind == "date"
+                    if kind in ("date", "period")
                     else TIME_COMPARISONS
                     if kind == "time"
                     else {}
@@ -678,7 +767,7 @@ class MainListEditor:
             op = choice(view, 196, y, 149, options, rule.operator, f"{prefix} 조건")
             self._listen(op.control, "exclusionOperator:" if exclude else "operator:", index)
             value = self._value(view, kind, rule, y, prefix)
-            rows.append(FilterRow(column, op, value, y))
+            rows.append(FilterRow(column, op, value, y, rule))
             self._icon(
                 view,
                 583,
@@ -691,10 +780,44 @@ class MainListEditor:
 
     def _value(
         self, view: NSView, kind: str | None, rule: ListFilter, y: float, prefix: str
-    ) -> NSTextField | Choice | None:
+    ) -> NSTextField | Choice | OptionInput | None:
         """조건에 필요한 값 종류와 입력 형식을 해당 행에서 바로 알려 준다."""
         if rule.operator in NO_VALUE:
             return None
+        if rule.field in self._options and rule.operator in {"eq", "exact", "ne"}:
+            entries = self._options[rule.field]
+            values: list[tuple[str, str | None]] = [("", None), *entries]
+            names = ["값 선택", *(name for name, _ in entries)]
+            index = next(
+                (
+                    i
+                    for i, (name, key) in enumerate(values)
+                    if (key == rule.option_id if rule.option_id else name == rule.value)
+                ),
+                None,
+            )
+            if index is None:
+                # 삭제 후 같은 이름으로 다시 생성된 옵션도 원래 ID와 구분한다.
+                values.append((rule.value, rule.option_id))
+                names.append(f"현재 목록에 없는 값 · {rule.value}")
+                index = len(values) - 1
+            picker = popup(view, 351, y, 222, names)
+            picker.selectItemAtIndex_(index)
+            picker.setAccessibilityLabel_(f"{prefix} 값")
+            self._listen(picker, "picked:", 0)
+            return OptionInput(picker, tuple(values), (rule.value, rule.option_id), index)
+        if (
+            self._alert_scope
+            and not self._source_fields
+            and kind == "text"
+            and rule.operator in {"eq", "exact", "ne"}
+        ):
+            combo = observed_field(
+                view, rule.value, 351, y, 222, self._observed.get(rule.field, ())
+            )
+            combo.setDelegate_(self._actions)
+            combo.setAccessibilityHelp_(f"{prefix} 비교값")
+            return combo
         if kind == "boolean":
             options = {"예": "예", "아니요": "아니요"}
             if rule.value not in options:
@@ -707,9 +830,12 @@ class MainListEditor:
             if rule.operator == "since_days_ago"
             else "일수 (오늘 포함)"
             if rule.operator in RELATIVE_DAY_OPERATORS
-            else {"date": "YYYY-MM-DD", "time": "HH:MM", "number": "숫자 입력"}.get(
-                kind or "", "비교할 텍스트"
-            )
+            else {
+                "date": "YYYY-MM-DD",
+                "period": "YYYY-MM-DD",
+                "time": "HH:MM",
+                "number": "숫자 입력",
+            }.get(kind or "", "비교할 텍스트")
         )
         control = field(view, rule.value, 353, y + 1, 216, hint)
         control.setAccessibilityHelp_(f"{prefix} 값 · {hint}")

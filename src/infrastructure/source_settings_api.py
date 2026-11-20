@@ -1,5 +1,7 @@
 """Cocoa 수집 설정이 사용하는 인증된 루프백 클라이언트다."""
 
+from uuid import UUID
+
 import httpx
 
 from src.application.errors import SettingsInputRejected
@@ -14,6 +16,7 @@ from src.application.source_settings import (
     parse_source_draft,
 )
 from src.application.work_settings import parse_categories
+from src.infrastructure.api_decoding import json_object, strings
 from src.infrastructure.local_http import local_client, response_json
 
 PATH = "/v1/source-settings"
@@ -60,6 +63,17 @@ class SourceSettingsApi:
     def read(self) -> SourceSettingsState:
         """저장된 목록만 읽는다."""
         return self._state(self._request("GET", PATH))
+
+    def observed_choices(self, category_id: str) -> dict[str, tuple[str, ...]]:
+        """규칙 편집에 쓰는 원본 선택값을 칼럼 ID별로 읽는다."""
+        try:
+            path = f"{PATH}/categories/{UUID(category_id)}/observed-choices"
+            raw = json_object(self._request("GET", path))
+            return {str(UUID(key)): strings(values) for key, values in raw.items()}
+        except SourceSettingsError:
+            raise
+        except ValueError:
+            raise SourceSettingsError("수집한 선택값을 읽지 못했습니다.") from None
 
     def save(self, value: CollectionDraft) -> SourceSettingsState:
         """다른 설정과 충돌하지 않도록 읽은 버전을 전달한다."""

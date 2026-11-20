@@ -7,6 +7,7 @@ from dataclasses import asdict
 
 from src.application.errors import SnapshotError
 from src.application.models import SyncRun
+from src.domain.main_list import ListFilter, MainListRules
 from src.domain.models import CalendarEvent, SourceMapping, Task, WorkItem
 from src.domain.source_alerts import SourceAlertRule
 
@@ -42,16 +43,52 @@ def source_fingerprint(source: SourceMapping) -> str:
     return fingerprint(payload)
 
 
+def condition_identity(rules: MainListRules) -> dict[str, object]:
+    """기존 조건은 저장 형식을 유지하고 원본 ID가 있는 조건만 표시명과 분리한다."""
+
+    def identity(condition: ListFilter) -> dict[str, str]:
+        """원본 선택값의 이름 변경은 실행권과 비교 기준에 영향을 주지 않는다."""
+        return {
+            "field": condition.field,
+            "operator": condition.operator,
+            **(
+                {"value": condition.value}
+                if condition.option_id is None
+                else {"option_id": condition.option_id}
+            ),
+        }
+
+    return {
+        "match": rules.match,
+        "filters": [identity(condition) for condition in rules.filters],
+        "sorts": [asdict(item) for item in rules.sorts],
+        "exclusions": [identity(condition) for condition in rules.exclusions],
+    }
+
+
 def alert_scope_fingerprint(rule: SourceAlertRule) -> str | None:
     """비교식과 원본 연결이 같을 때만 같은 범위의 예약과 기준을 이어 쓴다."""
-    return fingerprint((asdict(rule.scope), rule.scope_bindings)) if rule.scope else None
+    if rule.source_scopes is not None and rule.item_filter is None:
+        return fingerprint(
+            (
+                condition_identity(rule.scope) if rule.scope else None,
+                rule.scope_bindings,
+                [
+                    {"source_id": sc.source_id, "conditions": condition_identity(sc.conditions)}
+                    for sc in rule.source_scopes
+                ],
+            )
+        )
+    return (
+        fingerprint((condition_identity(rule.scope), rule.scope_bindings)) if rule.scope else None
+    )
 
 
 def collection_fingerprint(source: SourceMapping) -> str:
     """읽어야 할 표시 속성이 바뀌면 정기 수집만 앞당긴다."""
     digest = source_fingerprint(source)
     columns = source.collected_columns()
-    if not columns:
+    if not columns and not any(rule.enabled and rule.source_scopes for rule in source.alert_rules):
         return digest
     stored = [
         (item.value_key, item.property_id, "time")
@@ -76,7 +113,7 @@ def collection_fingerprint(source: SourceMapping) -> str:
     scopes = sorted(
         (rule.id, alert_scope_fingerprint(rule))
         for rule in source.alert_rules
-        if rule.enabled and rule.scope
+        if rule.enabled and (rule.scope or rule.source_scopes is not None)
     )
     if scopes:
         return fingerprint(
@@ -145,6 +182,16 @@ def snapshot_payload(item: WorkItem) -> dict[str, object]:
 
 def staging_rows(run: SyncRun, items: Sequence[WorkItem]) -> Iterator[tuple[int, str, str, str]]:
     """스냅샷 원문과 업무 값 해시를 한 행씩 만들어 SQLite에 넘긴다."""
+    # 칼럼 종류가 나중에 바뀌어도 이전 자유 텍스트를 규칙의 선택값으로 제안하지 않는다.
+    option_fields = (
+        tuple(
+            column.value_key
+            for column in run.source.storage_layout
+            if column.origin is not None and column.kind in {"select", "status"}
+        )
+        if run.source
+        else ()
+    )
     for item in items:
         if item.source_id != run.source_id or item.kind != run.kind:
             raise SnapshotError("invalid_snapshot")
@@ -154,4 +201,7 @@ def staging_rows(run: SyncRun, items: Sequence[WorkItem]) -> Iterator[tuple[int,
             for key, value in payload.items()
             if key not in {"observed_at", "source_edited_at"}
         }
+        if option_fields:
+            # 원본 값은 display_values에 한 번만 저장하고 수집 타입 근거는 변경 비교에서 제외한다.
+            payload["option_fields"] = option_fields
         yield run.id, item.id, json.dumps(payload, ensure_ascii=False), fingerprint(facts)

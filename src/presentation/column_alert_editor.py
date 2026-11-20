@@ -1,14 +1,19 @@
 """카테고리별 알림 목록에서 개별 규칙 편집 시트를 연다."""
 
 from collections.abc import Callable
+from dataclasses import replace
 from weakref import proxy
 
 from AppKit import NSButton, NSLineBreakByTruncatingTail, NSView
 from Foundation import NSObject
 
+from src.application.source_settings import SourceSettingsClient
 from src.domain.category_configuration import CategoryColumn
+from src.domain.main_list import MainListRules
 from src.domain.source_alerts import COLLECTION_STATE, MAX_SOURCE_ALERT_RULES, SourceAlertRule
+from src.domain.source_scope import SourceScope
 from src.presentation.alert_rule_sheet import AlertRuleSheet
+from src.presentation.alert_source_scope_editor import AlertSource
 from src.presentation.column_setup_sheet import scroll
 from src.presentation.native_views import button, card, frame, label
 
@@ -42,9 +47,17 @@ class ColumnAlertEditor:
         clear_sheet_status: Callable[[], None],
         *,
         people_columns: frozenset[str] = frozenset(),
+        sources: tuple[AlertSource, ...] = (),
+        category_id: str | None = None,
+        client: SourceSettingsClient | None = None,
+        channels: Callable[[SourceAlertRule | None], tuple[str, ...]] | None = None,
+        outer_sources: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         """카테고리를 저장하기 전까지 확정한 규칙들을 초안으로 보관한다."""
         self.view = parent
+        self._category_id = category_id
+        self._sources, self._client, self._channels = sources, client, channels
+        self._outer_sources = outer_sources if outer_sources is not None else {}
         self._columns = columns
         self._people_columns = (
             people_columns
@@ -130,15 +143,37 @@ class ColumnAlertEditor:
                 self._rules.append(rule)
             else:
                 self._rules[index] = rule
+            if rule.column_id != COLLECTION_STATE:
+                self._outer_sources.pop(rule.id, None)
             self._clear_status()
             self._render(len(self._rules) - 1 if index is None else index)
 
+        original = self._rules[index] if index is not None else None
+        if (
+            original
+            and original.column_id != COLLECTION_STATE
+            and original.id in self._outer_sources
+        ):
+            # 기존 표 제한을 같은 편집기에 열고 적용했을 때만 옛 제한을 제거한다.
+            by_source = {scope.source_id: scope for scope in original.source_scopes or ()}
+            original = replace(
+                original,
+                source_scopes=tuple(
+                    by_source.get(key, SourceScope(key, MainListRules()))
+                    for key in self._outer_sources[original.id]
+                    if original.source_scopes is None or key in by_source
+                ),
+            )
         self._sheet = AlertRuleSheet(
             parent,
             self._columns,
-            self._rules[index] if index is not None else None,
+            original,
             self._people_columns,
             completed,
+            sources=self._sources,
+            category_id=self._category_id,
+            client=self._client,
+            default_channels=self._channels(original) if self._channels else (),
         )
         self._sheet.show()
 

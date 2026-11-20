@@ -297,7 +297,11 @@ class PreferencesWindow:
                 lambda: self._sidebar.select(SettingsPage.CATEGORIES),
             )
             self._category_form = CategorySettingsForm(
-                self._pages[SettingsPage.CATEGORIES], viewport, source_editor, controller
+                self._pages[SettingsPage.CATEGORIES],
+                viewport,
+                source_editor,
+                controller,
+                source_client,
             )
         self._status = label(content, "설정 불러오는 중…", 188, 22, 402, size=12, secondary=True)
         self._reload = button(content, "다시 불러오기", 624, 18.5, 110, self._actions, "reload:")

@@ -102,9 +102,15 @@ def build_api(
     notifications, groups = build_notifications(environment, settings)
     source_settings = (
         SourceSettingsService(
-            SQLiteWorkSettings(Database(environment.database), notification_groups=groups),
+            SQLiteWorkSettings(
+                Database(environment.database),
+                notification_groups=groups,
+                notification_user_id=environment.notion_user_id,
+            ),
             settings,
             {"notion": NotionCatalog(lambda: credentials.selected().token)} if credentials else {},
+            now=now,
+            max_age_seconds=environment.snapshot_max_age_seconds,
         )
         if environment.database
         else None

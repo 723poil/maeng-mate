@@ -159,6 +159,11 @@ class NSSegmentedControl(NSControl):
 
 NSSegmentSwitchTrackingSelectOne: int
 
+class NSComboBox(NSTextField):
+    """직접 입력과 수집값 목록 선택을 함께 제공한다."""
+    def removeAllItems(self) -> None: ...
+    def addItemsWithObjectValues_(self, values: list[str]) -> None: ...
+
 class NSButtonCell(NSObject):
     """목록 버튼이 가리키는 원본 주소를 보관한다."""
     def representedObject(self) -> object: ...

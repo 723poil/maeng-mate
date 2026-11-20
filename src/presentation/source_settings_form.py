@@ -23,6 +23,7 @@ from src.application.work_settings import category_bindings, column_bindings_pay
 from src.domain.category_configuration import ColumnBinding
 from src.domain.models import SourceKind
 from src.domain.source_display import SOURCE_SORTS, SourceCategory
+from src.domain.work_dates import canonical_identity
 from src.presentation.column_setup_sheet import ColumnSetupSheet
 from src.presentation.native_views import button, card, frame, label
 from src.presentation.runtime_settings_controller import SettingsEditor
@@ -328,7 +329,11 @@ class SourceSettingsForm:
     def change_category(self) -> None:
         """카테고리가 달라지면 그 칼럼에 맞는 연결만 남긴다."""
         category = self.selected_category()
-        if category is None or category.id != self._original.get("categoryId"):
+        if (
+            category is None
+            or category.id != self._original.get("categoryId")
+            or not self._uses_saved_layout()
+        ):
             self._category_links = {}
         else:
             self._category_links = category_bindings(self._original)
@@ -444,7 +449,15 @@ class SourceSettingsForm:
         prior_id = self._schema.id if self._schema else self._original.get("dataSourceId")
         self._profiles = profiles
         self._set_schema_choices()
-        match = next((i for i, schema in enumerate(profiles, 1) if schema.id == prior_id), 0)
+        match = next(
+            (
+                i
+                for i, schema in enumerate(profiles, 1)
+                if isinstance(prior_id, str)
+                and canonical_identity(schema.id) == canonical_identity(prior_id)
+            ),
+            0,
+        )
         self.schemas.selectItemAtIndex_(1 if len(profiles) == 1 else match)
         self.choose_schema()
 
@@ -465,18 +478,17 @@ class SourceSettingsForm:
         self._schema = schema
         self.error = None
         if not same_table:
-            original = self._original.get("dataSourceId")
             category = self.selected_category()
             self._category_links = (
                 category_bindings(self._original)
                 if schema is not None
-                and schema.id == original
+                and self._uses_saved_layout()
                 and category is not None
                 and category.id == self._original.get("categoryId")
                 else {}
             )
         if self._schema is not None:
-            if self._schema.id != self._original.get("dataSourceId"):
+            if not self._uses_saved_layout():
                 self.editor.edited()
             if not self._original and not self.name.stringValue().strip():
                 self.name.setStringValue_(self._schema.name[:120])
@@ -498,6 +510,18 @@ class SourceSettingsForm:
         """일반 표는 ID, 차시별 하위 표는 공통 이름으로 매핑한다."""
         return column.name if self._uses_rounds() else column.id
 
+    def _uses_saved_layout(self) -> bool:
+        """저장한 표와 차시 모드가 같을 때만 이전 속성 연결을 복원한다."""
+        original = self._original.get("dataSourceId")
+        if not isinstance(original, str) or self._uses_rounds() != (
+            "roundTitleProperty" in self._original
+        ):
+            return False
+        # 아직 조회하지 않은 기존 표는 그대로 편집할 수 있고, 조회 후에는 선택이 필요하다.
+        if self._schema is None:
+            return not self._profiles
+        return canonical_identity(self._schema.id) == canonical_identity(original)
+
     def _chosen(self, key: str) -> SourceColumn | None:
         """선택하지 않은 역할은 None으로 둔다."""
         row = self._mapping.get(key)
@@ -510,9 +534,7 @@ class SourceSettingsForm:
     def _selected_columns(self) -> dict[str, str]:
         """역할마다 실제로 선택한 값만 모은다."""
         original = self._original.get("properties")
-        same_source = self._schema is not None and self._schema.id == self._original.get(
-            "dataSourceId"
-        )
+        same_source = self._uses_saved_layout()
         result: dict[str, str] = {}
         for key in self._mapping:
             column = self._chosen(key)
@@ -542,7 +564,8 @@ class SourceSettingsForm:
 
     def _draw_mapping(self) -> None:
         """기존 매핑에 맞는 칼럼이나 조회 안내를 표시한다."""
-        raw = self._original.get("properties")
+        restore = self._uses_saved_layout() and self._mode() == self._original.get("kind")
+        raw = self._original.get("properties") if restore else None
         selected: dict[str, str] = (
             {str(key): str(value) for key, value in raw.items()} if isinstance(raw, dict) else {}
         )
@@ -551,7 +574,7 @@ class SourceSettingsForm:
                 (column for column in self._schema.columns if column.kind == "title"), None
             ):
                 selected["title"] = self._column_value(title)
-        self._choices = self._default_choices()
+        self._choices = self._default_choices() if restore else {}
         self._draw(selected)
 
     def _draw(self, selected: dict[str, str], *, preserve_scroll: bool = False) -> None:
@@ -595,7 +618,7 @@ class SourceSettingsForm:
             self._round_title = self._popup(
                 body, 160, y, 446, list(schema.round_titles), "changed:"
             )
-            saved = self._original.get("roundTitleProperty")
+            saved = self._original.get("roundTitleProperty") if self._uses_saved_layout() else None
             self._round_title.selectItemAtIndex_(
                 schema.round_titles.index(str(saved)) if saved in schema.round_titles else 0
             )
@@ -688,7 +711,13 @@ class SourceSettingsForm:
             self.render()
 
         choices = tuple(
-            SourceColumn(self._column_value(column), column.name, column.kind, column.options)
+            SourceColumn(
+                self._column_value(column),
+                column.name,
+                column.kind,
+                column.options,
+                column.option_ids,
+            )
             for column in schema.columns
         )
         columns = category.configuration.columns if category.configuration is not None else ()
@@ -824,11 +853,7 @@ class SourceSettingsForm:
             raise SourceSettingsError("바뀐 주소로 칼럼을 조회하고 수집할 표를 선택하세요.")
         kind, section = self._mode(), self._section()
         if schema is None:
-            if (
-                not self._original
-                or self._original.get("kind") != kind
-                or (self._uses_rounds() != ("roundTitleProperty" in self._original))
-            ):
+            if not self._uses_saved_layout() or self._original.get("kind") != kind:
                 raise SourceSettingsError("Notion 칼럼을 조회하고 수집할 표를 선택하세요.")
             value = dict(self._original)
         else:
@@ -851,7 +876,8 @@ class SourceSettingsForm:
                 value["roundTitleProperty"] = schema.round_titles[
                     self._round_title.indexOfSelectedItem()
                 ]
-            old = self._original
+            # 새 표에는 이전 표의 완료·일정 분류나 레거시 필수 역할을 넘기지 않는다.
+            old = self._original if self._uses_saved_layout() else {}
             stays_legacy = (
                 old.get("kind") == kind
                 and old.get("flexible") is not True
@@ -861,8 +887,8 @@ class SourceSettingsForm:
             if not stays_legacy:
                 value["flexible"] = True
                 if kind == "meeting":
-                    if self._original.get("defaultEventType") in ("meeting", "leave", "other"):
-                        value["defaultEventType"] = self._original["defaultEventType"]
+                    if old.get("defaultEventType") in ("meeting", "leave", "other"):
+                        value["defaultEventType"] = old["defaultEventType"]
             choices = self._selected_options()
             if kind == "meeting" and "category" in values:
                 value["eventTypes"] = {
@@ -872,7 +898,7 @@ class SourceSettingsForm:
                 selected = [name for name, index in choices.items() if index == 1]
                 if kind == "leave" and not selected:
                     raise SourceSettingsError("승인된 휴가에 쓰는 상태를 하나 이상 선택하세요.")
-                if kind == "leave" or selected or "completedStatuses" in self._original:
+                if kind == "leave" or selected or "completedStatuses" in old:
                     value["approvedValues" if kind == "leave" else "completedStatuses"] = selected
         value.pop("columnMappings", None)
         if self._category_links:

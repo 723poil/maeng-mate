@@ -15,6 +15,7 @@ from src.domain.source_display import SOURCE_CHANNELS
 from src.domain.work_dates import SEOUL, canonical_identity
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.field_alerts import field_alert_current
+from src.infrastructure.sqlite.legacy_delivery import LegacyBindings
 from src.infrastructure.sqlite.meeting_reminders import meeting_job_current
 from src.infrastructure.sqlite.notification_deliveries import (
     claim_delivery,
@@ -171,6 +172,7 @@ class SQLiteNotifications:
         source_channels: Mapping[str, tuple[str, ...]] | None = None,
         source_types: Mapping[str, tuple[str, ...]] | None = None,
         source_titles: Mapping[str, Mapping[str, str]] | None = None,
+        legacy_bindings: LegacyBindings | None = None,
         rules_by_group: Mapping[str, DeliveryRules] | None = None,
         notification_groups: Mapping[str, str] | None = None,
     ) -> None:
@@ -181,6 +183,10 @@ class SQLiteNotifications:
         self._user_id = user_id
         self._channels = channels
         self._rules_by_group = dict(rules_by_group or {})
+        self._legacy_aliases = {
+            key: {old: binding.kind for old, binding in bindings.items()}
+            for key, bindings in (legacy_bindings or {}).items()
+        }
         self._qa_scopes = qa_scopes
         self._source_channels = dict(source_channels or {})
         self._source_types = dict(source_types or {})
@@ -192,7 +198,18 @@ class SQLiteNotifications:
     ) -> DeliveryRules | None:
         """퇴근 알림과 카테고리별 규칙을 구별해 최신 설정을 읽는다."""
         group = self._notification_groups.get(source_key) if source_key is not None else None
-        return read_rules(connection, group, self._rules_by_group)
+        rules = read_rules(connection, group, self._rules_by_group)
+        if rules is None or source_key is None or source_key not in self._legacy_aliases:
+            return rules
+        # 옛 종류를 사용하는 대기 건만 해당 표의 규칙 ID로 최신 문구·채널을 읽는다.
+        return {
+            **rules,
+            **{
+                kind: rules[current]
+                for kind, current in self._legacy_aliases[source_key].items()
+                if current in rules
+            },
+        }
 
     def _delivery_job(
         self, connection: sqlite3.Connection, row: sqlite3.Row, token: str
@@ -252,6 +269,7 @@ class SQLiteNotifications:
                     self._notification_groups.get(row["source_key"]),
                     self._source_titles.get(row["source_key"]),
                     self._rules_for(connection, row["source_key"]),
+                    self._legacy_aliases.get(row["source_key"]),
                 )
             return claim_delivery(
                 connection, now, self._source_keys, self._channels, self._delivery_job
@@ -303,7 +321,11 @@ class SQLiteNotifications:
         selected = tuple(kind for kind in kinds if isinstance(kind, str))
         source_key = facts["source_key"]
         group = self._notification_groups.get(source_key) if isinstance(source_key, str) else None
+        aliases = self._legacy_aliases.get(source_key, {}) if isinstance(source_key, str) else {}
+        selected = tuple(aliases.get(kind, kind) for kind in selected)
         allowed_types = self._source_types.get(source_key) if isinstance(source_key, str) else None
+        if allowed_types is not None and aliases:
+            allowed_types = tuple(aliases.get(kind, kind) for kind in allowed_types)
         channel = facts["channel"]
         if not isinstance(channel, str) or channel not in self._channels_for(source_key):
             return False

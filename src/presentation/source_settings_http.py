@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -71,6 +72,16 @@ def create_source_settings_router(service: SourceSettingsClient | None) -> APIRo
             raise HTTPException(422, str(error)) from None
         except SnapshotError:
             raise HTTPException(503, "수집 설정 저장을 확인하지 못했습니다.") from None
+
+    @router.get("/categories/{category_id}/observed-choices")
+    async def observed_choices(category_id: UUID) -> dict[str, tuple[str, ...]]:
+        """관리자에게 지정한 카테고리의 선택값만 반환한다."""
+        if service is None:
+            raise HTTPException(503, "수집한 선택값을 조회할 수 없습니다.")
+        try:
+            return await asyncio.to_thread(service.observed_choices, str(category_id))
+        except (WorkSettingsError, SnapshotError):
+            raise HTTPException(503, "수집한 선택값을 읽지 못했습니다.") from None
 
     @router.post("/columns")
     async def columns(request: Request) -> dict[str, object]:

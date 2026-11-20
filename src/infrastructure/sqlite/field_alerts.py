@@ -10,7 +10,14 @@ from src.application.notion_links import notion_link
 from src.application.work_settings import Settings, parse_settings
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
 from src.domain.notification_timing import calendar_alert_expiry
-from src.domain.source_alerts import AlertSchedule, SourceAlertRule, alert_value_key
+from src.domain.source_alerts import (
+    CHANGE_BODY,
+    MEETING_BODY,
+    AlertSchedule,
+    SourceAlertRule,
+    alert_body_token,
+    alert_value_key,
+)
 from src.domain.work_dates import SEOUL, canonical_identity
 from src.infrastructure.sqlite.decoding import decode_item
 from src.infrastructure.sqlite.notification_deliveries import logical_completed
@@ -39,7 +46,7 @@ def field_alert_scopes(source: SourceMapping, user: str | None) -> dict[str, Sou
                 rule.target,
                 *((rule.member, rule.item_filter) if rule.member or rule.item_filter else ()),
                 *((rule.schedule.mode, rule.schedule.value) if rule.schedule else ()),
-                *((alert_scope_fingerprint(rule),) if rule.scope else ()),
+                *((digest,) if (digest := alert_scope_fingerprint(rule)) else ()),
             )
         ): rule
         for rule in source.alert_rules
@@ -263,8 +270,10 @@ def record_field_alerts(
         for item in items if rule.member is not None else eligible:
             if isinstance(item, CalendarEvent) and item.cancelled:
                 continue
-            if rule.item_filter == "meeting" and (
-                not isinstance(item, CalendarEvent) or item.event_type != "meeting"
+            if (
+                rule.source_scopes is None
+                and rule.item_filter == "meeting"
+                and (not isinstance(item, CalendarEvent) or item.event_type != "meeting")
             ):
                 continue
             if rule.scope is not None:
@@ -392,17 +401,31 @@ def enqueue_field_alert(
     job = notification_key(f"source-change:{scope}:{item.id}:{run.id}")
     title = item.title if not isinstance(item, Leave) else "항목 값 변경"
     body = title[:160]
-    if rule.previous_kind and rule.delivery is None:
-        # 옛 규칙에 직접 지정한 문구가 없으면 이 변경의 설명과 원래 시각 표시를 이어 쓴다.
-        if isinstance(item, Task) and rule.previous_kind.startswith(("task_", "qa_")):
-            change = connection.execute(
-                "SELECT description FROM task_changes WHERE run_id=? AND item_id=? AND source_id=?",
-                (run.id, item.id, run.source_id),
-            ).fetchone()
-            if change is not None:
-                body = notification_body(title, change["description"])
-        elif rule.previous_kind == "meeting" and isinstance(item, CalendarEvent) and item.period:
-            body = f"{datetime.fromisoformat(item.period.start).astimezone(SEOUL):%H:%M} · {body}"
+    token = rule.delivery.body_token if rule.delivery else None
+    token = token or alert_body_token(rule.column_id, rule.previous_kind)
+    if isinstance(item, Task) and token == CHANGE_BODY:
+        change = connection.execute(
+            "SELECT description FROM task_changes WHERE run_id=? AND item_id=? AND source_id=?",
+            (run.id, item.id, run.source_id),
+        ).fetchone()
+        if change is not None:
+            body = notification_body(title, change["description"])
+    elif token == MEETING_BODY and rule.schedule:
+        # 사전 예약의 기준 칼럼을 변경하면 본문 시각도 같은 칼럼의 원본 시작값을 쓴다.
+        if rule.schedule.mode == "before_start":
+            event_start = datetime.fromtimestamp(due + int(rule.schedule.value) * 60, SEOUL)
+            body = f"{event_start:%H:%M} · {body}"
+        elif run.source is not None:
+            period = next(
+                (
+                    item.calendar_periods[col.value_key]
+                    for col in run.source.storage_layout
+                    if col.property_id == rule.column_id and col.value_key in item.calendar_periods
+                ),
+                None,
+            )
+            if period and period.kind == "instant":
+                body = f"{datetime.fromisoformat(period.start).astimezone(SEOUL):%H:%M} · {body}"
     logical = job
     if scheduled:
         logical = notification_key(f"scheduled:{scope}:{item.id}:{digest}")

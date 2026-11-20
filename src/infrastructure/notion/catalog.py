@@ -68,10 +68,20 @@ def _catalog_columns(schema: dict[str, object]) -> tuple[SourceColumn, ...]:
         prop = record(raw)
         kind = text(prop.get("type"))
         options: tuple[str, ...] = ()
+        option_ids: tuple[str, ...] = ()
         if kind in {"status", "select"}:
-            option_values = array(record(prop.get(kind)).get("options"))
-            options = tuple(text(record(option).get("name")) for option in option_values)
-        result.append(SourceColumn(text(prop.get("id")), name, kind, options))
+            option_values = tuple(
+                record(value) for value in array(record(prop.get(kind)).get("options"))
+            )
+            options = tuple(text(option.get("name")) for option in option_values)
+            # 일부 ID만 있으면 이름과 위치를 잘못 연결할 수 있어 이름 목록만 제공한다.
+            if all(option.get("id") is not None for option in option_values):
+                option_ids = tuple(text(option["id"]) for option in option_values)
+                if any(not key.strip() for key in option_ids) or len(set(option_ids)) != len(
+                    option_ids
+                ):
+                    raise SourceError("invalid_response")
+        result.append(SourceColumn(text(prop.get("id")), name, kind, options, option_ids))
     return tuple(result)
 
 
@@ -140,6 +150,15 @@ async def _catalog_item(
     return SourceSchema(identifier, title or "차시별 목록", child_columns, round_titles)
 
 
+def merge_round_column(previous: SourceColumn, current: SourceColumn) -> SourceColumn:
+    """모든 하위 표에서 같은 선택값이 같은 ID를 가질 때만 ID 선택을 제공한다."""
+    options = tuple(dict.fromkeys((*previous.options, *current.options)))
+    known = dict(zip(previous.options, previous.option_ids, strict=False))
+    observed = dict(zip(current.options, current.option_ids, strict=False))
+    ids = previous.option_ids if known and known == observed and len(known) == len(options) else ()
+    return replace(previous, options=options, option_ids=ids)
+
+
 async def _round_columns(api: NotionReadApi, identifier: str) -> tuple[SourceColumn, ...] | None:
     """차시별 표 메타데이터를 대조하고 같은 칼럼의 상태 값을 합친다."""
     common: dict[tuple[str, str], SourceColumn] | None = None
@@ -157,10 +176,7 @@ async def _round_columns(api: NotionReadApi, identifier: str) -> tuple[SourceCol
                 current
                 if common is None
                 else {
-                    key: replace(
-                        item,
-                        options=tuple(dict.fromkeys((*item.options, *current[key].options))),
-                    )
+                    key: merge_round_column(item, current[key])
                     for key, item in common.items()
                     if key in current
                 }

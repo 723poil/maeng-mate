@@ -240,8 +240,11 @@ class MainListEditor:
         columns: tuple[CategoryColumn, ...],
         rules: MainListRules | None,
         clear_status: Callable[[], None],
+        *,
+        alert_scope: bool = False,
     ) -> None:
         """저장 전까지 시트에만 남는 별도 편집 상태를 만든다."""
+        self._alert_scope = alert_scope
         self.clear_status = clear_status
         self._actions = MainListActions.alloc().init()
         self._actions.owner = proxy(self)
@@ -254,9 +257,19 @@ class MainListEditor:
         self._value_positions: list[tuple[int, int]] = []
         self._match: Choice | None = None
 
-        self._clear = button(page, "규칙 모두 지우기", 479, 395, 145, self._actions, "reset:")
+        self._clear = button(
+            page,
+            "칼럼 조건 지우기" if alert_scope else "규칙 모두 지우기",
+            479,
+            395,
+            145,
+            self._actions,
+            "reset:",
+        )
         self._clear.setToolTip_(
-            "표시 필터, 숨김 조건, 정렬을 모두 지웁니다. 저장 후 앱을 다시 시작하면 적용됩니다."
+            "작성한 적용 조건과 제외 조건을 지웁니다."
+            if alert_scope
+            else "표시 필터, 숨김 조건, 정렬을 모두 지웁니다. 저장 후 앱을 다시 시작하면 적용됩니다."
         )
         self._list = scroll(page, 0, 0, 642, HEIGHT)
         self._render()
@@ -272,12 +285,15 @@ class MainListEditor:
 
     def _kinds(self) -> dict[str, str]:
         """저장 초안에서 선택 가능한 모든 칼럼의 값 종류를 모은다."""
-        return {**FIELD_KINDS, **{item.id: item.kind for item in self._columns}}
+        return {
+            **({} if self._alert_scope else FIELD_KINDS),
+            **{item.id: item.kind for item in self._columns},
+        }
 
     def _field_names(self) -> dict[str, str]:
         """내장 필드와 사용자가 이름 붙인 저장 칼럼을 구분한다."""
         return {
-            **FIELD_NAMES,
+            **({} if self._alert_scope else FIELD_NAMES),
             **{item.id: f"저장 칼럼 · {item.name or '이름 없음'}" for item in self._columns},
         }
 
@@ -415,10 +431,18 @@ class MainListEditor:
             self._rules = replace(self._rules, filters=conditions)
 
     def add_filter(self, *, exclude: bool = False) -> None:
-        """제목 조건을 추가하고 새 행으로 이동한다."""
+        """선택 가능한 칼럼으로 조건을 추가하고 새 행으로 이동한다."""
         self._capture()
         conditions = self._rules.exclusions if exclude else self._rules.filters
-        self._set_conditions((*conditions, ListFilter("title", "contains")), exclude=exclude)
+        kinds = self._kinds()
+        if not kinds:
+            return
+        field = next(iter(kinds)) if self._alert_scope else "title"
+        operator = "contains" if kinds[field] == "text" else operators_for(kinds[field])[0]
+        self._set_conditions(
+            (*conditions, ListFilter(field, operator, "예" if kinds[field] == "boolean" else "")),
+            exclude=exclude,
+        )
         self._render()
         rows = self._exclusion_rows if exclude else self._filter_rows
         self._reveal(rows[-1].y)
@@ -527,6 +551,8 @@ class MainListEditor:
         sort_height += sum(
             35 + VALUE_HEIGHT * len(sort.values) for sort in self._rules.sorts if sort.values
         )
+        if self._alert_scope:
+            sort_height = 0
         height = max(HEIGHT, filter_height + exclusion_height + sort_height + 34)
         view = NSView.alloc().initWithFrame_(frame(0, 0, 626, height))
         top = height - 2
@@ -541,7 +567,8 @@ class MainListEditor:
         self._filters_card(view, top, filter_height)
         exclusion_top = top - filter_height - 12
         self._exclusions_card(view, exclusion_top, exclusion_height)
-        self._sort_card(view, exclusion_top - exclusion_height - 12, sort_height)
+        if not self._alert_scope:
+            self._sort_card(view, exclusion_top - exclusion_height - 12, sort_height)
         self._list.setDocumentView_(view)
         view.scrollPoint_((0, max(0, height - HEIGHT - offset)))
         if old is not None:
@@ -550,7 +577,15 @@ class MainListEditor:
     def _filters_card(self, view: NSView, top: float, height: float) -> None:
         """조건 결합 방식과 반복 가능한 필터 행을 한 영역에 놓는다."""
         card(view, 0, top - height, 625, height)
-        label(view, "표시 필터", 16, top - 36, 101, size=14, bold=True)
+        label(
+            view,
+            "적용 조건" if self._alert_scope else "표시 필터",
+            16,
+            top - 36,
+            101,
+            size=14,
+            bold=True,
+        )
         if len(self._rules.filters) > 1:
             self._match = choice(
                 view,
@@ -562,11 +597,19 @@ class MainListEditor:
                 "필터 결합 방식",
             )
             self._listen(self._match.control, "edited:", 0)
-        button(view, "+ 필터 추가", 500, top - 39, 111, self._actions, "addFilter:")
+        button(
+            view,
+            "+ 조건 추가" if self._alert_scope else "+ 필터 추가",
+            500,
+            top - 39,
+            111,
+            self._actions,
+            "addFilter:",
+        ).setEnabled_(bool(self._kinds()))
         if not self._rules.filters:
             label(
                 view,
-                "표시 필터 없음",
+                "적용 조건 없음" if self._alert_scope else "표시 필터 없음",
                 17,
                 top - 73,
                 585,
@@ -577,9 +620,28 @@ class MainListEditor:
     def _exclusions_card(self, view: NSView, top: float, height: float) -> None:
         """조건 하나만 맞아도 숨기는 동작을 헤더에서 설명한다."""
         card(view, 0, top - height, 625, height)
-        label(view, "숨김 조건", 16, top - 36, 90, size=14, bold=True)
-        label(view, "조건이 하나라도 맞으면 숨깁니다.", 110, top - 36, 355, secondary=True)
-        button(view, "+ 조건 추가", 500, top - 39, 111, self._actions, "addExclusion:")
+        label(
+            view,
+            "제외 조건" if self._alert_scope else "숨김 조건",
+            16,
+            top - 36,
+            90,
+            size=14,
+            bold=True,
+        )
+        label(
+            view,
+            "조건이 하나라도 맞으면 알림 대상에서 제외합니다."
+            if self._alert_scope
+            else "조건이 하나라도 맞으면 숨깁니다.",
+            110,
+            top - 36,
+            355,
+            secondary=True,
+        )
+        button(view, "+ 조건 추가", 500, top - 39, 111, self._actions, "addExclusion:").setEnabled_(
+            bool(self._kinds())
+        )
         self._condition_rows(view, top, exclude=True)
 
     def _condition_rows(self, view: NSView, top: float, *, exclude: bool) -> None:

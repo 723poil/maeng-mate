@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 from weakref import proxy
 
 from AppKit import (
+    NSAlert,
+    NSAlertFirstButtonReturn,
     NSButton,
     NSColor,
     NSLineBreakByTruncatingTail,
@@ -27,6 +29,7 @@ from Foundation import NSIndexSet, NSObject
 from src.application.errors import COLLECTION_FAILURE_CODES
 from src.application.source_settings import SourceSettingsError
 from src.domain.category_configuration import CategoryColumn
+from src.domain.main_list import MainListRules
 from src.domain.source_alerts import (
     COLLECTION_STATE,
     MAX_SOURCE_ALERT_RULES,
@@ -36,6 +39,7 @@ from src.domain.source_alerts import (
     ScheduleMode,
     SourceAlertRule,
 )
+from src.presentation.main_list_editor import MainListEditor
 from src.presentation.native_views import button, card, frame, label
 
 RULE_ROW_HEIGHT = 42.0
@@ -98,6 +102,10 @@ class AlertEditorActions(NSObject):
         self.owner.render_condition()
         self.owner.input_changed()
 
+    def scope_(self, sender: object) -> None:
+        """현재 규칙에서 사용할 항목 조건을 편집한다."""
+        self.owner.edit_scope()
+
     def target_(self, sender: object) -> None:
         """사용자가 후속 값을 선택하면 이전 오류를 지운다."""
         self.owner.input_changed()
@@ -136,9 +144,9 @@ class ColumnAlertEditor:
         self._actions.owner = proxy(self)
         self.view = parent
         self._scope = label(parent, "", 10, 348, 390, secondary=True)
-        self.item_filter = self._popup(413, 344, 215, "target:")
-        self._titles(
-            self.item_filter, ["소스의 항목 범위", "회의로 분류된 항목만", "지나지 않은 일정만"]
+        self._scope_rules: MainListRules | None = None
+        self._scope_button = button(
+            parent, "적용 대상 설정…", 400, 344, 228, self._actions, "scope:"
         )
         card(parent, 0, 41, 242, 290)
         label(parent, "알림 규칙", 14, 294, 105, bold=True)
@@ -346,9 +354,9 @@ class ColumnAlertEditor:
         if rule and rule.member:
             mode = 4 if rule.member == "self" else 5
         self.condition.selectItemAtIndex_(mode)
-        self.item_filter.selectItemAtIndex_(
-            (None, "meeting", "upcoming").index(rule.item_filter if rule else None)
-        )
+        self._legacy_filter = rule.item_filter if rule else None
+        self._scope_rules = rule.scope if rule else None
+        self._refresh_scope()
         self.enabled.setState_(int(rule is not None and rule.enabled))
         self._fill_delivery(rule.delivery if rule else None, existing=rule is not None)
         self._load_target(
@@ -407,7 +415,52 @@ class ColumnAlertEditor:
         else:
             choices = [*CHANGE_CONDITIONS, *(title for _, title in self._schedule_choices)]
         self._titles(self.condition, choices)
-        self.item_filter.setEnabled_(column is not None and column.id != COLLECTION_STATE)
+        self._scope_button.setEnabled_(column is not None and column.id != COLLECTION_STATE)
+
+    def _refresh_scope(self) -> None:
+        """규칙을 열 때 적용 중인 조건 수를 버튼에서 바로 보여 준다."""
+        rules = self._scope_rules
+        count = (len(rules.filters) + len(rules.exclusions) if rules else 0) + int(
+            self._legacy_filter is not None
+        )
+        self._scope_button.setTitle_(
+            f"적용 대상 · 조건 {count}개…" if count else "적용 대상 · 전체…"
+        )
+
+    def edit_scope(self) -> None:
+        """확정한 조건만 현재 규칙에 반영하고 취소하면 직전 초안을 유지한다."""
+        dialog = NSAlert.alloc().init()
+        dialog.setMessageText_("알림 적용 대상")
+        dialog.addButtonWithTitle_("적용")
+        dialog.addButtonWithTitle_("취소")
+        view = NSView.alloc().initWithFrame_(frame(0, 0, 642, 425))
+        dialog.setAccessoryView_(view)
+        editor = MainListEditor(
+            view, self._columns[:-1], self._scope_rules, self._clear_sheet_status, alert_scope=True
+        )
+        legacy = None
+        if self._legacy_filter:
+            # 이전 규칙의 특수 범위는 사용자가 직접 해제할 때까지 함께 적용한다.
+            title = (
+                "기존 범위 유지 · 회의로 분류된 항목"
+                if self._legacy_filter == "meeting"
+                else "기존 범위 유지 · 지나지 않은 일정"
+            )
+            legacy = NSButton.checkboxWithTitle_target_action_(title, self._actions, "target:")
+            legacy.setFrame_(frame(8, 395, 450, 26))
+            legacy.setState_(1)
+            view.addSubview_(legacy)
+        while dialog.runModal() == NSAlertFirstButtonReturn:
+            try:
+                self._scope_rules = editor.draft()
+            except ValueError as error:
+                dialog.setInformativeText_(str(error))
+                continue
+            if legacy is not None and legacy.state() != 1:
+                self._legacy_filter = None
+            self._refresh_scope()
+            self.input_changed()
+            return
 
     def _schedule_mode(self) -> ScheduleMode | None:
         """값 변경 조건과 같은 목록에서 사용자가 선택한 예약 방식을 확인한다."""
@@ -440,7 +493,11 @@ class ColumnAlertEditor:
         """속성을 바꾸면 이전 선택형 값을 새 조건에 실수로 쓰지 않는다."""
         if self._visible_column != self._chosen():
             self._load_conditions()
-            self.item_filter.selectItemAtIndex_(0)
+            column = self._chosen()
+            if column is None or column.id == COLLECTION_STATE:
+                self._scope_rules = None
+                self._legacy_filter = None
+                self._refresh_scope()
             self._load_target(None)
         self.input_changed()
         self.render_condition()
@@ -538,7 +595,6 @@ class ColumnAlertEditor:
                 member = "self" if mode == 4 else str(UUID(self.target.stringValue().strip()))
             except ValueError as error:
                 raise SourceSettingsError("Notion 사용자 ID를 입력하세요.") from error
-        selected_filter = self.item_filter.indexOfSelectedItem()
         proposed = SourceAlertRule(
             identifier,
             name,
@@ -549,11 +605,8 @@ class ColumnAlertEditor:
             delivery=self._read_delivery(),
             schedule=schedule,
             member=member,
-            item_filter="meeting"
-            if selected_filter == 1
-            else "upcoming"
-            if selected_filter == 2
-            else None,
+            item_filter=self._legacy_filter,
+            scope=self._scope_rules,
         )
         if (
             existing

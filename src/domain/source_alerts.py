@@ -8,6 +8,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from src.domain.main_list import MainListRules
+
 MAX_SOURCE_ALERT_RULES = 24
 COLLECTION_STATE = "$collection"
 UNBOUND_COLUMN = "$unbound"
@@ -90,6 +92,10 @@ class SourceAlertRule:
     item_filter: Literal["meeting", "upcoming"] | None = None
     # 이미 예약된 이전 형식의 발송 이력에만 연결한다. 새 규칙 판정에는 사용하지 않는다.
     previous_kind: str | None = None
+
+    scope: MainListRules | None = None
+    # 수집 소스마다 같은 카테고리 칼럼이 다른 원본 키를 가리킬 수 있다.
+    scope_bindings: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def comparison_kind(self) -> str:

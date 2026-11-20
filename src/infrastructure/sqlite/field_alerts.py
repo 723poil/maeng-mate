@@ -15,7 +15,11 @@ from src.domain.work_dates import SEOUL, canonical_identity
 from src.infrastructure.sqlite.decoding import decode_item
 from src.infrastructure.sqlite.notification_deliveries import logical_completed
 from src.infrastructure.sqlite.notification_keys import failure_rule_scope, notification_key
-from src.infrastructure.sqlite.serialization import fingerprint, source_fingerprint
+from src.infrastructure.sqlite.serialization import (
+    alert_scope_fingerprint,
+    fingerprint,
+    source_fingerprint,
+)
 from src.infrastructure.sqlite.task_changes import notification_body
 
 
@@ -35,6 +39,7 @@ def field_alert_scopes(source: SourceMapping, user: str | None) -> dict[str, Sou
                 rule.target,
                 *((rule.member, rule.item_filter) if rule.member or rule.item_filter else ()),
                 *((rule.schedule.mode, rule.schedule.value) if rule.schedule else ()),
+                *((alert_scope_fingerprint(rule),) if rule.scope else ()),
             )
         ): rule
         for rule in source.alert_rules
@@ -49,7 +54,8 @@ def field_alert_scopes(source: SourceMapping, user: str | None) -> dict[str, Sou
 def saved_rule_bindings(
     settings: Settings,
 ) -> dict[
-    tuple[str, str], tuple[str, str, str | None, AlertSchedule | None, str | None, str | None, str]
+    tuple[str, str],
+    tuple[str, str, str | None, AlertSchedule | None, str | None, str | None, str | None, str],
 ]:
     """규칙 이름을 제외한 실제 조건을 저장값과 실행값 사이에서 비교한다."""
     return {
@@ -60,6 +66,7 @@ def saved_rule_bindings(
             rule.schedule,
             rule.member,
             rule.item_filter,
+            alert_scope_fingerprint(rule),
             source_fingerprint(source),
         )
         for source in settings.active_sources
@@ -252,6 +259,7 @@ def record_field_alerts(
                 "INSERT INTO source_alert_baselines(source_id,scope,item_id,value_hash,kind_key) VALUES(?,?,'','',?)",
                 (source.source_id, scope, rule.notification_kind),
             )
+        kinds = {field: kind for field, _, kind in rule.scope_bindings}
         for item in items if rule.member is not None else eligible:
             if isinstance(item, CalendarEvent) and item.cancelled:
                 continue
@@ -259,6 +267,18 @@ def record_field_alerts(
                 not isinstance(item, CalendarEvent) or item.event_type != "meeting"
             ):
                 continue
+            if rule.scope is not None:
+                # 날짜 조건은 값 변경이면 수집일, 예약이면 알림 예정일을 서울 시간으로 평가한다.
+                basis = item.alert_due_at.get(rule.id, observed)
+                values = {
+                    field: item.display_values[key]
+                    for field, key, _ in rule.scope_bindings
+                    if key in item.display_values
+                }
+                if values.keys() != kinds.keys() or not rule.scope.includes(
+                    values, kinds, basis.astimezone(SEOUL).date()
+                ):
+                    continue
             expires = now + 86400
             if rule.item_filter == "upcoming":
                 if (

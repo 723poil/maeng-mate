@@ -3,10 +3,12 @@
 import hashlib
 import json
 from collections.abc import Iterator, Sequence
+from dataclasses import asdict
 
 from src.application.errors import SnapshotError
 from src.application.models import SyncRun
 from src.domain.models import CalendarEvent, SourceMapping, Task, WorkItem
+from src.domain.source_alerts import SourceAlertRule
 
 
 def fingerprint(value: object) -> str:
@@ -40,6 +42,11 @@ def source_fingerprint(source: SourceMapping) -> str:
     return fingerprint(payload)
 
 
+def alert_scope_fingerprint(rule: SourceAlertRule) -> str | None:
+    """비교식과 원본 연결이 같을 때만 같은 범위의 예약과 기준을 이어 쓴다."""
+    return fingerprint((asdict(rule.scope), rule.scope_bindings)) if rule.scope else None
+
+
 def collection_fingerprint(source: SourceMapping) -> str:
     """읽어야 할 표시 속성이 바뀌면 정기 수집만 앞당긴다."""
     digest = source_fingerprint(source)
@@ -66,6 +73,15 @@ def collection_fingerprint(source: SourceMapping) -> str:
         for rule in source.alert_rules
         if rule.enabled and rule.member is not None
     )
+    scopes = sorted(
+        (rule.id, alert_scope_fingerprint(rule))
+        for rule in source.alert_rules
+        if rule.enabled and rule.scope
+    )
+    if scopes:
+        return fingerprint(
+            (digest, sorted(columns.items()), sorted(stored), full_text, schedules, members, scopes)
+        )
     if members:
         return fingerprint(
             (digest, sorted(columns.items()), sorted(stored), full_text, schedules, members)

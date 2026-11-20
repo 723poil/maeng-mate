@@ -364,8 +364,33 @@ def parse_alert_schedule(raw: object, kind: str, target: object) -> AlertSchedul
     return AlertSchedule(mode, value)
 
 
+def parse_alert_scope(
+    raw: object, columns: Mapping[str, CategoryColumn] | None
+) -> MainListRules | None:
+    """항목 조건은 카테고리의 저장 칼럼만 사용하며 빈 조건은 기본 범위로 취급한다."""
+    if (
+        columns is None
+        or not isinstance(raw, dict)
+        or set(raw) - {"exclusions"} != {"match", "filters"}
+    ):
+        raise ValueError
+    match = raw["match"]
+    if not isinstance(match, str):
+        raise ValueError
+    rules = MainListRules(
+        match,
+        parse_list_filters(raw["filters"]),
+        exclusions=parse_list_filters(raw.get("exclusions", [])),
+    )
+    rules.validate({key: col.kind for key, col in columns.items()})
+    return rules if rules.fields else None
+
+
 def parse_alert_rules(
-    raw: object, kinds: tuple[str, ...] = DISPLAY_COLUMN_TYPES
+    raw: object,
+    kinds: tuple[str, ...] = DISPLAY_COLUMN_TYPES,
+    *,
+    scope_columns: Mapping[str, CategoryColumn] | None = None,
 ) -> tuple[SourceAlertRule, ...]:
     """원본 속성과 규칙의 이름·조건·사용 여부를 확인한다."""
     if not isinstance(raw, list) or len(raw) > MAX_SOURCE_ALERT_RULES:
@@ -377,6 +402,7 @@ def parse_alert_rules(
             "schedule",
             "member",
             "itemFilter",
+            "scope",
             "previousKind",
         } != {
             "id",
@@ -426,6 +452,7 @@ def parse_alert_rules(
                 delivery=parse_alert_delivery(item["delivery"]) if "delivery" in item else None,
                 member=member,
                 item_filter=item_filter,
+                scope=parse_alert_scope(item["scope"], scope_columns) if "scope" in item else None,
                 previous_kind=prior,
                 schedule=parse_alert_schedule(item["schedule"], kind, target)
                 if "schedule" in item
@@ -450,6 +477,7 @@ def alert_rules_payload(rules: tuple[SourceAlertRule, ...]) -> list[dict[str, ob
             **alert_delivery_payload(rule.delivery),
             **({"previousKind": rule.previous_kind} if rule.previous_kind else {}),
             **({"member": rule.member} if rule.member is not None else {}),
+            **({"scope": filter_conditions_payload(rule.scope)} if rule.scope else {}),
             **({"itemFilter": rule.item_filter} if rule.item_filter is not None else {}),
             **(
                 {"schedule": {"mode": rule.schedule.mode, "value": rule.schedule.value}}
@@ -621,13 +649,16 @@ def parse_category_alerts(
         if not isinstance(item, dict) or set(item) != {"rule", "sources"}:
             raise ValueError
         rule = parse_alert_rules(
-            [item["rule"]], (*CATEGORY_COLUMN_TYPES, *DISPLAY_COLUMN_TYPES, "collection")
+            [item["rule"]],
+            (*CATEGORY_COLUMN_TYPES, *DISPLAY_COLUMN_TYPES, "collection"),
+            scope_columns=columns,
         )[0]
         kind = LEGACY_CATEGORY_TYPES.get(rule.column_kind, rule.column_kind)
         if rule.column_id == COLLECTION_STATE:
             if (
                 kind != "collection"
                 or rule.item_filter is not None
+                or rule.scope is not None
                 or (rule.target is not None and rule.target not in COLLECTION_FAILURE_CODES)
             ):
                 raise ValueError
@@ -770,14 +801,27 @@ def parse_main_list(raw: object, columns: tuple[CategoryColumn, ...]) -> MainLis
     return rules
 
 
-def main_list_payload(rules: MainListRules) -> dict[str, object]:
-    """조건과 정렬의 우선순위를 편집한 순서 그대로 저장한다."""
+def filter_conditions_payload(rules: MainListRules) -> dict[str, object]:
+    """목록과 알림의 포함·제외 조건을 같은 형식으로 기록한다."""
     payload: dict[str, object] = {
         "match": rules.match,
         "filters": [
             {"field": item.field, "operator": item.operator, "value": item.value}
             for item in rules.filters
         ],
+    }
+    if rules.exclusions:
+        payload["exclusions"] = [
+            {"field": item.field, "operator": item.operator, "value": item.value}
+            for item in rules.exclusions
+        ]
+    return payload
+
+
+def main_list_payload(rules: MainListRules) -> dict[str, object]:
+    """표시 조건에 목록 전용 정렬 우선순위를 더한다."""
+    return {
+        **filter_conditions_payload(rules),
         "sorts": [
             {
                 "field": item.field,
@@ -787,12 +831,6 @@ def main_list_payload(rules: MainListRules) -> dict[str, object]:
             for item in rules.sorts
         ],
     }
-    if rules.exclusions:
-        payload["exclusions"] = [
-            {"field": item.field, "operator": item.operator, "value": item.value}
-            for item in rules.exclusions
-        ]
-    return payload
 
 
 def parse_category_event_alerts(raw: object) -> tuple[CategoryEventAlert, ...]:
@@ -926,6 +964,15 @@ def resolve_category_mapping(
     if links.keys() - {item.id for item in config.columns}:
         raise ValueError
     rule_fields = config.main_list.fields if config.main_list is not None else set()
+    applicable_alerts = tuple(
+        entry.rule
+        for entry in config.alerts
+        if entry.sources is None or source.source_id in entry.sources
+    )
+    for rule in applicable_alerts:
+        if rule.enabled and rule.scope:
+            rule_fields.update(rule.scope.fields)
+    column_kinds = {item.id: item.kind for item in config.columns}
     columns = {}
     for item in config.columns:
         if (origin := links.get(item.id)) is None:
@@ -959,21 +1006,24 @@ def resolve_category_mapping(
     shown = tuple(columns[key] for key in order if key in visible and key in columns)
     alerts = tuple(
         replace(
-            entry.rule,
+            rule,
+            scope_bindings=tuple(
+                (key, columns[key].value_key, column_kinds[key])
+                for key in sorted(rule.scope.fields)
+            )
+            if rule.scope
+            else (),
             column_id=matched.property_id,
             column_kind=matched.kind,
             time_only=matched.time_only,
         )
-        for entry in config.alerts
-        if (matched := columns.get(entry.rule.column_id)) is not None
-        and (entry.rule.member is None or matched.kind == "people")
-        and (entry.sources is None or source.source_id in entry.sources)
+        for rule in applicable_alerts
+        if (matched := columns.get(rule.column_id)) is not None
+        and (rule.member is None or matched.kind == "people")
+        # 연결되지 않은 비교 칼럼을 빈 값으로 해석하면 적용 범위가 넓어진다.
+        and (rule.scope is None or rule.scope.fields <= columns.keys())
     )
-    required = {
-        entry.rule.column_id
-        for entry in config.alerts
-        if entry.rule.enabled and (entry.sources is None or source.source_id in entry.sources)
-    }
+    required = {rule.column_id for rule in applicable_alerts if rule.enabled}
     # 이전 표시 설정에서 숨긴 칼럼도 현재 목록 규칙이 참조하면 수집한다.
     required.update(rule_fields)
     storage = tuple(

@@ -34,6 +34,12 @@ class DisplayColumn:
     origin: str | None = None
     time_only: bool = False
     full_text: bool = False
+    status_badge: bool | None = None
+
+    @property
+    def shows_status_badge(self) -> bool:
+        """자동 표시는 이름에 관계없이 원본 상태 타입을 따르고 직접 고른 방식을 우선한다."""
+        return self.kind == "status" if self.status_badge is None else self.status_badge
 
     @property
     def property_id(self) -> str:
@@ -57,7 +63,5 @@ def labelled_values(
 
 
 def display_line(title: str, fields: tuple[tuple[str, str], ...]) -> str:
-    """메뉴바와 설정 미리보기에 같은 칼럼 순서를 적용한다."""
-    return "   ·   ".join(
-        (title or "제목 없음", *(f"{name} {value or '—'}" for name, value in fields))
-    )
+    """메뉴바 행에는 제목과 선택한 칼럼의 값만 표시 순서대로 담는다."""
+    return "   ·   ".join((title or "제목 없음", *(value or "—" for _, value in fields)))

@@ -283,12 +283,16 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         provider,
         flexible,
         "other" if event_default == "other" else "leave" if event_default == "leave" else "meeting",
-        parse_display_columns(item["displayColumns"]) if "displayColumns" in item else None,
+        parse_display_columns(item["displayColumns"], status_property=properties.get("status"))
+        if "displayColumns" in item
+        else None,
         parse_alert_rules(item["alertRules"]) if "alertRules" in item else (),
     )
 
 
-def parse_display_columns(raw: object) -> tuple[DisplayColumn, ...]:
+def parse_display_columns(
+    raw: object, *, status_property: str | None = None
+) -> tuple[DisplayColumn, ...]:
     """표시할 칼럼의 타입·이름·중복을 검증한다."""
     if not isinstance(raw, list) or len(raw) > MAX_DISPLAY_COLUMNS:
         raise ValueError
@@ -303,7 +307,15 @@ def parse_display_columns(raw: object) -> tuple[DisplayColumn, ...]:
             or any(ord(char) < 32 for char in label)
         ):
             raise ValueError
-        result.append(DisplayColumn(identifier, label, kind))
+        # 카테고리 도입 전 표시 설정도 업무 상태 역할을 유지한다.
+        result.append(
+            DisplayColumn(
+                identifier,
+                label,
+                kind,
+                status_badge=True if identifier == status_property else None,
+            )
+        )
     if len({item.id for item in result}) != len(result):
         raise ValueError
     return tuple(result)
@@ -483,7 +495,7 @@ def parse_category_columns(raw: object) -> tuple[CategoryColumn, ...]:
         raise ValueError
     columns = []
     for item in raw:
-        if not isinstance(item, dict) or set(item) - {"legacyKind"} != {
+        if not isinstance(item, dict) or set(item) - {"legacyKind", "statusBadge"} != {
             "id",
             "name",
             "kind",
@@ -493,6 +505,9 @@ def parse_category_columns(raw: object) -> tuple[CategoryColumn, ...]:
         identifier, name, saved_kind = map(nonblank, (item["id"], item["name"], item["kind"]))
         kind = LEGACY_CATEGORY_TYPES.get(saved_kind, saved_kind)
         legacy = item.get("legacyKind", saved_kind if saved_kind != kind else None)
+        badge = item.get("statusBadge")
+        if badge is not None and not isinstance(badge, bool):
+            raise ValueError
         if (
             len(name) > 80
             or kind not in CATEGORY_COLUMN_TYPES
@@ -503,7 +518,9 @@ def parse_category_columns(raw: object) -> tuple[CategoryColumn, ...]:
             )
         ):
             raise ValueError
-        columns.append(CategoryColumn(str(UUID(identifier)), name, kind, item["visible"], legacy))
+        columns.append(
+            CategoryColumn(str(UUID(identifier)), name, kind, item["visible"], legacy, badge)
+        )
     if len({item.id for item in columns}) != len(columns):
         raise ValueError
     return tuple(columns)
@@ -712,6 +729,7 @@ def category_configuration_payload(value: CategoryConfiguration) -> dict[str, ob
                 "name": item.name,
                 "kind": item.kind,
                 "visible": item.visible,
+                **({"statusBadge": item.status_badge} if item.status_badge is not None else {}),
                 **({"legacyKind": item.legacy_kind} if item.legacy_kind is not None else {}),
             }
             for item in value.columns
@@ -815,6 +833,10 @@ def resolve_category_mapping(
             origin.property_id,
             time_only=item.kind == "time",
             full_text=item.kind == "text" and item.id in rule_fields,
+            # 업무 상태 역할에 연결한 선택 속성도 자동 배지로 표시한다.
+            status_badge=True
+            if item.status_badge is None and origin.property_id == source.properties.get("status")
+            else item.status_badge,
         )
     previous = inherited_options(config, source.source_id)
     kinds: dict[str, str] = {}

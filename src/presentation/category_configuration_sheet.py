@@ -38,6 +38,7 @@ from src.domain.category_configuration import (
     CategoryConfiguration,
 )
 from src.domain.category_event_alerts import EventAlertSelection
+from src.domain.display_columns import display_line
 from src.domain.source_display import SOURCE_COLORS, SourceCategory
 from src.presentation.category_sheet_controls import field, popup, set_entries
 from src.presentation.column_alert_editor import ColumnAlertEditor
@@ -45,6 +46,8 @@ from src.presentation.column_setup_sheet import TYPE_LABELS, scroll
 from src.presentation.main_list_editor import MainListEditor
 from src.presentation.native_views import button, card, frame, label
 
+BADGE_OPTIONS = (None, False, True)
+BADGE_NAMES = ["자동", "텍스트", "상태 배지"]
 COLOR_OPTIONS = (None, *SOURCE_COLORS)
 COLOR_NAMES = ["기본색", "파랑", "초록", "주황", "보라", "빨강", "청록"]
 CHANNEL_OPTIONS: tuple[tuple[str, ...] | None, ...] = (
@@ -122,7 +125,7 @@ class CategoryConfigurationSheet:
         self._category, self._apply, self._closed = category, apply, closed
         self._original = category.configuration or CategoryConfiguration()
         self._columns = list(self._original.columns)
-        self._rows: list[tuple[NSTextField, NSPopUpButton, NSButton]] = []
+        self._rows: list[tuple[NSTextField, NSPopUpButton, NSButton, NSPopUpButton]] = []
         self._calendar_date = self._original.calendar_date
         self._dates: tuple[str, ...] = ()
         self._alert_rules = tuple(item.rule for item in self._original.alerts)
@@ -257,7 +260,9 @@ class CategoryConfigurationSheet:
     def columns(self) -> tuple[CategoryColumn, ...]:
         """편집 순서와 표시 여부를 그대로 저장한다."""
         columns = []
-        for column, (name, kind_picker, visible) in zip(self._columns, self._rows, strict=True):
+        for column, (name, kind_picker, visible, badge) in zip(
+            self._columns, self._rows, strict=True
+        ):
             kind = CATEGORY_COLUMN_TYPES[kind_picker.indexOfSelectedItem()]
             columns.append(
                 replace(
@@ -265,6 +270,7 @@ class CategoryConfigurationSheet:
                     name=name.stringValue().strip(),
                     kind=kind,
                     visible=visible.state() == 1,
+                    status_badge=BADGE_OPTIONS[badge.indexOfSelectedItem()],
                     legacy_kind=column.legacy_kind if kind == column.kind else None,
                 )
             )
@@ -312,13 +318,14 @@ class CategoryConfigurationSheet:
             )
         else:
             for title, x, width in (
-                ("칼럼 이름", 10, 218),
-                ("값 종류", 244, 165),
-                ("추가 표시", 427, 55),
+                ("칼럼 이름", 10, 170),
+                ("값 종류", 190, 94),
+                ("추가 표시", 294, 54),
+                ("메뉴바 표시", 379, 101),
             ):
                 label(view, title, x, height - 32, width, secondary=True)
             help_button = button(
-                view, "", 478, height - 36, 24, self._actions, "displayHelp:", bordered=False
+                view, "", 347, height - 36, 24, self._actions, "displayHelp:", bordered=False
             )
             help_button.setImage_(
                 NSImage.imageWithSystemSymbolName_accessibilityDescription_(
@@ -329,17 +336,23 @@ class CategoryConfigurationSheet:
             help_button.setAccessibilityLabel_("추가 표시 도움말")
         for index, item in enumerate(self._columns):
             y = height - 67 - index * 37
-            name = field(view, item.name, 10, y, 223, "예: 검토일")
-            kind = popup(view, 243, y, 164, [TYPE_LABELS[value] for value in CATEGORY_COLUMN_TYPES])
+            name = field(view, item.name, 10, y, 170, "예: 검토일")
+            kind = popup(view, 189, y, 95, [TYPE_LABELS[value] for value in CATEGORY_COLUMN_TYPES])
             kind.selectItemAtIndex_(CATEGORY_COLUMN_TYPES.index(item.kind))
             visible = NSButton.checkboxWithTitle_target_action_("", self._actions, "calendar:")
             visible.setAccessibilityLabel_(
                 f"{item.name} 칼럼 추가 표시" if item.name else "추가 표시"
             )
-            visible.setFrame_(frame(441, y, 32, 24))
+            visible.setFrame_(frame(307, y, 32, 24))
             visible.setState_(int(item.visible))
             view.addSubview_(visible)
-            self._rows.append((name, kind, visible))
+            badge = popup(view, 374, y, 102, BADGE_NAMES)
+            badge.selectItemAtIndex_(BADGE_OPTIONS.index(item.status_badge))
+            badge.setAccessibilityLabel_(f"{item.name} 메뉴바 표시")
+            badge.setToolTip_(
+                "자동은 원본 상태 속성이나 업무 상태에 연결한 칼럼을 배지로 표시합니다."
+            )
+            self._rows.append((name, kind, visible, badge))
             for x, title, action, enabled in (
                 (487, "↑", "moveUp:", index > 0),
                 (531, "↓", "moveDown:", index + 1 < len(self._columns)),
@@ -519,10 +532,10 @@ def display_help_popover() -> NSPopover:
     content = NSView.alloc().initWithFrame_(frame(0, 0, width, height))
     label(content, "추가 표시", 16, 126, width - 32, size=14, bold=True)
     label(content, "표시 예시", 16, 49, 62, secondary=True)
-    label(content, "항목 제목 · 장소 3층", 82, 49, width - 98, bold=True)
+    label(content, display_line("항목 제목", (("장소", "3층"),)), 82, 49, width - 98, bold=True)
     for text, y, lines_height, secondary in (
         (
-            "체크한 칼럼은 메뉴바 목록의 제목 옆에 표시돼요. 캘린더에서는 항목을 누르면 볼 수 있어요.",
+            "체크한 칼럼은 메뉴바와 캘린더 상세에 표시돼요. 메뉴바에서 상태 배지를 고르면 값이 제목 앞에 나와요.",
             76,
             46,
             False,

@@ -87,11 +87,14 @@ def desktop_fields(
     columns: tuple[DisplayColumn, ...], values: Mapping[str, str]
 ) -> dict[str, object]:
     """임의 칼럼은 관리자 메뉴바 응답에만 사용한다."""
-    return {
-        "displayFields": [
-            {"label": name, "value": value} for name, value in labelled_values(columns, values)
-        ]
-    }
+    fields: list[dict[str, object]] = []
+    for column, (name, value) in zip(columns, labelled_values(columns, values), strict=True):
+        field: dict[str, object] = {"label": name, "value": value}
+        # 표시값에만 메타데이터를 붙여 숨긴 상태와 일반 조회에는 노출하지 않는다.
+        if column.shows_status_badge:
+            field["badge"] = True
+        fields.append(field)
+    return {"displayFields": fields}
 
 
 def main_list_projection(source: SourceMapping, card: MainListCard | None) -> SourceMapping:

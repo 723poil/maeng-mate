@@ -279,6 +279,10 @@ class SourceSettingsForm:
     def _fill(self, raw: dict[str, object]) -> None:
         """저장된 건 또는 새 소스의 기본 입력으로 바꾼다."""
         self._original = raw
+        saved_classification = raw.get("classification")
+        self._classification: dict[str, object] = (
+            dict(saved_classification) if isinstance(saved_classification, dict) else {}
+        )
         self.error = None
         self._profiles = ()
         self._schema = None
@@ -478,6 +482,12 @@ class SourceSettingsForm:
         self._schema = schema
         self.error = None
         if not same_table:
+            saved_classification = (
+                self._original.get("classification") if self._uses_saved_layout() else None
+            )
+            self._classification = (
+                dict(saved_classification) if isinstance(saved_classification, dict) else {}
+            )
             category = self.selected_category()
             self._category_links = (
                 category_bindings(self._original)
@@ -559,8 +569,10 @@ class SourceSettingsForm:
                     for name, value in rules.items()
                     if value in EVENT_CHOICES
                 }
-        if kind == "leave":
-            values = self._original.get("approvedValues")
+        if kind in ("task", "leave"):
+            values = self._original.get(
+                "approvedValues" if kind == "leave" else "completedStatuses"
+            )
             if isinstance(values, list):
                 return {str(name): 1 for name in values}
         return {}
@@ -601,22 +613,14 @@ class SourceSettingsForm:
         body = NSView.alloc().initWithFrame_(frame(0, 0, 628, 100))
         self._role_body = body
         kind = self._mode()
-        category = self.selected_category()
-        config = category.configuration if category else None
-        custom_classification = bool(config and config.classification_column)
         roles = tuple(
             role
             for role in ROLES[kind]
             if role.key in selected or any(column.kind in role.types for column in schema.columns)
-            if not (role.key == "category" and role.key not in selected)
         )
-        # 업무의 상태는 원문을 수집한다. 옵션별 지정은 일정 분류와 휴가 승인에만 필요하다.
+        # 완료·일정·승인 판정은 자유롭게 정하는 표시 이름과 별도로 원본 값에 적용한다.
         rule_role = next(
-            (
-                role
-                for role in roles
-                if role.key == "approval" or (role.key == "category" and not custom_classification)
-            ),
+            (role for role in roles if role.key in {"status", "approval", "category"}),
             None,
         )
         rule_column = next(
@@ -629,10 +633,14 @@ class SourceSettingsForm:
             ),
             None,
         )
+        self._rule_property = selected.get(rule_role.key) if rule_role else None
+        options = (
+            tuple(dict.fromkeys((*rule_column.options, *self._choices))) if rule_column else ()
+        )
         height = 48 + 32 * (len(roles) + bool(schema.round_titles))
-        if rule_column and rule_column.options:
+        if options:
             # 소제목과 다음 상위 행 사이의 여백은 하위 설정이 있을 때만 확보한다.
-            height += 32 + 32 * len(rule_column.options)
+            height += 32 + 32 * len(options)
         card(body, 0, 0, 628, height)
         label(body, "원본 칼럼 선택", 12, height - 32, 360, bold=True)
         y: float = height - 63
@@ -649,20 +657,29 @@ class SourceSettingsForm:
         for role in roles:
             self._draw_role(body, role, schema, selected, y)
             y -= 32
-            if role == rule_role and rule_column and rule_column.options:
-                y = self._draw_rule_options(body, y, rule_column, kind)
+            if role == rule_role and rule_column and options:
+                y = self._draw_rule_options(body, y, rule_column, kind, options)
         body.setFrameSize_((628, height))
         self._update_sheet()
 
     def _draw_rule_options(
-        self, body: NSView, y: float, column: SourceColumn, kind: SourceKind
+        self,
+        body: NSView,
+        y: float,
+        column: SourceColumn,
+        kind: SourceKind,
+        options: tuple[str, ...],
     ) -> float:
         """선택한 칼럼 바로 아래에 그 칼럼의 옵션별 설정을 들여쓴다."""
-        operation = "값 분류" if kind == "meeting" else "승인으로 처리할 값"
+        operation = {
+            "task": "완료로 처리할 값",
+            "meeting": "알림·조회용 일정 유형",
+            "leave": "승인으로 처리할 값",
+        }[kind]
         heading = f"‘{column.name}’ 칼럼의 {operation}"
         label(body, heading, 36, y + 6, 570, bold=True, secondary=True).setToolTip_(heading)
         y -= 24
-        for name in column.options:
+        for name in options:
             if kind == "meeting":
                 label(body, name, 36, y + 4, 362).setToolTip_(name)
                 control = self._popup(body, 410, y, 196, ["기타", "회의", "휴가"], "rules:")
@@ -764,6 +781,7 @@ class SourceSettingsForm:
             self._apply_columns,
             closed,
             rounds=self._uses_rounds(),
+            classification=self._classification,
         )
         self._update_sheet()
         self.render()
@@ -777,6 +795,8 @@ class SourceSettingsForm:
             return str(error)
         if self._mode() == "leave" and 1 not in self._selected_options().values():
             return "승인된 휴가에 쓰는 상태를 하나 이상 선택하세요."
+        if self._column_panel is not None:
+            self._classification = self._column_panel.classification.draft()
         self._category_links = selected
         return None
 
@@ -833,7 +853,8 @@ class SourceSettingsForm:
         self.mark_edited()
         round_index = self._round_title.indexOfSelectedItem() if self._round_title else None
         selected = self._selected_columns()
-        self._choices = self._selected_options()
+        key = {"task": "status", "meeting": "category", "leave": "approval"}[self._mode()]
+        self._choices = self._selected_options() if selected.get(key) == self._rule_property else {}
         self._draw(selected, preserve_scroll=True)
         if self._round_title is not None and round_index is not None:
             self._round_title.selectItemAtIndex_(round_index)
@@ -924,16 +945,6 @@ class SourceSettingsForm:
                         value["defaultEventType"] = old["defaultEventType"]
             choices = self._selected_options()
             if kind == "meeting" and "category" in values:
-                category = self.selected_category()
-                config = category.configuration if category else None
-                # 공유 분류 설정과 별개로 기존 알림이 쓰는 의미 매핑을 같은 원본에서만 보존한다.
-                if config and config.classification_column:
-                    previous = old.get("properties")
-                    if (
-                        isinstance(previous, dict)
-                        and previous.get("category") == values["category"]
-                    ):
-                        choices = self._default_choices()
                 value["eventTypes"] = {
                     name: EVENT_CHOICES[index] for name, index in choices.items() if index
                 }
@@ -942,15 +953,13 @@ class SourceSettingsForm:
                 if not selected:
                     raise SourceSettingsError("승인된 휴가에 쓰는 상태를 하나 이상 선택하세요.")
                 value["approvedValues"] = selected
-            # 같은 표의 같은 상태 칼럼에 한해 메인 목록에서 쓰던 완료 기준을 보존한다.
-            old_properties = old.get("properties")
-            if (
-                kind == "task"
-                and "completedStatuses" in old
-                and isinstance(old_properties, dict)
-                and values.get("status") == old_properties.get("status")
-            ):
-                value["completedStatuses"] = old["completedStatuses"]
+            if kind == "task" and "status" in values:
+                completed = [name for name, index in choices.items() if index]
+                if completed or "completedStatuses" in old:
+                    value["completedStatuses"] = completed
+        value.pop("classification", None)
+        if self._classification:
+            value["classification"] = dict(self._classification)
         value.pop("columnMappings", None)
         if self._category_links:
             value["columnMappings"] = column_bindings_payload(self._category_links)

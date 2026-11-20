@@ -20,9 +20,10 @@ from AppKit import (
 from Foundation import NSObject
 
 from src.application.category_column_types import accepts_column_type
-from src.application.source_settings import SourceColumn
+from src.application.source_settings import SourceColumn, SourceSettingsError
 from src.domain.category_configuration import CategoryColumn, ColumnBinding
 from src.presentation.native_views import button, frame, label
+from src.presentation.source_classification_editor import SourceClassificationEditor
 
 TYPE_LABELS = {
     "text": "텍스트",
@@ -66,6 +67,7 @@ class ColumnSetupSheet:
         closed: Callable[[bool], None],
         *,
         rounds: bool = False,
+        classification: dict[str, object] | None = None,
     ) -> None:
         """현재 카테고리와 소스 조회기의 결과로 두 페이지를 구성한다."""
         self.parent, self._apply, self._closed = parent, apply, closed
@@ -82,8 +84,8 @@ class ColumnSetupSheet:
         self.window.setContentView_(content)
         label(content, source_name, 22, 485, 642, size=17, bold=True)
         label(content, f"카테고리 · {category_name}", 22, 457, 642, secondary=True)
-        titles = ("카테고리 칼럼", "수집에 사용할 속성")
-        self._tabs = NSSegmentedControl.alloc().initWithFrame_(frame(22, 411, 304, 32))
+        titles = ("카테고리 칼럼", "수집에 사용할 속성", "분류 기준")
+        self._tabs = NSSegmentedControl.alloc().initWithFrame_(frame(22, 411, 454, 32))
         self._tabs.setSegmentCount_(len(titles))
         self._tabs.setTrackingMode_(NSSegmentSwitchTrackingSelectOne)
         self._tabs.setTarget_(self._actions)
@@ -104,6 +106,13 @@ class ColumnSetupSheet:
             310,
             605,
             secondary=True,
+        )
+        self.classification = SourceClassificationEditor(
+            self._pages[2],
+            scroll(self._pages[2], 0, 39, 642, 210),
+            available,
+            classification or {},
+            self.same_property,
         )
         self._roles = scroll(self._pages[1], 0, 0, 642, 290)
         self._status = label(content, "", 22, 18, 413, size=12, secondary=True)
@@ -200,6 +209,12 @@ class ColumnSetupSheet:
                     else selected.id
                 )
                 links[key] = ColumnBinding(property_id, selected.kind)
+        try:
+            self.classification.draft()
+        except SourceSettingsError as error:
+            self.select_tab(2)
+            self._status.setStringValue_(str(error))
+            return
         message = self._apply(links)
         if message:
             self._status.setStringValue_(message)

@@ -99,7 +99,7 @@ def parse_settings(value: object) -> Settings:
             or value.get("timezone") != "Asia/Seoul"
             or value.get("categoryAssignmentVersion") not in (None, 1)
             or type(value.get("classificationVersion", 1)) is not int
-            or value.get("classificationVersion", 1) != 1
+            or value.get("classificationVersion", 1) not in (1, 2)
             or type(rules_version) is not int
             or rules_version != 1
         ):
@@ -236,6 +236,7 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
             "displayColumns",
             "alertRules",
             "columnMappings",
+            "classification",
         )
         if key in item
     )
@@ -285,6 +286,41 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
             raise ValueError
         if "eventTypes" in item:
             event_types = read_event_types(item["eventTypes"])
+    classification = item.get("classification")
+    column = None
+    classes: dict[str, str] = {}
+    fallback = None
+    if "classification" in item:
+        if not isinstance(classification, dict) or set(classification) - {
+            "default",
+            "storageId",
+        } != {"property", "kind", "name", "values"}:
+            raise ValueError
+        prop = nonblank(classification["property"])
+        origin_kind = nonblank(classification["kind"])
+        if origin_kind != "status_or_select" and not accepts_column_type(
+            provider, "text", origin_kind
+        ):
+            raise ValueError
+        storage_id = (
+            nonblank(classification["storageId"]) if "storageId" in classification else prop
+        )
+        column = DisplayColumn(
+            storage_id,
+            nonblank(classification["name"]),
+            origin_kind,
+            prop if "storageId" in classification else None,
+        )
+        pairs = classification["values"]
+        if not isinstance(pairs, dict):
+            raise ValueError
+        for key, result in pairs.items():
+            name = nonblank(key)
+            if name in classes:
+                raise ValueError
+            classes[name] = nonblank(result)
+        if "default" in classification:
+            fallback = nonblank(classification["default"])
     return SourceMapping(
         kind,
         source_id,
@@ -300,6 +336,9 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         if "displayColumns" in item
         else None,
         parse_alert_rules(item["alertRules"]) if "alertRules" in item else (),
+        classification_column=column,
+        classification_values=classes,
+        classification_default=fallback,
     )
 
 
@@ -1154,7 +1193,23 @@ def resolve_category_mapping(
     required = {rule.column_id for rule in applicable_alerts if rule.enabled}
     # 이전 표시 설정에서 숨긴 칼럼도 현재 목록 규칙이 참조하면 수집한다.
     required.update(rule_fields)
-    if config.classification_column:
+    classified = source.classification_column
+    if classified:
+        # 같은 원본을 표시하는 저장 칼럼은 기존 값 키를 유지한다.
+        classified = next(
+            (
+                col
+                for col in columns.values()
+                if col.property_id == classified.property_id and col.id == classified.id
+            ),
+            next(
+                (col for col in columns.values() if col.property_id == classified.property_id),
+                classified,
+            ),
+        )
+        required.add(classified.id)
+    elif config.classification_column:
+        classified = columns.get(config.classification_column)
         required.add(config.classification_column)
     storage = tuple(
         column
@@ -1163,11 +1218,13 @@ def resolve_category_mapping(
     )
     return replace(
         source,
-        classification_column=columns.get(config.classification_column)
-        if config.classification_column
-        else None,
-        classification_values=dict(config.classification_values),
-        classification_default=config.classification_default,
+        classification_column=classified,
+        classification_values=source.classification_values
+        if source.classification_column
+        else dict(config.classification_values),
+        classification_default=source.classification_default
+        if source.classification_column
+        else config.classification_default,
         stored_columns=storage,
         display_columns=shown if custom_display else None,
         calendar_column=columns.get(config.calendar_date) if config.calendar_date else None,
@@ -1349,14 +1406,16 @@ def empty_work_settings() -> dict[str, object]:
         "timezone": "Asia/Seoul",
         "sources": [],
         "mainListRulesVersion": 1,
-        "classificationVersion": 1,
+        "classificationVersion": 2,
     }
 
 
 def is_initial_document(document: WorkSettingsDocument) -> bool:
     """새 설치의 빈 문서만 최초 가져오기 대상으로 구분한다."""
     # 표시 규칙 버전만 없던 초기 문서도 한 번의 파일 가져오기를 허용한다.
-    normalized = {"mainListRulesVersion": 1, "classificationVersion": 1, **document.payload}
+    normalized = {"mainListRulesVersion": 1, "classificationVersion": 2, **document.payload}
+    if normalized["classificationVersion"] == 1:
+        normalized["classificationVersion"] = 2
     return document.revision == 1 and normalized == empty_work_settings()
 
 

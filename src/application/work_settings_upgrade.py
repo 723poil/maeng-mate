@@ -33,7 +33,7 @@ def settings_up_to_date(document: WorkSettingsDocument, settings: Settings) -> b
     categories_ready = payload.get("categoryAssignmentVersion") == 1 or not payload.get("sources")
     return (
         categories_ready
-        and payload.get("classificationVersion") == 1
+        and payload.get("classificationVersion") == 2
         and payload.get("mainListRulesVersion") == 1
         and all(
             item.configuration is not None

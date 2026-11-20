@@ -281,7 +281,11 @@ def validate_columns(mapping: SourceMapping, schema: SourceSchema) -> None:
     for display_column in mapping.storage_layout:
         property_id = display_column.property_id
         column = columns.get(property_id if rounds else unquote(property_id))
-        if column is None or column.kind != display_column.kind:
+        if column is None or (
+            column.kind not in STATUS
+            if display_column.kind == "status_or_select"
+            else column.kind != display_column.kind
+        ):
             raise SourceSettingsError(
                 f"'{display_column.label}'에 연결된 원본 칼럼을 다시 선택하세요."
             )

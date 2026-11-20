@@ -59,7 +59,9 @@ class SourceMapping:
     @property
     def storage_layout(self) -> tuple[DisplayColumn, ...]:
         """새 연결은 숨겨 둔 칼럼도 저장하고 이전 소스는 기존 저장 구성을 쓴다."""
-        return self.stored_columns or self.display_columns or ()
+        layout = self.stored_columns or self.display_columns or ()
+        column = self.classification_column
+        return (*layout, column) if column and column not in layout else layout
 
 
 @dataclass(frozen=True)

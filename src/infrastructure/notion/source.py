@@ -244,6 +244,9 @@ class NotionSource:
                     display_columns=resolved if not source.stored_columns else None,
                     stored_columns=resolved if source.stored_columns else (),
                     alert_rules=resolved_rules,
+                    classification_column=resolved[layout.index(source.classification_column)]
+                    if source.classification_column
+                    else None,
                 )
                 for item in await self._collect_rows(child, observed_at):
                     if not isinstance(item, Task) or item.id in seen:

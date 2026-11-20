@@ -50,7 +50,13 @@ from src.application.work_records import WorkRecordsClient
 from src.application.work_rules_settings import WorkRulesClient
 from src.application.workday import LEAVE_LABELS, SELECTABLE_LEAVES
 from src.domain.calendar import CALENDAR_KINDS, CalendarPreferences
-from src.domain.daily_work import DepartureResult, LeaveType, WorkRules, parse_clock
+from src.domain.daily_work import (
+    OVERNIGHT_DEPARTURE_REASON,
+    DepartureResult,
+    LeaveType,
+    WorkRules,
+    parse_clock,
+)
 from src.domain.preferences import SECTIONS, Preferences, SectionPreference
 from src.domain.source_display import SourceDisplay, display_groups
 from src.domain.work_dates import SEOUL
@@ -437,6 +443,7 @@ class MenuBarApp:
         self._now.setControlSize_(NSControlSizeSmall)
         self._now.setFont_(NSFont.systemFontOfSize_(11))
         self._departure = label(view, "--:--", 382, 460.5, 108, size=24, bold=True)
+        self._departure_warning = label(view, "", 372, 445, 138, size=9, secondary=True)
         label(view, "휴가", 226, 500, 100, size=11, secondary=True)
         self.leave = self._selector(
             224, 461, 144, [LEAVE_LABELS[leave] for leave in SELECTABLE_LEAVES], parent=view
@@ -653,6 +660,14 @@ class MenuBarApp:
         (x, y), (width, height) = self._departure.frame()
         place_label(self._departure, x, y + height / 2 - 15.5, width, 31)
         self._departure.setStringValue_(departure)
+        overnight = (
+            actual is None
+            and displayed is not None
+            and displayed.astimezone(SEOUL).date().isoformat() != update.day
+        )
+        self._departure_warning.setStringValue_("익일 확정 불가 · 알림 없음" if overnight else "")
+        self._departure_warning.setToolTip_(OVERNIGHT_DEPARTURE_REASON if overnight else None)
+        self._departure.setToolTip_(OVERNIGHT_DEPARTURE_REASON if overnight else None)
 
     def _set_message(self, value: str) -> None:
         """짧은 상태는 제목 옆에, 긴 안내는 근무 카드 상단에 잘림 없이 표시한다."""
@@ -692,6 +707,9 @@ class MenuBarApp:
         for control in (self.hour, self.minute, self.leave, self._now):
             control.setEnabled_(False)
         self._departure.setStringValue_("--:--")
+        self._departure_warning.setStringValue_("")
+        self._departure_warning.setToolTip_(None)
+        self._departure.setToolTip_(None)
         self._departure_title.setStringValue_("퇴근 예정")
         current = datetime.fromisoformat(day)
         self._date.setStringValue_(

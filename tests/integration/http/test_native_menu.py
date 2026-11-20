@@ -288,6 +288,24 @@ def test_native_menu_renders_and_saves_attendance(
         assert app.hour.indexOfSelectedItem() == 8
         assert app.minute.indexOfSelectedItem() == 30
         assert app._departure.stringValue() == "12:30"
+        # 자정 경계는 저장 전 미리보기와 저장 응답 뒤 모두 같은 이유를 보여 준다.
+        app.hour.selectItemAtIndex_(16)
+        app.minute.selectItemAtIndex_(0)
+        app.leave.selectItemAtIndex_(0)
+        app.mark_dirty()
+        assert app._departure.stringValue() == "11/17 00:00"
+        assert app._departure_warning.stringValue() == "익일 확정 불가 · 알림 없음"
+        assert (
+            app._departure_warning.fittingSize().width <= app._departure_warning.frame().size.width
+        )
+        settle()
+        assert app._departure_warning.stringValue() == "익일 확정 불가 · 알림 없음"
+        assert asyncio.run(service.read())["calculationState"] == "overnight"
+        app.hour.selectItemAtIndex_(15)
+        app.minute.selectItemAtIndex_(59)
+        app.mark_dirty()
+        assert app._departure_warning.stringValue() == ""
+        settle()
         app._notification_status = lambda: "알림 연결 확인 필요"
         app.tick()
         assert "알림 연결 확인 필요" in (

@@ -31,6 +31,8 @@
 - 메뉴바 작업자는 인증된 큐를 통해 `NotificationSender`를 호출한다. macOS 발신 앱은 고정 번들 식별자를 사용하고 제목·본문을 stdin으로 받는다. 이름·변환된 아이콘은 `notificationIdentity`에 둔다. OS 권한 요청은 사용자가 누른 알림 확인에서 시작한다. OS 접수와 실제 배너 표시는 구별한다.
 - 업무·QA·일정·회의는 검증한 원본 URL을 별도 필드로 보관한다. macOS에서는 기본 클릭에서만 열고, 클릭으로 알림 번들이 재실행된 경우도 처리한다. Slack에서는 제목을 구조화 링크로 만든다. 원본 없는 퇴근·테스트 알림은 주소를 추측하지 않는다. [ADR 0009](0009-slack.md)
 
+- 퇴근 예정이 서울 기준 기록일의 자정 이상이면 자동 퇴근 알림을 예약하지 않는다. 사전 알림 시각이 기록 당일이어도 같으며, 기록 저장·근무 규칙 변경·알림 설정 변경·시작 시 보완은 공통 예약 함수의 당일 판정을 사용한다. 기존 미전달 예약은 무효화하고 접수 이력은 보존한다. 규칙을 바꿔 다시 당일 예정이 되면 미래 예약만 복구한다.
+
 ## 결과와 검증
 
 채널별 실패가 다른 채널의 결과를 덮지 않는다. `src/infrastructure/sqlite/notifications.py`, `notification_deliveries.py`, `src/infrastructure/notification_app/agent.py`, `src/bootstrap/notification_channels.py`에서 구현한다. 임시 큐에서 실행권 충돌·정정·재시작을 확인하고 macOS에서 실제 배너 클릭을 확인한다.

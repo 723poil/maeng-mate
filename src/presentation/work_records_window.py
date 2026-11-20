@@ -8,6 +8,7 @@ from AppKit import (
     NSBoxSeparator,
     NSButton,
     NSColor,
+    NSFont,
     NSImage,
     NSNoBorder,
     NSPopUpButton,
@@ -294,13 +295,24 @@ class WorkRecordsWindow:
             if detail is not None and detail.item.day == controller.selected
             else None
         )
+        self._expected.setFont_(
+            NSFont.boldSystemFontOfSize_(
+                14 if detail and detail.confirmation_blocked_reason else 18
+            )
+        )
         self._expected.setStringValue_(
-            expected.astimezone(SEOUL).strftime("%H:%M") if expected else "—"
+            expected.astimezone(SEOUL).strftime(
+                "%m/%d %H:%M" if detail and detail.confirmation_blocked_reason else "%H:%M"
+            )
+            if expected
+            else "—"
         )
         self._confirm.setEnabled_(controller.can_confirm)
         self._confirm.setToolTip_(
             "바꾼 내용을 남기려면 ‘저장’을 누르세요."
             if controller.dirty
+            else detail.confirmation_blocked_reason
+            if detail and detail.confirmation_blocked_reason
             else "휴무"
             if detail and detail.item.day.weekday() >= 5 and detail.item.revision == 0
             else "이미 퇴근을 확정했습니다. 시간을 바꾸려면 수정한 뒤 ‘저장’을 누르세요."
@@ -320,8 +332,14 @@ class WorkRecordsWindow:
         self._reload.setEnabled_(
             not controller.busy and (not controller.dirty or controller.blocked)
         )
-        # 확정 여부·수정 상태는 오른쪽 배지로만 표시하고 하단은 진행·오류에만 쓴다.
-        footer = controller.message if controller.busy or controller.error else ""
+        # 익일 예정은 비활성 버튼의 이유를 도움말뿐 아니라 하단에도 표시한다.
+        footer = (
+            controller.message
+            if controller.busy or controller.error
+            else detail.confirmation_blocked_reason or ""
+            if detail
+            else ""
+        )
         self._status.setStringValue_(footer)
         self._status.setToolTip_(footer or None)
         self._badge.update(

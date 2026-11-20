@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from src.application.notifications import DeliveryResult, NotificationJob, parse_delivery_result
 from src.application.notion_links import notion_link
-from src.domain.daily_work import DayRecord, DeparturePolicy
+from src.domain.daily_work import DayRecord, DeparturePolicy, departure_on_record_day
 from src.domain.models import CalendarEvent, WorkItem
 from src.domain.notification_timing import calendar_alert_expiry
 from src.domain.source_display import SOURCE_CHANNELS
@@ -44,7 +44,8 @@ def enqueue_departure(
         (day, record.revision),
     )
     result = policy.calculate(record)
-    if result.departure is None or record.checkout_at is not None:
+    # 확정할 수 없는 익일 예정은 사전 알림이 오늘이어도 예약하지 않는다.
+    if not departure_on_record_day(result.departure, record.day) or record.checkout_at is not None:
         connection.execute(
             "UPDATE notification_jobs SET state='obsolete' WHERE day=? AND kind='departure' AND state IN ('pending','delivering')",
             (day,),

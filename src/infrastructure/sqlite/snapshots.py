@@ -130,6 +130,32 @@ class SQLiteSnapshots:
             raise SnapshotError("invalid_snapshot")
         return previous
 
+    async def renew_run(self, run: SyncRun) -> None:
+        """외부 조회와 분리된 짧은 트랜잭션으로 실행권을 연장한다."""
+        await asyncio.to_thread(self._renew_run, run)
+
+    def _renew_run(self, run: SyncRun) -> None:
+        """만료·교체·종료된 실행권을 되살리지 않고 현재 실행만 갱신한다."""
+        with self._database.transaction() as connection:
+            epoch = self._clock()
+            updated = connection.execute(
+                """UPDATE work_source_state SET lease_until=?
+                WHERE source_id=? AND generation=? AND lease_until>?
+                  AND EXISTS (SELECT 1 FROM sync_runs
+                    WHERE id=? AND source_id=? AND generation=? AND status='running')""",
+                (
+                    epoch + 300,
+                    run.source_id,
+                    run.generation,
+                    epoch,
+                    run.id,
+                    run.source_id,
+                    run.generation,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise SnapshotError("stale_run")
+
     async def complete_run(
         self,
         run: SyncRun,

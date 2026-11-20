@@ -6,9 +6,34 @@ from datetime import datetime
 from typing import Literal, NotRequired, TypedDict
 
 from src.application.errors import SnapshotError, SourceReadError
-from src.application.models import CollectedWork
+from src.application.models import CollectedWork, SyncRun
 from src.application.ports import SnapshotStore, WorkSource
 from src.domain.models import SourceMapping
+
+LEASE_RENEWAL_INTERVAL_SECONDS = 60.0
+
+
+async def _collect_with_lease(
+    source: SourceMapping,
+    reader: WorkSource,
+    store: SnapshotStore,
+    run: SyncRun,
+    started: str,
+) -> CollectedWork:
+    """원천 I/O 대기 중 실행권을 갱신하고 종료 시 자식 작업을 회수한다."""
+    collection = asyncio.create_task(reader.collect(source, started))
+    try:
+        while True:
+            finished, _ = await asyncio.wait((collection,), timeout=LEASE_RENEWAL_INTERVAL_SECONDS)
+            if finished:
+                result = collection.result()
+                return result if isinstance(result, CollectedWork) else CollectedWork(result)
+            # 원천 응답이 오래 걸려도 DB 트랜잭션을 유지하지 않고 현재 세대만 연장한다.
+            await store.renew_run(run)
+    finally:
+        # 갱신 실패나 상위 취소 뒤 원천 작업이 남아 뒤늦은 결과를 만들지 않게 한다.
+        collection.cancel()
+        await asyncio.gather(collection, return_exceptions=True)
 
 
 class SyncSucceeded(TypedDict):
@@ -60,15 +85,20 @@ async def synchronize(
             return {"status": "skipped", "reason": error.code}
         raise
     try:
-        result = await reader.collect(source, started)
-        # 행만 제공하는 원천은 선택값을 확인하지 못한 상태로 저장한다.
-        collected = result if isinstance(result, CollectedWork) else CollectedWork(result)
+        collected = await _collect_with_lease(source, reader, store, run, started)
     except asyncio.CancelledError:
         await store.fail_run(run, "cancelled")
         raise
     except SourceReadError as error:
         await store.fail_run(run, error.code, retry_after=error.retry_after)
         return {"status": "failed", "code": "source_failed", "reason": error.code}
+    except SnapshotError as error:
+        # 실행권 상실과 갱신 저장 실패를 원천 오류로 숨기지 않는다.
+        code: Literal["stale_run", "storage_failed"] = (
+            "stale_run" if error.code == "stale_run" else "storage_failed"
+        )
+        await store.fail_run(run, "source_failed" if code == "stale_run" else code)
+        return {"status": "failed", "code": code}
     except Exception:
         await store.fail_run(run, "source_failed")
         return {"status": "failed", "code": "source_failed"}

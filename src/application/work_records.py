@@ -9,10 +9,12 @@ from src.application.date_inputs import parse_day, parse_month
 from src.application.day_ports import DayConflictError, DayInputError
 from src.application.workday import LEAVE_LABELS, extra_work_label
 from src.domain.daily_work import (
+    OVERNIGHT_DEPARTURE_REASON,
     DayRecord,
     DeparturePolicy,
     LeaveType,
     departure_due,
+    departure_on_record_day,
     parse_clock,
     parse_leave,
     work_instant,
@@ -73,6 +75,15 @@ class WorkRecordDetail:
     can_confirm: bool = False
     can_edit: bool = True
 
+    @property
+    def confirmation_blocked_reason(self) -> str | None:
+        """예정 시각을 유지하면서 당일 확정 범위를 벗어난 이유를 제공한다."""
+        if self.expected_departure is not None and not departure_on_record_day(
+            self.expected_departure, self.item.day
+        ):
+            return OVERNIGHT_DEPARTURE_REASON
+        return None
+
     def payload(self) -> dict[str, object]:
         """상세 응답에도 원본 계획·회사 규칙을 넣지 않는다."""
         return {
@@ -90,6 +101,7 @@ class WorkRecordDetail:
             if self.expected_departure
             else None,
             "canConfirm": self.can_confirm,
+            "confirmationBlockedReason": self.confirmation_blocked_reason,
             "canEdit": self.can_edit,
         }
 

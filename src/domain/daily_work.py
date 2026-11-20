@@ -41,9 +41,19 @@ def work_instant(day: date, clock: time | None) -> datetime | None:
     return datetime.combine(day, clock, SEOUL).astimezone(UTC) if clock is not None else None
 
 
+OVERNIGHT_DEPARTURE_REASON = (
+    "퇴근 예정이 다음 날이므로 확정할 수 없으며 자동 퇴근 알림을 보내지 않습니다."
+)
+
+
+def departure_on_record_day(expected: datetime | None, day: date) -> TypeGuard[datetime]:
+    """야간 교대를 지원하지 않으므로 기록 당일의 퇴근 예정만 허용한다."""
+    return expected is not None and expected.astimezone(SEOUL).date() == day
+
+
 def departure_due(expected: datetime | None, day: date, now: datetime) -> TypeGuard[datetime]:
     """기록 당일의 예정 시각에 도달한 경우에만 실제 퇴근으로 확정할 수 있다."""
-    return expected is not None and expected.astimezone(SEOUL).date() == day and expected <= now
+    return departure_on_record_day(expected, day) and expected <= now
 
 
 @dataclass(frozen=True, order=True)
@@ -306,4 +316,6 @@ class FlexibleDeparturePolicy:
                 if window == lunch:
                     lunch_minutes += minutes
                 finish += timedelta(minutes=minutes)
-        return DepartureResult("ready", finish, required, lunch_minutes, record.attendance_warnings)
+        # 출근과 계산 시각은 보존하되 당일 확정·알림이 불가능한 상태를 구별한다.
+        state = "ready" if departure_on_record_day(finish, record.day) else "overnight"
+        return DepartureResult(state, finish, required, lunch_minutes, record.attendance_warnings)

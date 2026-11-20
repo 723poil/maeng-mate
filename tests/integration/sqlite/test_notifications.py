@@ -3,6 +3,8 @@
 from dataclasses import replace
 from datetime import UTC, datetime, time
 
+import pytest
+
 from src.infrastructure.sqlite.connection import Database
 from tests.fixtures.clock import Clock
 from tests.fixtures.preferences import enable_notifications
@@ -552,3 +554,42 @@ async def test_migrated_rules_compare_existing_rows_with_the_first_new_snapshot(
     assert queue is not None
     records = await db.fetch("SELECT title FROM notification_jobs ORDER BY title")
     assert records == [{"title": name} for name in sorted([assigned.name, changed.name])]
+
+
+async def test_overnight_rules_and_subscription_rescheduling_cancel_pending(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """당일에서 익일로 바뀐 규칙과 구독 재계산은 같은 예약 제한을 적용한다."""
+    from src.domain.daily_work import DEFAULT_WORK_RULES, DayRecord, FlexibleDeparturePolicy
+    from src.domain.work_dates import SEOUL
+    from src.infrastructure.sqlite import day_records
+    from src.infrastructure.sqlite.day_records import SQLiteDayStore, reschedule_today_departure
+    from src.infrastructure.sqlite.preferences import SQLitePreferences
+
+    clock = Clock(datetime(2026, 11, 16, 8, tzinfo=SEOUL).timestamp())
+    policy = FlexibleDeparturePolicy()
+    enable_notifications(db, "departure_30", "departure_0")
+    store = SQLiteDayStore(db, now=clock.now, policy=policy)
+    saved = await store.save(
+        DayRecord(
+            clock.now().astimezone(SEOUL).date(),
+            attendance=datetime(2026, 11, 16, 15, 59, tzinfo=SEOUL),
+            rules=DEFAULT_WORK_RULES,
+        ),
+        0,
+    )
+    assert len(await db.fetch("SELECT id FROM notification_jobs WHERE state='pending'")) == 2
+    with store.apply_today_rules(replace(DEFAULT_WORK_RULES, daily_minutes=481)):
+        pass
+    assert await db.fetch("SELECT id FROM notification_jobs WHERE state='pending'") == []
+    assert (await store.read(saved.day)).attendance == saved.attendance
+    monkeypatch.setattr(day_records, "utc_now", clock.now)
+
+    preferences = SQLitePreferences(db)
+    preferences.save(replace(preferences.read(), notification_types=("departure_10",)))
+    with db.transaction() as connection:
+        reschedule_today_departure(connection, policy)
+    assert await db.fetch("SELECT id FROM notification_jobs WHERE state='pending'") == []
+    with store.apply_today_rules(DEFAULT_WORK_RULES):
+        pass
+    assert len(await db.fetch("SELECT id FROM notification_jobs WHERE state='pending'")) == 1

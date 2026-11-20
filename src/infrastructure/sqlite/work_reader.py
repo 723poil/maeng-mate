@@ -23,7 +23,7 @@ ORDER BY item_id
 
 # 수집 시작·성공·실패와 다음 예약은 월 화면의 자료 또는 신선도를 바꾼다.
 VERSION_QUERY = """
-SELECT state.source_id, state.kind, state.generation, state.mapping_hash,
+SELECT state.source_id, state.kind, state.generation, state.mapping_hash, {extra_columns}
        state.last_completed_at, run.status AS latest_run_status, schedule.next_run_at
 FROM work_source_state AS state
 LEFT JOIN sync_runs AS run
@@ -97,10 +97,10 @@ class SQLiteWorkReader:
 
     async def read_if_changed(
         self, sources: Sequence[SourceMapping], previous: str | None
-    ) -> tuple[str, tuple[SourceSnapshot, ...] | None]:
+    ) -> tuple[str, tuple[SourceSnapshot, ...]]:
         """같은 읽기 매핑에서 수집 버전이 달라졌을 때만 저장 JSON을 복원한다."""
         if not sources:
-            return "", () if previous != "" else None
+            return "", ()
         try:
             return await asyncio.to_thread(self._read_if_changed, sources, previous)
         except (SnapshotError, KeyError, TypeError, ValueError, OverflowError, OSError):
@@ -108,13 +108,20 @@ class SQLiteWorkReader:
 
     def _read_if_changed(
         self, sources: Sequence[SourceMapping], previous: str | None
-    ) -> tuple[str, tuple[SourceSnapshot, ...] | None]:
+    ) -> tuple[str, tuple[SourceSnapshot, ...]]:
         """버전과 원문을 한 읽기 시점에서 가져와 새 버전에 옛 자료를 연결하지 않는다."""
         with self._database.transaction(read_only=True) as connection:
-            versions = source_versions(connection, sources)
-            revision = fingerprint([tuple(row) for row in versions.values()])
+            versions = source_versions(connection, sources, _COMPLETED_RUN_COLUMN)
+            revision = fingerprint(
+                [
+                    (row["source_id"], row["kind"], row["mapping_hash"], row["completed_run_id"])
+                    for row in versions.values()
+                ]
+            )
             if revision == previous:
-                return revision, None
+                return revision, tuple(
+                    snapshot_header(source, versions.get(source.source_id)) for source in sources
+                )
             return revision, tuple(
                 self._decode_source(connection, source, versions.get(source.source_id))
                 for source in sources
@@ -153,8 +160,14 @@ class SQLiteWorkReader:
         return replace(header, items=tuple(items), status_options=options)
 
 
+# 성공한 실행 ID는 완료 시각이 같아도 스냅샷 교체를 구분한다.
+_COMPLETED_RUN_COLUMN = """(SELECT id FROM sync_runs
+        WHERE source_id=state.source_id AND status='succeeded'
+        ORDER BY generation DESC LIMIT 1) AS completed_run_id,"""
+
+
 def source_versions(
-    connection: sqlite3.Connection, sources: Sequence[SourceMapping]
+    connection: sqlite3.Connection, sources: Sequence[SourceMapping], extra_columns: str = ""
 ) -> dict[str, sqlite3.Row]:
     """요청한 소스의 작은 메타데이터만 조회하고 잘못된 중복 입력을 거부한다."""
     identifiers = tuple(source.source_id for source in sources)
@@ -163,7 +176,10 @@ def source_versions(
     placeholders = ",".join("?" for _ in identifiers)
     return {
         row["source_id"]: row
-        for row in connection.execute(VERSION_QUERY.format(placeholders=placeholders), identifiers)
+        for row in connection.execute(
+            VERSION_QUERY.format(placeholders=placeholders, extra_columns=extra_columns),
+            identifiers,
+        )
     }
 
 

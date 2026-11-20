@@ -40,8 +40,8 @@ class CalendarSnapshotReader(Protocol):
 
     async def read_if_changed(
         self, sources: Sequence[SourceMapping], previous: str | None
-    ) -> tuple[str, tuple[SourceSnapshot, ...] | None]:
-        """버전이 같으면 None, 바뀌면 같은 읽기 시점의 전체 스냅샷을 반환한다."""
+    ) -> tuple[str, tuple[SourceSnapshot, ...]]:
+        """일정 버전이 같으면 최신 헤더만, 바뀌면 원문까지 같은 시점에서 읽는다."""
         ...
 
 
@@ -233,11 +233,11 @@ class CalendarService:
                 tuple(source.mapping for source in self._visible_sources),
                 cached.revision if cached else None,
             )
-            if snapshots is None:
-                if cached is None or cached.revision != revision:
-                    raise QueryReadError()
-                return cached
-            projection = await asyncio.to_thread(self._project_sources, revision, snapshots)
+            if cached is not None and cached.revision == revision:
+                # 수집 상태와 예약만 갱신되면 마지막 정상 일정의 변환·정렬을 생략한다.
+                projection = replace(cached, metadata=snapshots)
+            else:
+                projection = await asyncio.to_thread(self._project_sources, revision, snapshots)
             self._projection = projection
             return projection
 

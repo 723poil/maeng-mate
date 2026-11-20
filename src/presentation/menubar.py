@@ -83,6 +83,7 @@ from src.presentation.runtime_settings_controller import RuntimeSettingsControll
 from src.presentation.slack_settings_controller import SlackSettingsController
 from src.presentation.source_sections import group_board_url, source_sections
 from src.presentation.source_settings_form import SourceEditor
+from src.presentation.update_button import UpdateChecks
 from src.presentation.work_records_controller import WorkRecordsController
 from src.presentation.work_records_window import WorkRecordsWindow
 from src.presentation.work_rules_form import WorkRulesEditor
@@ -110,6 +111,11 @@ class Callbacks(NSObject):
     def toggle_(self, sender: object) -> None:
         """팝오버를 열거나 닫는다."""
         self.owner.toggle()
+
+    def applicationShouldHandleReopen_hasVisibleWindows_(self, app: object, visible: bool) -> bool:
+        """Finder가 실행 중인 메뉴바로 직접 보낸 재열기를 처리한다."""
+        self.owner.show_panel()
+        return False
 
     def calendar_(self, sender: object) -> None:
         """메인 표시와 별개로 캘린더 창을 연다."""
@@ -206,11 +212,12 @@ class MenuBarApp:
             NotificationChannel("macos", "macOS 알림"),
         ),
         notification_status: Callable[[], str | None] | None = None,
+        panel_requested: Callable[[], bool] | None = None,
         shutdown_requested: Callable[[], bool] | None = None,
         today: Callable[[], str] = local_day,
     ) -> None:
         """로컬 연결과 순수 예상시간 계산 유스케이스를 주입받는다."""
-        self._app_updates = app_updates
+        self._app_updates = UpdateChecks(app_updates, self._update_pending) if app_updates else None
         self._data_backup = data_backup
         self._notification_channels = notification_channels
         self._open_url = open_url
@@ -290,12 +297,14 @@ class MenuBarApp:
         self._display_day = today()
         self._preview = preview
         self._notification_status = notification_status
+        self._panel_requested = panel_requested
         self._shutdown_requested = shutdown_requested
         self._notification_error: str | None = None
         self._application = NSApplication.sharedApplication()
         self._application.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
         self._callbacks = Callbacks.alloc().init()
         self._callbacks.owner = self
+        self._application.setDelegate_(self._callbacks)
         self._controller = DesktopController(client)
         self._dirty = False
         self._save_blocked = False
@@ -586,6 +595,8 @@ class MenuBarApp:
             0.2, self._callbacks, "tick:", None, True
         )
         try:
+            if self._app_updates:
+                self._app_updates.start()
             self._application.run()
         finally:
             self.close()
@@ -595,6 +606,11 @@ class MenuBarApp:
         if self._panel.is_visible():
             self._panel.hide()
         else:
+            self.show_panel()
+
+    def show_panel(self) -> None:
+        """반복 열기 요청에서도 이미 열린 패널을 유지한다."""
+        if not self._panel.is_visible():
             self._resize_lists()
             self._application.activateIgnoringOtherApps_(True)
             self._panel.show(self._status_item.button())
@@ -685,6 +701,8 @@ class MenuBarApp:
 
     def tick(self) -> None:
         """저장 중 바뀐 선택은 이전 응답으로 되돌리지 않고 다음 버전으로 저장한다."""
+        if self._panel_requested and self._panel_requested():
+            self.show_panel()
         if self._calendar_controller is not None:
             visible = self._compact_calendar_visible() or (
                 self._calendar_window is not None and self._calendar_window.is_visible()
@@ -737,6 +755,8 @@ class MenuBarApp:
             self._identity_controller.tick(
                 saved.notification_identity if saved else None, saved.revision if saved else 0
             )
+        if self._app_updates:
+            self._app_updates.tick()
         if self._settings_window is not None:
             self._settings_window.tick()
         if self._preferences_controller.confirmed is None:
@@ -1221,10 +1241,20 @@ class MenuBarApp:
             )
         self._settings_window.show()
 
+    def _update_pending(self) -> bool:
+        """설정 창을 열기 전에도 메뉴바와 기록 창의 편집·저장을 보호한다."""
+        if self._settings_window is not None:
+            return self._settings_window.update_pending()
+        return self._pending_work_edits()
+
     def _pending_work_edits(self) -> bool:
         """근무 카드나 기록 창에서 저장할 내용이 남았는지 확인한다."""
         records = self._records_controller
-        return self._dirty or bool(records and (records.dirty or records.saving))
+        return (
+            self._dirty
+            or (self._controller.busy and self._controller.operation == "save")
+            or bool(records and (records.dirty or records.saving))
+        )
 
     def _slack_member_saved(self) -> None:
         """Notion 미저장 초안은 유지하고 깨끗한 설정 버전만 갱신한다."""
@@ -1250,6 +1280,8 @@ class MenuBarApp:
             self._records_controller.close()
         if self._settings_window is not None:
             self._settings_window.dispose()
+        if self._app_updates:
+            self._app_updates.close()
         self._preferences_controller.close()
         if self._identity_controller is not None:
             self._identity_controller.close()

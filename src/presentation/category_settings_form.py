@@ -20,13 +20,11 @@ from AppKit import (
 from Foundation import NSObject
 
 from src.application.source_settings import CategoryDraft
-from src.application.work_settings import category_documents, parse_categories
+from src.application.work_settings import category_bindings, category_documents, parse_categories
 from src.domain.category_configuration import CategoryConfiguration
-from src.domain.category_event_alerts import EventAlertSelection
 from src.domain.source_display import SourceCategory
 from src.presentation.category_configuration_sheet import CategoryConfigurationSheet
 from src.presentation.native_views import button, card, frame, label, place_label
-from src.presentation.notification_preferences import event_alert_states
 from src.presentation.preferences_controller import PreferencesController
 from src.presentation.source_settings_form import SourceEditor
 
@@ -241,31 +239,39 @@ class CategorySettingsForm:
             return
         current = self._categories[index]
 
-        def apply(category: SourceCategory, selections: tuple[EventAlertSelection, ...]) -> None:
+        def apply(category: SourceCategory) -> None:
             """선택한 카테고리만 새 설정으로 교체한다."""
             self._save(
                 tuple(category if item.id == current.id else item for item in self._categories),
-                selections,
             )
 
         def closed() -> None:
             """시트가 닫히면 다음 설정을 다시 열 수 있다."""
             self._sheet = None
 
-        states = self._event_states(current.key)
+        state = self.editor.state
+        people: set[str] = set()
+        for raw in state.settings.sources if state else ():
+            if raw.get("categoryId") == current.id:
+                roles = raw.get("properties")
+                person_properties = (
+                    {
+                        v
+                        for k, v in roles.items()
+                        if k in {"people", "assignees", "participants"} and isinstance(v, str)
+                    }
+                    if isinstance(roles, dict)
+                    else set()
+                )
+                people.update(
+                    key
+                    for key, binding in category_bindings(raw).items()
+                    if binding.kind == "people" or binding.property_id in person_properties
+                )
         self._sheet = CategoryConfigurationSheet(
-            parent, current, apply, closed, event_states=states
+            parent, current, apply, closed, people_columns=frozenset(people)
         )
         self._sheet.show()
-
-    def _event_states(self, key: str) -> dict[str, bool]:
-        """현재 카테고리의 설정값을 알림 규칙 편집기에 전달한다."""
-        state = self.editor.state
-        return event_alert_states(
-            key,
-            state.active_display if state is not None else (),
-            self._preferences.value if self._preferences is not None else None,
-        )
 
     def remove(self, index: int) -> None:
         """연결이 없는 카테고리만 사용자 확인 뒤 삭제한다."""
@@ -278,15 +284,10 @@ class CategorySettingsForm:
     def _save(
         self,
         categories: tuple[SourceCategory, ...],
-        selections: tuple[EventAlertSelection, ...] = (),
     ) -> None:
         """검증된 카테고리 목록만 한 번 제출한다."""
         state = self.editor.state
-        if (
-            state is None
-            or not self.editor.editable
-            or (categories == self._categories and not selections)
-        ):
+        if state is None or not self.editor.editable or categories == self._categories:
             return
         try:
             parse_categories(category_documents(categories))
@@ -295,21 +296,9 @@ class CategorySettingsForm:
             return
         self.error = None
         self.editor.edited()
-        before = {
-            (item.id, rule.trigger)
-            for item in self._categories
-            if item.configuration is not None
-            for rule in item.configuration.event_alerts or ()
-        }
-        after = {
-            (item.id, rule.trigger)
-            for item in categories
-            if item.configuration is not None
-            for rule in item.configuration.event_alerts or ()
-        }
-        if selections or before - after:
+        if {item.id for item in self._categories} - {item.id for item in categories}:
             self._refresh_preferences_after = self.editor.generation
-        self.editor.save(CategoryDraft(state.settings.revision, categories, selections))
+        self.editor.save(CategoryDraft(state.settings.revision, categories))
         self.render()
 
     def render(self) -> None:
@@ -328,8 +317,6 @@ class CategorySettingsForm:
             self.error = None
             self._draw()
         self._add.setEnabled_(self.editor.editable)
-        if self._sheet is not None:
-            self._sheet.update_event_states(self._event_states(self._sheet.category_key))
         for row in self.rows:
             row.rename.setEnabled_(self.editor.editable)
             row.remove.setEnabled_(self.editor.editable and not row.used)

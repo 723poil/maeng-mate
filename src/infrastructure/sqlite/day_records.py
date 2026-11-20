@@ -22,6 +22,20 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def reschedule_today_departure(connection: sqlite3.Connection, policy: DeparturePolicy) -> None:
+    """시각 설정을 바꾸면 오늘의 기록과 같은 트랜잭션에서 남은 예약을 맞춘다."""
+    now = utc_now()
+    day = now.astimezone(SEOUL).date()
+    row = connection.execute(
+        "SELECT payload,revision FROM day_records WHERE day=?", (day.isoformat(),)
+    ).fetchone()
+    if row is not None:
+        record = decode_record(json.loads(row["payload"]))
+        if record.day != day or record.revision != row["revision"]:
+            raise SnapshotError("invalid_snapshot")
+        enqueue_departure(connection, record, policy, now)
+
+
 class SQLiteDayStore:
     """초기 버전부터 낙관적 잠금으로 중복 편집을 차단한다."""
 

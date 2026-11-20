@@ -5,6 +5,7 @@ from datetime import UTC, datetime, time
 
 from src.infrastructure.sqlite.connection import Database
 from tests.fixtures.clock import Clock
+from tests.fixtures.preferences import enable_notifications
 
 
 async def test_departure_schedule_reschedule_and_once_per_offset(db: Database) -> None:
@@ -14,6 +15,7 @@ async def test_departure_schedule_reschedule_and_once_per_offset(db: Database) -
     from src.infrastructure.sqlite.day_records import SQLiteDayStore
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
 
+    enable_notifications(db, "departure_30", "departure_10", "departure_7")
     clock = Clock(datetime(2026, 11, 16, 8, tzinfo=SEOUL).timestamp())
     rules = WorkRules(480, 240, 120, time(12), time(13), time(0), time(23, 59))
     store = SQLiteDayStore(db, now=clock.now, policy=FlexibleDeparturePolicy())
@@ -28,11 +30,9 @@ async def test_departure_schedule_reschedule_and_once_per_offset(db: Database) -
     )
     queue = SQLiteNotifications(db, now=clock.now)
     jobs = await db.fetch("SELECT due_at FROM notification_jobs ORDER BY due_at")
-    # 기존 구독과 호환되는 다섯 시각이 실제로 저장되어야 한다.
+    # 직접 지정한 세 시각만 실제로 저장되어야 한다.
     departure = datetime(2026, 11, 16, 17, tzinfo=SEOUL).timestamp()
-    assert [row["due_at"] for row in jobs] == [
-        departure - minutes * 60 for minutes in (30, 10, 5, 3, 1)
-    ]
+    assert [row["due_at"] for row in jobs] == [departure - minutes * 60 for minutes in (30, 10, 7)]
     clock.value = datetime(2026, 11, 16, 16, 30, tzinfo=SEOUL).timestamp()
     claimed = await queue.claim()
     assert len(claimed) == 1
@@ -60,6 +60,7 @@ async def test_claim_is_unique_and_abandoned_delivery_becomes_unknown(db: Databa
 
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
 
+    enable_notifications(db, "calendar")
     clock = Clock()
     with db.transaction() as connection:
         connection.execute(
@@ -82,7 +83,10 @@ async def test_new_calendar_is_personal_and_initial_snapshot_is_only_baseline(db
     clock = Clock()
     observed = clock.now().isoformat()
     source = SourceMapping(
-        "meeting", "fake-calendar", {"title": "t", "participants": "p", "period": "d"}
+        "meeting",
+        "fake-calendar",
+        {"title": "t", "participants": "p", "period": "d"},
+        event_alert_triggers=frozenset({"calendar"}),
     )
     store = SQLiteSnapshots(db, clock=clock, notification_user_id="fake-self")
     period = Period(
@@ -123,6 +127,7 @@ async def test_correction_after_claim_cancels_old_and_preserves_new_reservation(
     from src.infrastructure.sqlite.day_records import SQLiteDayStore
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
 
+    enable_notifications(db, "departure_30")
     clock = Clock(datetime(2026, 11, 16, 8, tzinfo=SEOUL).timestamp())
     rules = WorkRules(480, 240, 120, time(12), time(13), time(0), time(23, 59))
     store = SQLiteDayStore(db, now=clock.now, policy=FlexibleDeparturePolicy())
@@ -153,10 +158,14 @@ async def test_calendar_cancelled_before_delivery_is_not_requested(db: Database)
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
     from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
 
+    enable_notifications(db, "calendar")
     clock = Clock()
     observed = clock.now().isoformat()
     source = SourceMapping(
-        "meeting", "fake-calendar", {"title": "t", "participants": "p", "period": "d"}
+        "meeting",
+        "fake-calendar",
+        {"title": "t", "participants": "p", "period": "d"},
+        event_alert_triggers=frozenset({"calendar"}),
     )
     store = SQLiteSnapshots(db, clock=clock, notification_user_id="fake-self")
     first = await store.begin_run(source, observed)
@@ -183,6 +192,7 @@ async def test_queue_only_claims_current_source_and_user(db: Database) -> None:
     """설정에서 제거한 소스나 이전 사용자 알림을 전달하지 않는다."""
     from src.infrastructure.sqlite.notifications import SQLiteNotifications, notification_key
 
+    enable_notifications(db, "calendar")
     clock = Clock()
     current = notification_key("fake-source:fake-self")
     other = notification_key("fake-source:fake-other")
@@ -209,10 +219,14 @@ async def test_calendar_point_in_past_is_not_a_new_upcoming_event(db: Database) 
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
     from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
 
+    enable_notifications(db, "calendar")
     clock = Clock()
     observed = clock.now().isoformat()
     source = SourceMapping(
-        "meeting", "fake-point", {"title": "t", "participants": "p", "period": "d"}
+        "meeting",
+        "fake-point",
+        {"title": "t", "participants": "p", "period": "d"},
+        event_alert_triggers=frozenset({"calendar"}),
     )
     store = SQLiteSnapshots(db, clock=clock, notification_user_id="fake-self")
     run = await store.begin_run(source, observed)
@@ -240,10 +254,14 @@ async def test_date_event_notification_expires_at_final_seoul_midnight(db: Datab
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
     from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
 
+    enable_notifications(db, "calendar")
     clock = Clock(datetime(2026, 11, 16, 23, tzinfo=SEOUL).timestamp())
     observed = clock.now().isoformat()
     source = SourceMapping(
-        "meeting", "fake-date", {"title": "t", "participants": "p", "period": "d"}
+        "meeting",
+        "fake-date",
+        {"title": "t", "participants": "p", "period": "d"},
+        event_alert_triggers=frozenset({"calendar"}),
     )
     store = SQLiteSnapshots(db, clock=clock, notification_user_id="fake-self")
     run = await store.begin_run(source, observed)
@@ -326,6 +344,7 @@ async def test_meeting_reschedule_invalidates_claim_and_respects_completed_deliv
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
     from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
 
+    enable_notifications(db, "meeting")
     clock = Clock()
     observed = clock.now().isoformat()
     mapping = SourceMapping(
@@ -375,3 +394,161 @@ async def test_meeting_reschedule_invalidates_claim_and_respects_completed_deliv
     await publish(meeting)
     assert await queue.claim() == ()
     assert len(await db.fetch("SELECT id FROM notification_jobs WHERE kind='meeting'")) == 2
+
+
+async def test_column_reminders_follow_source_dates_and_survive_restart(db: Database) -> None:
+    """날짜·시각 정정과 누락이 영속 예약 및 이미 받은 실행권에 반영된다."""
+    from uuid import uuid4
+
+    from src.domain.source_alerts import AlertSchedule, SourceAlertRule
+    from src.infrastructure.notion.normalization import normalize_page
+    from src.infrastructure.sqlite.notifications import SQLiteNotifications
+    from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
+    from tests.fixtures.notion import SOURCE, page
+
+    rules = tuple(
+        SourceAlertRule(str(uuid4()), name, "d", "date", schedule=schedule, time_only=time_only)
+        for name, schedule, time_only in (
+            ("전날", AlertSchedule("previous_day", "09:15"), False),
+            ("당일", AlertSchedule("same_day", "10:00"), False),
+            ("시작 전", AlertSchedule("before_start", "25"), True),
+        )
+    )
+    source = replace(SOURCE, alert_rules=rules)
+    enable_notifications(db)
+    clock = Clock(datetime(2026, 12, 30, tzinfo=UTC).timestamp())
+    snapshots = SQLiteSnapshots(db, clock=clock, notification_user_id="me")
+
+    async def publish(start: str | None, *, missing: bool = False) -> None:
+        """Notion 형식의 가상 날짜를 정규화해 실제 수집 트랜잭션을 완료한다."""
+        stamp = clock.now().isoformat()
+        raw = page()
+        props = raw["properties"]
+        assert isinstance(props, dict)
+        props["Date"] = {
+            "id": "d",
+            "type": "date",
+            "date": {"start": start, "end": None} if start else None,
+        }
+        items = [] if missing else [normalize_page(raw, source, stamp)]
+        await snapshots.complete_run(await snapshots.begin_run(source, stamp), items, stamp)
+
+    async def due_times() -> dict[str, datetime]:
+        """중복 예약까지 검출하도록 대기 건수와 제목별 예정 시각을 함께 확인한다."""
+        rows = await db.fetch("SELECT title,due_at FROM notification_jobs WHERE state='pending'")
+        times = {r["title"]: datetime.fromtimestamp(r["due_at"], UTC) for r in rows}
+        assert len(times) == len(rows)
+        return times
+
+    # UTC 12월 31일 저녁은 서울 1월 1일이다. 분 단위 규칙은 원본의 초도 유지한다.
+    start = "2026-12-31T17:30:40Z"
+    await publish(start)
+    await publish(start)
+    assert await due_times() == {
+        "전날": datetime(2026, 12, 31, 0, 15, tzinfo=UTC),
+        "당일": datetime(2027, 1, 1, 1, tzinfo=UTC),
+        "시작 전": datetime(2026, 12, 31, 17, 5, 40, tzinfo=UTC),
+    }
+    # 종일 값으로 바꾸면 시작 시각을 상정하지 않고 전날·당일 예약만 남긴다.
+    await publish("2027-01-01")
+    assert set(await due_times()) == {"전날", "당일"}
+    await publish(None, missing=True)
+    assert await due_times() == {}
+    await publish(start)
+    clock.value = datetime(2026, 12, 31, 0, 15, tzinfo=UTC).timestamp()
+    queue = SQLiteNotifications(Database(str(db.path)), now=clock.now, user_id="me")
+    (old,) = await queue.claim()
+    assert old.title == "전날" and await queue.authorize(old.id, old.token)
+    await publish("2027-01-02")
+    assert not await queue.authorize(old.id, old.token)
+    await queue.ack(old.id, old.token, "cancelled")
+    await publish(None)
+    assert await due_times() == {}
+    # 이미 지난 예약을 뒤늦게 추가하지 않는다.
+    await publish("2026-12-29")
+    assert await due_times() == {} and await queue.claim() == ()
+
+
+async def test_migrated_rules_compare_existing_rows_with_the_first_new_snapshot(
+    db: Database,
+) -> None:
+    """기존 소스의 역할을 실제 칼럼에 연결하고 업데이트 전후의 변경만 한 번 발송한다."""
+    from uuid import uuid4
+
+    from src.application.work_settings import category_documents, empty_work_settings
+    from src.bootstrap.environment import AppEnvironment
+    from src.bootstrap.notification_wiring import build_notifications
+    from src.domain.category_configuration import CategoryColumn, CategoryConfiguration
+    from src.domain.category_event_alerts import CategoryEventAlert
+    from src.domain.source_alerts import UNBOUND_COLUMN
+    from src.domain.source_display import SourceCategory
+    from src.infrastructure.notion.normalization import normalize_page
+    from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
+    from src.infrastructure.sqlite.work_settings import SQLiteWorkSettings
+    from tests.fixtures.notion import page
+
+    person = CategoryColumn(str(uuid4()), "검토자", "text")
+    status = CategoryColumn(str(uuid4()), "검토 단계", "text")
+    config = CategoryConfiguration(
+        columns=(person, status),
+        event_alerts=(
+            CategoryEventAlert("assigned", "새 검토자"),
+            CategoryEventAlert("status", "검토 단계 변경"),
+            CategoryEventAlert("due", "기한"),
+        ),
+    )
+    category = SourceCategory(str(uuid4()), "검토", config)
+    source = {
+        "kind": "task",
+        "dataSourceId": str(uuid4()),
+        "categoryId": category.id,
+        "properties": {"title": "t", "status": "s", "assignees": "p"},
+        "columnMappings": {
+            person.id: {"propertyId": "p", "kind": "people"},
+            status.id: {"propertyId": "s", "kind": "status"},
+        },
+    }
+    work = SQLiteWorkSettings(db)
+    work.initialize(
+        {
+            **empty_work_settings(),
+            "categoryAssignmentVersion": 1,
+            "categories": category_documents((category,)),
+            "sources": [source],
+        }
+    )
+    enable_notifications(db, "task_assigned", "task_status", "task_due")
+    stored = work.read_validated()
+    assert stored is not None
+    mapping = stored[1].active_sources[0]
+    clock = Clock()
+    stamp = clock.now().isoformat()
+    snapshots = SQLiteSnapshots(db, clock=clock, notification_user_id="me")
+    raw = page()
+    initial = normalize_page(raw, mapping, stamp)
+    await snapshots.complete_run(await snapshots.begin_run(mapping, stamp), [initial], stamp)
+    converted = work.prepare_categories()
+    assert converted is not None and work.prepare_categories() == converted
+    settings = converted[1]
+    saved = settings.categories[0].configuration
+    assert saved is not None and saved.event_alerts == ()
+    assigned, changed, unbound = (entry.rule for entry in saved.alerts)
+    assert assigned.column_id == person.id and assigned.member == "self"
+    assert changed.column_id == status.id and changed.enabled
+    assert unbound.column_id == UNBOUND_COLUMN and not unbound.enabled
+    # 이전 수집을 했던 기존 행은 상태 알림만, 새 행은 배정 알림만 발생한다.
+    mapping = settings.active_sources[0]
+    props = raw["properties"]
+    assert isinstance(props, dict)
+    props["Status"] = {"id": "s", "type": "status", "status": {"name": "검토 완료"}}
+    items = [
+        normalize_page(item, mapping, stamp, user_id="me") for item in (raw, {**raw, "id": "new"})
+    ]
+    await snapshots.complete_run(await snapshots.begin_run(mapping, stamp), items, stamp)
+    await snapshots.complete_run(await snapshots.begin_run(mapping, stamp), items, stamp)
+    queue, _ = build_notifications(
+        AppEnvironment("fixture", database=str(db.path), notion_user_id="me"), settings
+    )
+    assert queue is not None
+    records = await db.fetch("SELECT title FROM notification_jobs ORDER BY title")
+    assert records == [{"title": name} for name in sorted([assigned.name, changed.name])]

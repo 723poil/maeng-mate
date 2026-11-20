@@ -114,9 +114,8 @@ def record_installation() -> None:
     write_private_file(manifest, json.dumps(value).encode())
 
 
-def launch() -> None:
+def launch_action() -> str:
     """앱 첫 실행은 필요한 서비스만 설치하고 동일 빌드의 재실행은 그대로 사용한다."""
-    from src.bootstrap.service import run_service
 
     contents = bundle_contents()
     if "Volumes" in contents.parts or "AppTranslocation" in contents.parts:
@@ -137,4 +136,11 @@ def launch() -> None:
                     action = "start"
     except (OSError, ValueError):
         pass
-    run_service(action)
+    return action
+
+
+def launch() -> None:
+    """Finder 실행 요청을 직렬화하고 준비된 메뉴바에 패널 열기를 전달한다."""
+    from src.bootstrap.service import run_service
+
+    run_service("finder")

@@ -1,9 +1,38 @@
 """수집 실패 구간마다 한 번만 알리는 영속 예약이다."""
 
+import json
 import sqlite3
 
 from src.application.models import SyncRun
-from src.infrastructure.sqlite.notification_keys import notification_key, sync_error_scope
+from src.application.work_settings import parse_settings
+from src.domain.source_alerts import SourceAlertRule
+from src.infrastructure.sqlite.notification_keys import (
+    failure_rule_scope,
+    notification_key,
+    sync_error_scope,
+)
+from src.infrastructure.sqlite.serialization import source_fingerprint
+
+
+def saved_failure_rules(
+    connection: sqlite3.Connection, run: SyncRun
+) -> tuple[SourceAlertRule, ...]:
+    """실행 도중 삭제하거나 조건을 바꾼 규칙으로 새 실패 알림을 만들지 않는다."""
+    if run.source is None or not run.source.failure_rules:
+        return ()
+    running = run.source.failure_rules
+    row = connection.execute("SELECT payload FROM work_settings WHERE id=1").fetchone()
+    if row is None:
+        return running
+    settings = parse_settings(json.loads(row["payload"]))
+    active = {(rule.id, rule.target) for rule in running}
+    return tuple(
+        rule
+        for source in settings.active_sources
+        if source.source_id == run.source_id and source_fingerprint(source) == run.mapping_hash
+        for rule in source.failure_rules
+        if (rule.id, rule.target) in active
+    )
 
 
 def enqueue_sync_failure(
@@ -13,6 +42,7 @@ def enqueue_sync_failure(
     code: str,
     *,
     retrying: bool = False,
+    rule: SourceAlertRule | None = None,
 ) -> None:
     """실패 기록 트랜잭션 안에서 직전 성공 이후의 같은 장애를 묶는다."""
     previous = connection.execute(
@@ -22,6 +52,11 @@ def enqueue_sync_failure(
     ).fetchone()
     last_success = previous["id"] if previous is not None else None
     logical = notification_key(f"sync-error:{run.source_id}:{run.mapping_hash}:{last_success or 0}")
+    scope = sync_error_scope(run.source_id, run.mapping_hash)
+    if rule is not None:
+        scope = failure_rule_scope(run.source_id, run.mapping_hash, rule.id, rule.target)
+        if rule.previous_kind != "sync_error":
+            logical = notification_key(f"{scope}:{last_success or 0}")
     body = {
         "storage_failed": "수집한 자료를 이 Mac에 저장하지 못했습니다.",
         "unauthorized": "설정 → Notion에서 토큰을 확인하세요.",
@@ -49,14 +84,15 @@ def enqueue_sync_failure(
     connection.execute(
         """INSERT INTO notification_jobs(id,logical_key,kind,title,body,due_at,expires_at,state,
             source_key,sync_source_id,sync_mapping_hash,sync_failure_run_id)
-        VALUES(?,?,'sync_error','수집 실패',?,?,?,'pending',?,?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body WHERE notification_jobs.state='pending'""",
+        VALUES(?,?,'sync_error',?,?,?,?, 'pending',?,?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body WHERE notification_jobs.state='pending'""",
         (
             logical,
             logical,
+            rule.name if rule else "수집 실패",
             body,
             finished_at,
             finished_at + 3600,
-            sync_error_scope(run.source_id, run.mapping_hash),
+            scope,
             run.source_id,
             run.mapping_hash,
             run.id,

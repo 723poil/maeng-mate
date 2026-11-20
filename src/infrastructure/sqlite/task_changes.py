@@ -151,7 +151,7 @@ def record_task_changes(
         )
         if not change.after.assigned:
             continue  # 배정 해제는 이력만 남기며 알림을 보내지 않는다.
-        if run.source is not None and not any(
+        if run.source is None or not any(
             run.source.allows_event_alert(kind) for kind in change.kinds
         ):
             continue  # 저장 이력과 사용자가 등록한 발송 조건을 구분한다.

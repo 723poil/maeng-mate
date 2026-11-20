@@ -28,7 +28,7 @@ from src.application.work_settings import (
 from src.domain.category_event_alerts import EVENT_ALERT_TRIGGERS, EventAlertSelection
 from src.domain.display_columns import TITLE_COLUMN_TYPES
 from src.domain.models import SourceKind, SourceMapping, WorkItem
-from src.domain.source_alerts import is_source_alert_kind
+from src.domain.source_alerts import AlertDelivery, is_source_alert_kind
 from src.domain.source_display import SourceCategory, SourceDisplay
 
 
@@ -219,7 +219,16 @@ def mapping_signature(settings: Settings | None) -> object:
         )
         for value in settings.display
     )
-    return settings.sources, settings.completed_statuses, presentation
+    # 전달 문구와 채널은 큐가 저장 시점의 규칙을 읽는다. 수집 매핑에는 영향을 주지 않는다.
+    sources = tuple(
+        replace(
+            source,
+            alert_rules=tuple(replace(rule, delivery=None) for rule in source.alert_rules),
+            failure_rules=tuple(replace(rule, delivery=None) for rule in source.failure_rules),
+        )
+        for source in settings.sources
+    )
+    return sources, settings.completed_statuses, presentation
 
 
 def validate_columns(mapping: SourceMapping, schema: SourceSchema) -> None:
@@ -323,7 +332,17 @@ class SourceSettingsService:
         current, existing = stored
         stored_sources = canonical_sources(source_documents(current.payload))
         if isinstance(value, CategoryDraft):
-            categories = allow_enabled_events(value.categories, value.event_selections)
+            if value.event_selections or any(
+                item.configuration and item.configuration.event_alerts for item in value.categories
+            ):
+                raise SourceSettingsError(
+                    "알림 설정을 다시 열고 기준 데이터와 조건으로 규칙을 등록하세요."
+                )
+            previous_categories = {item.id: item for item in existing.categories}
+            categories = tuple(
+                preserve_rule_delivery(item, previous_categories.get(item.id))
+                for item in value.categories
+            )
             validate_category_names(categories, existing.categories)
             sources = stored_sources
             removed = {item.id for item in existing.categories} - {item.id for item in categories}
@@ -369,22 +388,7 @@ class SourceSettingsService:
         }
         parsed = parse_settings(payload)
         if isinstance(value, CategoryDraft):
-            registered = {
-                (category.id, rule.trigger)
-                for category in parsed.categories
-                if category.configuration is not None
-                for rule in category.configuration.event_alerts or ()
-            }
-            if any(
-                (item.category_id, item.trigger) not in registered
-                for item in value.event_selections
-            ):
-                raise SourceSettingsError("저장할 알림 규칙을 다시 선택하세요.")
-            return self._state(
-                *self._store.save_document(
-                    value.revision, payload, event_selections=value.event_selections
-                )
-            )
+            return self._state(*self._store.save_document(value.revision, payload))
         previous = {source.source_id: source for source in existing.sources}
         for source in parsed.sources:
             if same_source_bindings(previous.get(source.source_id), source):
@@ -399,32 +403,36 @@ class SourceSettingsService:
         return self._state(*self._store.save_document(value.revision, payload))
 
 
-def allow_enabled_events(
-    categories: tuple[SourceCategory, ...], selections: tuple[EventAlertSelection, ...]
-) -> tuple[SourceCategory, ...]:
-    """카테고리에서 명시적으로 켠 규칙은 이전 소스별 끄기 설정을 갱신한다."""
-    wanted: dict[str, set[str]] = {}
-    for item in selections:
-        if item.enabled:
-            option = EVENT_ALERT_TRIGGERS.get(item.trigger)
-            if option is None:
-                raise SourceSettingsError("저장할 알림 조건을 다시 선택하세요.")
-            wanted.setdefault(item.category_id, set()).update(option.kinds)
-    result = []
-    for category in categories:
-        config = category.configuration
-        kinds = wanted.get(category.id)
-        if config is None or not kinds:
-            result.append(category)
-            continue
-        inherited = tuple(
-            replace(item, notification_types=tuple(sorted(set(item.notification_types) | kinds)))
-            if item.notification_types is not None
-            else item
-            for item in config.inherited
+def preserve_rule_delivery(
+    category: SourceCategory, previous: SourceCategory | None
+) -> SourceCategory:
+    """이전 클라이언트가 생략한 전달 설정은 보존하고 새 규칙은 채널 없이 시작한다."""
+    config = category.configuration
+    if config is None:
+        return category
+    old = previous.configuration if previous else None
+    saved: dict[str, AlertDelivery | None] = {}
+    if old is not None:
+        saved.update((item.rule.id, item.rule.delivery) for item in old.alerts)
+        saved.update((event.trigger, event.delivery) for event in old.event_alerts or ())
+    empty = AlertDelivery("", ())
+    alerts = tuple(
+        replace(item, rule=replace(item.rule, delivery=saved.get(item.rule.id, empty)))
+        if item.rule.delivery is None
+        else item
+        for item in config.alerts
+    )
+    events = (
+        tuple(
+            replace(event, delivery=saved.get(event.trigger, empty))
+            if event.delivery is None
+            else event
+            for event in config.event_alerts or ()
         )
-        result.append(replace(category, configuration=replace(config, inherited=inherited)))
-    return tuple(result)
+        if config.event_alerts is not None
+        else None
+    )
+    return replace(category, configuration=replace(config, alerts=alerts, event_alerts=events))
 
 
 def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> bool:
@@ -436,7 +444,8 @@ def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> 
         stored_columns=(),
         calendar_column=None,
         calendar_date_override=False,
-        event_alert_triggers=None,
+        event_alert_triggers=frozenset(),
+        failure_rules=(),
     ) != replace(
         after,
         display_columns=None,
@@ -444,7 +453,8 @@ def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> 
         stored_columns=(),
         calendar_column=None,
         calendar_date_override=False,
-        event_alert_triggers=None,
+        event_alert_triggers=frozenset(),
+        failure_rules=(),
     ):
         return False
     return source_attribute_types(before) == source_attribute_types(after)

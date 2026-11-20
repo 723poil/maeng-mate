@@ -2,23 +2,26 @@
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from uuid import uuid4
 
 from src.application.notifications import NotificationJob
-from src.application.notion_links import notion_link
-from src.domain.notification_timing import DEPARTURE_REMINDER_MINUTES
 from src.domain.preferences import Preferences
+from src.domain.source_alerts import is_source_alert_kind
 from src.infrastructure.sqlite.notification_keys import departure_key, notification_key
+from src.infrastructure.sqlite.rule_delivery import DeliveryRules, channel_kinds
 
 
 def delivery_kinds(
-    connection: sqlite3.Connection, row: sqlite3.Row, qa_scopes: tuple[str, ...]
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    qa_scopes: tuple[str, ...],
+    preferences: Preferences,
 ) -> tuple[str, ...]:
     """저장된 사실로 알림 종류를 분류하며 제목 문자열에 의존하지 않는다."""
     kind = row["kind"]
     if kind == "departure":
-        for minutes in DEPARTURE_REMINDER_MINUTES:
+        for minutes in preferences.departure_offsets:
             if row["logical_key"] == departure_key(row["day"], minutes):
                 return (f"departure_{minutes}",)
         return ()
@@ -83,9 +86,16 @@ def prepare_deliveries(
     allowed_types: tuple[str, ...] | None = None,
     group: str | None = None,
     titles: Mapping[str, str] | None = None,
+    rules: DeliveryRules | None = None,
 ) -> None:
     """한 알림의 대상 채널을 한 번 확정해 이후 채널 추가로 과거 알림을 보내지 않는다."""
-    kinds = delivery_kinds(connection, row, qa_scopes)
+    kinds = delivery_kinds(connection, row, qa_scopes, preferences)
+    if (
+        row["kind"] == "sync_error"
+        and allowed_types
+        and all(is_source_alert_kind(key) for key in allowed_types)
+    ):
+        kinds = allowed_types
     if allowed_types is not None:
         kinds = tuple(kind for kind in kinds if kind in allowed_types)
     legacy = connection.execute(
@@ -94,9 +104,14 @@ def prepare_deliveries(
         AND NOT EXISTS(SELECT 1 FROM notification_deliveries d WHERE d.job_id=previous.id)""",
         (row["logical_key"], row["id"]),
     ).fetchone()
-    enabled: list[str] = []
+    enabled: dict[str, tuple[str, ...]] = {}
     for channel in channels:
-        if legacy is not None or not preferences.permits(channel, kinds, group):
+        selected = tuple(
+            kind
+            for kind in channel_kinds(kinds, channel, rules)
+            if preferences.notification_enabled(kind, group)
+        )
+        if legacy is not None or not preferences.permits(channel, selected, group):
             continue
         attempted = connection.execute(
             """SELECT 1 FROM notification_deliveries AS delivery
@@ -107,11 +122,11 @@ def prepare_deliveries(
         ).fetchone()
         # 이미 전달한 채널만 제외한다. 정정 전 미전달 채널은 최신 예약을 받을 수 있다.
         if attempted is None:
-            enabled.append(channel)
-    for channel in enabled:
+            enabled[channel] = selected
+    for channel, selected in enabled.items():
         connection.execute(
             "INSERT INTO notification_deliveries(id,job_id,channel,kinds,state) VALUES(?,?,?,?,'pending') ON CONFLICT DO NOTHING",
-            (notification_key(f"{row['id']}:{channel}"), row["id"], channel, json.dumps(kinds)),
+            (notification_key(f"{row['id']}:{channel}"), row["id"], channel, json.dumps(selected)),
         )
     chosen_title = next(
         (
@@ -173,6 +188,7 @@ def claim_delivery(
     now: float,
     source_keys: tuple[str, ...] | None,
     channels: tuple[str, ...],
+    make_job: Callable[[sqlite3.Connection, sqlite3.Row, str], NotificationJob],
 ) -> tuple[NotificationJob, ...]:
     """채널마다 별도 토큰을 부여해 성공한 채널을 재전송하지 않는다."""
     if not channels:
@@ -188,7 +204,7 @@ def claim_delivery(
         else:
             scope = " AND j.kind='departure'"
     row = connection.execute(
-        """SELECT d.id,d.channel,j.title,j.body,j.notion_url FROM notification_deliveries d
+        """SELECT d.id,d.channel,d.kinds,j.source_key,j.title,j.body,j.notion_url FROM notification_deliveries d
         JOIN notification_jobs j ON j.id=d.job_id
         WHERE d.state='pending' AND d.revoked=0 AND j.state='delivering' AND j.due_at<=? AND j.expires_at>=?
         AND NOT EXISTS(SELECT 1 FROM notification_deliveries AS other
@@ -209,13 +225,4 @@ def claim_delivery(
         "UPDATE notification_deliveries SET state='delivering',token=?,claimed_at=? WHERE id=?",
         (token, now, row["id"]),
     )
-    return (
-        NotificationJob(
-            row["id"],
-            token,
-            row["title"],
-            row["body"],
-            row["channel"],
-            notion_link(row["notion_url"]),
-        ),
-    )
+    return (make_job(connection, row, token),)

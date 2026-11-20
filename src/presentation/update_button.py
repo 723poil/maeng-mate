@@ -1,10 +1,12 @@
 """설정에서 현재 버전과 공개 업데이트를 확인한다."""
 
+import logging
+import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from importlib.metadata import version
 
-from AppKit import NSAlert, NSAlertFirstButtonReturn, NSView
+from AppKit import NSAlert, NSApplication, NSButton, NSView
 from Foundation import NSObject
 
 from src.application.app_updates import AppUpdates
@@ -14,23 +16,31 @@ from src.presentation.native_views import button, label
 class UpdateAction(NSObject):
     """네이티브 버튼 입력을 화면 객체에 전달한다."""
 
-    owner: "UpdateButton"
+    owner: "UpdateChecks"
 
     def checkUpdate_(self, sender: object) -> None:
         """사용자가 누른 확인 요청을 전달한다."""
         self.owner.check()
 
+    def openRelease_(self, sender: object) -> None:
+        """사용자가 선택한 경우에만 릴리스 페이지를 연다."""
+        self.owner.dismiss()
+        self.owner.actions.open_release()
 
-class UpdateButton:
+    def dismissUpdate_(self, sender: object) -> None:
+        """이번 안내를 닫고 다음 자동 조회를 기다린다."""
+        self.owner.dismiss()
+
+
+class UpdateChecks:
     """배포 앱은 네이티브 설치를 열고 개발 실행본은 공개 버전을 안내한다."""
 
     def __init__(
         self,
-        parent: NSView,
         actions: AppUpdates,
         pending: Callable[[], bool],
     ) -> None:
-        """같은 버전 표시에 실행 환경이 지원하는 업데이트 동작을 연결한다."""
+        """설정 창의 표시 여부와 무관하게 메뉴바에서 조회 상태를 보관한다."""
         self.current = version("maeng-mate")
         self.actions = actions
         self.target = UpdateAction.alloc().init()
@@ -38,40 +48,75 @@ class UpdateButton:
         self.pending = pending
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="release-check")
         self.lookup: Future[str] | None = None
+        self.alert: NSAlert | None = None
+        self.button: NSButton | None = None
+        self.manual = False
+        self.next_check = 0.0
+
+    def attach(self, parent: NSView) -> None:
+        """설정을 처음 열 때 기존 조회에 수동 확인 버튼을 연결한다."""
         label(parent, f"버전 {self.current}", 20, 35, 120, size=12, secondary=True)
         self.button = button(parent, "업데이트 확인…", 14, 7, 120, self.target, "checkUpdate:")
 
-    def check(self) -> None:
-        """사용자가 누른 경우에만 네트워크 조회를 시작한다."""
-        if self.actions.install:
+    def start(self) -> None:
+        """서명된 배포 앱은 Sparkle에 조회 일정을 맡긴다."""
+        if self.actions.native:
             try:
-                self.actions.install(self.pending)
+                self.actions.native.start(self.pending)
+            except RuntimeError:
+                # 자동 확인 초기화 실패로 메뉴바를 종료하지 않고 수동 재시도를 허용한다.
+                logging.getLogger(__name__).warning("자동 업데이트 확인을 시작하지 못했습니다.")
+
+    def check(self) -> None:
+        """수동 요청은 진행 중인 자동 조회와 결과를 공유한다."""
+        if self.actions.native:
+            try:
+                self.actions.native.check(self.pending)
             except RuntimeError as error:
                 self.show("업데이트를 확인하지 못했습니다.", str(error))
-        elif self.lookup is None:
-            self.button.setEnabled_(False)
-            self.button.setTitle_("확인 중…")
+        else:
+            self.manual = True
+            if self.button:
+                self.button.setEnabled_(False)
+                self.button.setTitle_("확인 중…")
+            self._lookup_release()
+
+    def _lookup_release(self) -> None:
+        """수동 확인 직후 자동 조회가 겹치지 않도록 다음 조회 시각을 함께 갱신한다."""
+        if self.lookup is None:
+            self.next_check = time.monotonic() + 24 * 60 * 60
             self.lookup = self.executor.submit(self.actions.latest)
 
     def tick(self) -> None:
-        """공개 버전 조회 결과를 메인 스레드에서 받아 안내한다."""
+        """개발 실행본은 첫 틱과 이후 하루 간격으로 최신 정식 릴리스를 확인한다."""
+        if self.actions.native:
+            return
+        if self.lookup is None and time.monotonic() >= self.next_check:
+            self._lookup_release()
         if self.lookup is None or not self.lookup.done():
             return
         lookup, self.lookup = self.lookup, None
-        self.button.setEnabled_(True)
-        self.button.setTitle_("업데이트 확인…")
+        manual, self.manual = self.manual, False
+        if self.button and manual:
+            self.button.setEnabled_(True)
+            self.button.setTitle_("업데이트 확인…")
         try:
             latest = lookup.result()
         except Exception:
-            self.show(
-                "업데이트를 확인하지 못했습니다.", "네트워크 연결을 확인한 뒤 다시 시도하세요."
-            )
+            if manual:
+                self.show(
+                    "업데이트를 확인하지 못했습니다.", "네트워크 연결을 확인한 뒤 다시 시도하세요."
+                )
+            else:
+                logging.getLogger(__name__).warning("자동 업데이트 조회에 실패했습니다.")
             return
         # 두 번호는 릴리스·빌드 경계에서 검증한 주·부·패치 버전이다.
         if tuple(map(int, latest.split("."))) <= tuple(map(int, self.current.split("."))):
-            self.show(
-                "설치할 새 버전이 없습니다.", f"설치 버전 {self.current} · 최신 공개 버전 {latest}"
-            )
+            if manual:
+                self.show(
+                    "설치할 새 버전이 없습니다.",
+                    f"설치 버전 {self.current} · 최신 공개 버전 {latest}",
+                )
         else:
             self.show(
                 f"새 버전 {latest}을 사용할 수 있습니다.",
@@ -84,12 +129,27 @@ class UpdateButton:
         alert = NSAlert.alloc().init()
         alert.setMessageText_(title)
         alert.setInformativeText_(message)
-        if download:
-            alert.addButtonWithTitle_("릴리스 열기")
-            alert.addButtonWithTitle_("나중에")
-        if alert.runModal() == NSAlertFirstButtonReturn and download:
-            self.actions.open_release()
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        if not download:
+            alert.runModal()
+            return
+        # 선택을 기다리는 동안에도 메뉴바의 자동 저장과 종료 요청을 계속 처리한다.
+        self.dismiss()
+        self.alert = alert
+        for title, action in (("릴리스 열기", "openRelease:"), ("나중에", "dismissUpdate:")):
+            choice = alert.addButtonWithTitle_(title)
+            choice.setTarget_(self.target)
+            choice.setAction_(action)
+        alert.window().center()
+        alert.window().makeKeyAndOrderFront_(None)
+
+    def dismiss(self) -> None:
+        """열려 있는 릴리스 안내 창을 정리한다."""
+        if self.alert is not None:
+            self.alert.window().orderOut_(None)
+            self.alert = None
 
     def close(self) -> None:
-        """창의 수명이 끝나면 네트워크 작업자를 정리한다."""
+        """메뉴바의 수명이 끝나면 안내 창과 네트워크 작업자를 정리한다."""
+        self.dismiss()
         self.executor.shutdown(wait=False, cancel_futures=True)

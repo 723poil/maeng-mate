@@ -2,6 +2,19 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
+
+
+class NativeUpdater(Protocol):
+    """배포 앱의 자동 예약과 사용자 요청이 같은 설치 세션을 사용한다."""
+
+    def start(self, pending: Callable[[], bool]) -> None:
+        """설치 전 편집 상태를 확인할 수 있도록 자동 조회를 시작한다."""
+        ...
+
+    def check(self, pending: Callable[[], bool]) -> None:
+        """사용자가 요청한 확인 창을 표시한다."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -10,4 +23,4 @@ class AppUpdates:
 
     latest: Callable[[], str]
     open_release: Callable[[], None]
-    install: Callable[[Callable[[], bool]], None] | None
+    native: NativeUpdater | None

@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal
 
 from src.domain.display_columns import DisplayColumn
@@ -30,7 +31,8 @@ class SourceMapping:
     stored_columns: tuple[DisplayColumn, ...] = ()
     calendar_column: DisplayColumn | None = None
     calendar_date_override: bool = False
-    event_alert_triggers: frozenset[str] | None = None
+    failure_rules: tuple[SourceAlertRule, ...] = ()
+    event_alert_triggers: frozenset[str] = frozenset()
 
     @property
     def has_person_scope(self) -> bool:
@@ -40,7 +42,7 @@ class SourceMapping:
 
     def allows_event_alert(self, trigger: str) -> bool:
         """소속 카테고리에 등록한 조건에 대해서만 알림을 예약한다."""
-        return self.event_alert_triggers is None or trigger in self.event_alert_triggers
+        return trigger in self.event_alert_triggers
 
     def collected_columns(self) -> dict[str, str]:
         """표시 또는 활성 알림 규칙에 쓰는 속성을 한 번씩 읽는다."""
@@ -80,6 +82,8 @@ class ItemBase:
     observed_at: str
     display_values: Mapping[str, str] = field(default_factory=dict, kw_only=True, repr=False)
     alert_values: Mapping[str, str] = field(default_factory=dict, kw_only=True, repr=False)
+    # 예약 시각은 같은 수집에서 큐에 저장하고 스냅샷에는 발송 전 대조할 해시만 남긴다.
+    alert_due_at: Mapping[str, datetime] = field(default_factory=dict, kw_only=True, repr=False)
     calendar_periods: Mapping[str, Period] = field(default_factory=dict, kw_only=True, repr=False)
 
 

@@ -55,6 +55,23 @@ def collection_fingerprint(source: SourceMapping) -> str:
     ]
     # 기존 미리보기만 저장했던 칼럼에 전체 값이 필요해지면 다음 수집을 앞당긴다.
     full_text = sorted(item.value_key for item in source.storage_layout if item.full_text)
+    # 새 예약은 같은 칼럼을 이미 수집 중이어도 다음 정기 주기를 기다리면 시각을 놓칠 수 있다.
+    schedules = sorted(
+        (rule.id, rule.column_id, rule.comparison_kind, rule.schedule.mode, rule.schedule.value)
+        for rule in source.alert_rules
+        if rule.enabled and rule.schedule is not None
+    )
+    members = sorted(
+        (rule.id, rule.column_id, rule.member)
+        for rule in source.alert_rules
+        if rule.enabled and rule.member is not None
+    )
+    if members:
+        return fingerprint(
+            (digest, sorted(columns.items()), sorted(stored), full_text, schedules, members)
+        )
+    if schedules:
+        return fingerprint((digest, sorted(columns.items()), sorted(stored), full_text, schedules))
     if full_text:
         return fingerprint((digest, sorted(columns.items()), sorted(stored), full_text))
     return (

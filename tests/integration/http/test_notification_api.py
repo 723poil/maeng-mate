@@ -5,6 +5,8 @@ from pathlib import Path
 
 import httpx
 
+from tests.fixtures.preferences import enable_notifications
+
 
 async def test_notification_claim_authorize_ack_are_authenticated(tmp_path: Path) -> None:
     """읽기 조회는 알림을 소비하지 않고 각 실행권은 한 번만 가져온다."""
@@ -19,6 +21,7 @@ async def test_notification_claim_authorize_ack_are_authenticated(tmp_path: Path
 
     db = Database(str(tmp_path / "work.sqlite3"))
     await migrate(db)
+    enable_notifications(db, "calendar")
     with db.transaction() as connection:
         connection.execute(
             "INSERT INTO notification_jobs(id,logical_key,kind,title,body,due_at,expires_at,state) VALUES('fake','fake','calendar','새 일정','테스트',?,?, 'pending')",

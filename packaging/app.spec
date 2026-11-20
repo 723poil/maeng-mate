@@ -32,7 +32,7 @@ app = BUNDLE(coll, name='Maeng Mate.app', icon=str(assets / 'MaengMate.icns'),
                 'CFBundleVersion': os.environ['MAENG_MATE_BUILD_VERSION'],
                 **({'SUPublicEDKey': os.environ['SPARKLE_PUBLIC_ED_KEY'],
                     'SUFeedURL': os.environ['SPARKLE_FEED_URL'],
-                    'SUEnableAutomaticChecks': False, 'SUAllowsAutomaticUpdates': False,
+                    'SUEnableAutomaticChecks': True, 'SUAllowsAutomaticUpdates': False,
                     'SUVerifyUpdateBeforeExtraction': True, 'SURequireSignedFeed': True}
                    if 'SPARKLE_PUBLIC_ED_KEY' in os.environ else {}),
                 'LSUIElement': True, 'LSMinimumSystemVersion': '26.0',

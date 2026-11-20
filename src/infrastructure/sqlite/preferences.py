@@ -10,27 +10,11 @@ from src.application.preferences import (
     parse_preferences,
     preferences_payload,
 )
+from src.domain.daily_work import DeparturePolicy, FlexibleDeparturePolicy
 from src.domain.preferences import Preferences
 from src.infrastructure.sqlite.connection import Database
-
-
-def read_preferences(
-    connection: sqlite3.Connection, channels: tuple[str, ...] = ("macos",)
-) -> Preferences:
-    """호출자의 트랜잭션 안에서 설정과 알림 실행권의 일관성을 유지한다."""
-    row = connection.execute("SELECT payload FROM app_preferences WHERE id=1").fetchone()
-    if row is None:
-        return Preferences(channels=tuple(channel for channel in ("macos",) if channel in channels))
-    value: object = json.loads(row["payload"])
-    return parse_preferences(value, channels)
-
-
-def write_preferences(connection: sqlite3.Connection, value: Preferences) -> None:
-    """검증한 환경설정 문서를 호출자의 트랜잭션으로 저장한다."""
-    connection.execute(
-        "INSERT INTO app_preferences(id,payload) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
-        (json.dumps(preferences_payload(value)),),
-    )
+from src.infrastructure.sqlite.day_records import reschedule_today_departure
+from src.infrastructure.sqlite.preference_document import read_preferences, write_preferences
 
 
 def revoke_muted_deliveries(
@@ -62,10 +46,12 @@ class SQLitePreferences:
         channels: tuple[str, ...] = ("macos",),
         *,
         notification_groups: Mapping[str, str] | None = None,
+        departure_policy: DeparturePolicy | None = None,
     ) -> None:
         """설치되어 사용 가능한 알림 채널만 허용한다."""
         self._database = database
         self._channels = channels
+        self._departure_policy = departure_policy or FlexibleDeparturePolicy()
         self._notification_groups = dict(notification_groups or {})
 
     def read(self) -> Preferences:
@@ -85,6 +71,8 @@ class SQLitePreferences:
             else:
                 write_preferences(connection, saved)
                 revoke_muted_deliveries(connection, saved, self._notification_groups)
+                if current.departure_offsets != saved.departure_offsets:
+                    reschedule_today_departure(connection, self._departure_policy)
         if conflict:
             raise PreferencesConflictError("설정이 변경되었습니다. 다시 불러와 주세요.")
         return saved

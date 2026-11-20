@@ -14,6 +14,7 @@ from src.application.work_rules_settings import (
 from src.domain.daily_work import DEFAULT_WORK_RULES, WorkRules
 from src.infrastructure.work_rules_file import WorkRulesFile
 from src.presentation.http import create_app
+from tests.fixtures.preferences import enable_notifications
 
 
 async def test_concurrent_writers_share_revision_and_keep_legacy_defaults(tmp_path: Path) -> None:
@@ -75,6 +76,7 @@ async def test_saved_rules_recalculate_today_and_pending_reminders(tmp_path: Pat
     today = now.date()
     database = Database(str(tmp_path / "attendance.sqlite3"))
     await migrate(database)
+    enable_notifications(database, "departure_17", "departure_4")
     policy = FlexibleDeparturePolicy()
     writer = SQLiteDayStore(database, now=lambda: now, policy=policy)
     service = WorkRulesService(
@@ -133,7 +135,7 @@ async def test_saved_rules_recalculate_today_and_pending_reminders(tmp_path: Pat
         )
         assert {row["revision"] for row in jobs} == {2}
         assert {row["due_at"] for row in jobs} == {
-            (expected - timedelta(minutes=n)).timestamp() for n in (30, 10, 5, 3, 1)
+            (expected - timedelta(minutes=n)).timestamp() for n in (17, 4)
         }
         assert (await client.put("/v1/day", json={**body, "revision": 1})).status_code == 409
         await save_rules(2, lunch)

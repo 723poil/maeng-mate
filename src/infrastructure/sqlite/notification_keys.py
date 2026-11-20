@@ -28,3 +28,8 @@ def meeting_scope(source_id: str, user_id: str, mapping_hash: str) -> str:
 def sync_error_scope(source_id: str, mapping_hash: str) -> str:
     """수집 상태 알림은 사용자 배정과 무관하게 현재 설정 소스로 제한한다."""
     return notification_key(f"sync-error:{source_id}:{mapping_hash}")
+
+
+def failure_rule_scope(source_id: str, mapping_hash: str, rule_id: str, target: str | None) -> str:
+    """사용자가 등록한 수집 상태 규칙마다 독립적인 장애 구간을 추적한다."""
+    return notification_key(f"failure-rule:{source_id}:{mapping_hash}:{rule_id}:{target or ''}")

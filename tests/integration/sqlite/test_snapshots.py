@@ -40,7 +40,7 @@ async def test_publish_and_missing(db: Database) -> None:
 
 async def test_returning_tasks_compare_with_last_seen_values(db: Database) -> None:
     """누락을 반복해도 이전 정상 값과 비교해 재등장한 업무의 실제 변경만 기록한다."""
-    mapping = source()
+    mapping = replace(source(), event_alert_triggers=frozenset({"status"}))
     item = normalize_page(page(), mapping, OBSERVED)
     assert isinstance(item, Task)
     store = SQLiteSnapshots(
@@ -146,12 +146,15 @@ async def test_stored_json_and_hash_remain_compatible(db: Database) -> None:
                 item,
                 display_values={"c": "표시"},
                 alert_values={"r": "비교값"},
+                alert_due_at={"r": datetime.fromisoformat(OBSERVED)},
                 calendar_periods={"c": period},
             ),
         ):
             run = await store.begin_run(mapping, OBSERVED)
             await store.complete_run(run, [row], OBSERVED)
             expected = asdict(row)
+            # 예약 계산값은 영속 큐에만 저장하며 이전 스냅샷 JSON과 해시에 넣지 않는다.
+            del expected["alert_due_at"]
             for name in ("alert_values", "display_values", "calendar_periods"):
                 if not expected[name]:
                     del expected[name]

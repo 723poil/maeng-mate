@@ -6,6 +6,7 @@ from typing import Protocol
 from src.application.notification_identity import identity_payload, parse_identity
 from src.domain.calendar import CALENDAR_KINDS, CalendarKind, CalendarPreferences
 from src.domain.notification_identity import NotificationIdentity
+from src.domain.notification_timing import departure_minutes
 from src.domain.preferences import (
     LEGACY_SECTIONS,
     NOTIFICATION_TYPES,
@@ -70,13 +71,19 @@ def preferences_payload(value: Preferences) -> dict[str, object]:
     }
 
 
-def selected_values(value: object, allowed: tuple[str, ...]) -> tuple[str, ...]:
+def selected_values(
+    value: object, allowed: tuple[str, ...], *, departure: bool = False
+) -> tuple[str, ...]:
     """중복과 미지원 선택을 거부하고 문자열만 반환한다."""
     if not isinstance(value, list):
         raise ValueError("설정 목록을 확인하세요.")
     result: list[str] = []
     for item in value:
-        if not isinstance(item, str) or item not in allowed or item in result:
+        if (
+            not isinstance(item, str)
+            or item in result
+            or (item not in allowed and not (departure and departure_minutes(item) is not None))
+        ):
             raise ValueError("지원하는 설정을 선택하세요.")
         result.append(item)
     return tuple(result)
@@ -161,7 +168,7 @@ def parse_preferences(
         tuple(parsed),
         enabled,
         selected_values(value["channels"], channels),
-        selected_values(value["notificationTypes"], NOTIFICATION_TYPES),
+        selected_values(value["notificationTypes"], NOTIFICATION_TYPES, departure=True),
         parse_identity(value["notificationIdentity"])
         if "notificationIdentity" in value
         else current.notification_identity
@@ -176,7 +183,6 @@ def parse_muted_sources(value: object) -> dict[str, tuple[str, ...]]:
     """카테고리마다 지원하는 수집 알림 선택만 저장한다."""
     if not isinstance(value, dict) or len(value) > 128:
         raise ValueError("카테고리 알림 설정을 확인하세요.")
-    allowed = tuple(kind for kind in NOTIFICATION_TYPES if not kind.startswith("departure_"))
     result = {}
     for key, muted in value.items():
         if not isinstance(key, str) or (
@@ -188,7 +194,7 @@ def parse_muted_sources(value: object) -> dict[str, tuple[str, ...]]:
             not isinstance(muted, list)
             or any(
                 not isinstance(kind, str)
-                or (kind not in allowed and not is_source_alert_kind(kind))
+                or (kind not in NOTIFICATION_TYPES and not is_source_alert_kind(kind))
                 for kind in muted
             )
             or len(set(muted)) != len(muted)

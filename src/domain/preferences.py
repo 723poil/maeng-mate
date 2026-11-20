@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from src.domain.calendar import CalendarPreferences
 from src.domain.notification_identity import NotificationIdentity
-from src.domain.notification_timing import DEPARTURE_REMINDER_MINUTES
+from src.domain.notification_timing import departure_minutes
 from src.domain.source_alerts import is_source_alert_kind
 
 SECTIONS = ("work", "calendar")
@@ -19,7 +19,6 @@ NOTIFICATION_TYPES = (
     "qa_status",
     "qa_due",
     "meeting",
-    *(f"departure_{minutes}" for minutes in DEPARTURE_REMINDER_MINUTES),
     "sync_error",
 )
 
@@ -40,12 +39,21 @@ class Preferences:
     sections: tuple[SectionPreference, ...] = tuple(
         SectionPreference(key, key != "calendar") for key in SECTIONS
     )
-    notifications_enabled: bool = True
-    channels: tuple[str, ...] = ("macos",)
-    notification_types: tuple[str, ...] = NOTIFICATION_TYPES
+    notifications_enabled: bool = False
+    channels: tuple[str, ...] = ()
+    notification_types: tuple[str, ...] = ()
     notification_identity: NotificationIdentity = NotificationIdentity()
     calendar: CalendarPreferences = CalendarPreferences()
     muted_source_notifications: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+
+    @property
+    def departure_offsets(self) -> tuple[int, ...]:
+        """예전 구독 키와 사용자가 직접 입력한 분을 같은 방식으로 읽는다."""
+        return tuple(
+            minutes
+            for kind in self.notification_types
+            if (minutes := departure_minutes(kind)) is not None
+        )
 
     def notification_enabled(self, kind: str, group: str | None) -> bool:
         """카테고리 선택이 없으면 이전 알림 설정을 이어받는다."""

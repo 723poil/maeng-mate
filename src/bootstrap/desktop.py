@@ -32,6 +32,8 @@ from src.bootstrap.instance import (
     coordination_lock,
     instance_lock,
     project_root,
+    request_panel,
+    state_directory,
     stop_owned_process,
 )
 from src.bootstrap.notification_channels import CHANNELS, build_senders
@@ -102,9 +104,9 @@ def app_update_actions() -> AppUpdates:
             info = plistlib.load(stream)
         if info.get("SUPublicEDKey"):
             updater = SparkleUpdates(
-                contents / "Frameworks/Sparkle.framework", stop_update_resident
+                contents / "Frameworks/Sparkle.framework", stop_update_resident, request_panel
             )
-            return AppUpdates(latest_version, open_release, updater.check)
+            return AppUpdates(latest_version, open_release, updater)
     return AppUpdates(latest_version, open_release, None)
 
 
@@ -138,6 +140,15 @@ def run_menubar(env: Mapping[str, str]) -> None:
     )
     stop_requested = threading.Event()
 
+    panel_request = state_directory() / "open-panel"
+
+    def consume_panel_request() -> bool:
+        """겹친 Finder 열기 요청은 한 번의 패널 표시로 합친다."""
+        if not panel_request.exists():
+            return False
+        panel_request.unlink()
+        return True
+
     def request_stop(signum: int, frame: FrameType | None) -> None:
         """OS 종료 요청은 메인 루프에 넘겨 마지막 자동 저장을 마무리한다."""
         stop_requested.set()
@@ -170,5 +181,6 @@ def run_menubar(env: Mapping[str, str]) -> None:
             data_backup=DataBackupActions(export_backup, preview_backup, launch_restore),
             notification_channels=CHANNELS,
             notification_status=notifications.status,
+            panel_requested=consume_panel_request,
             shutdown_requested=stop_requested.is_set,
         ).run()

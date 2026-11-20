@@ -217,6 +217,7 @@ def normalize_page(
     observed_at: str,
     *,
     properties: PageProperties | None = None,
+    user_id: str | None = None,
 ) -> WorkItem:
     """완전히 수집한 필드만 순수 업무 모델로 변환한다."""
     page = record(raw)
@@ -257,14 +258,31 @@ def normalize_page(
         and column.kind in {"date", "created_time", "last_edited_time"}
         and (value := column_period(props.by_id(column.property_id), column.kind)) is not None
     }
-    alerts = {
-        rule.id: alert_value_key(
-            alert_comparison(props.by_id(rule.column_id), rule, values[rule.column_id]),
-            rule.comparison_kind,
-        )
-        for rule in source.alert_rules
-        if rule.enabled
-    }
+    alerts = {}
+    due_at = {}
+    for rule in source.alert_rules:
+        if not rule.enabled:
+            continue
+        prop = props.by_id(rule.column_id)
+        if rule.member is not None:
+            member = user_id if rule.member == "self" else rule.member
+            if member:
+                present = canonical_identity(member) in map(canonical_identity, read_people(prop))
+                alerts[rule.id] = alert_value_key("present" if present else "absent")
+        elif rule.schedule is not None:
+            # 시간 칼럼도 표시용 HH:MM 대신 원본 날짜와 시간대를 함께 사용한다.
+            period = column_period(prop, rule.column_kind)
+            if period is None or (rule.time_only and period.kind == "date"):
+                continue
+            due = rule.schedule.due_at(period.start)
+            if due is None:
+                continue
+            due_at[rule.id] = due
+            alerts[rule.id] = alert_value_key(due.isoformat())
+        else:
+            alerts[rule.id] = alert_value_key(
+                alert_comparison(prop, rule, values[rule.column_id]), rule.comparison_kind
+            )
 
     if source.kind == "leave":
         period = read_period(get("period"))
@@ -275,6 +293,7 @@ def normalize_page(
             **base,
             display_values=display,
             alert_values=alerts,
+            alert_due_at=due_at,
             calendar_periods=dates,
             person_ids=read_people(get("people")),
             period=period,
@@ -292,6 +311,7 @@ def normalize_page(
             **base,
             display_values=display,
             alert_values=alerts,
+            alert_due_at=due_at,
             calendar_periods=dates,
             title=title,
             participant_ids=read_people(get("participants"))
@@ -310,6 +330,7 @@ def normalize_page(
         **base,
         display_values=display,
         alert_values=alerts,
+        alert_due_at=due_at,
         calendar_periods=dates,
         title=title,
         assignee_ids=read_people(get("assignees")) if "assignees" in source.properties else (),

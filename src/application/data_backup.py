@@ -2,7 +2,6 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 
 from src.application.runtime_settings_service import RestartOperation
 
@@ -23,6 +22,7 @@ class BackupPreview:
 class DataBackupActions:
     """파일 선택과 서비스 전환 구현을 분리하는 세 가지 사용자 동작이다."""
 
-    export: Callable[[Path], None]
-    preview: Callable[[Path], BackupPreview]
-    restore: Callable[[Path, BackupPreview], RestartOperation]
+    # 선택한 경로는 값으로만 전달하고 파일 시스템 해석은 주입한 구현에 맡긴다.
+    export: Callable[[str], None]
+    preview: Callable[[str], BackupPreview]
+    restore: Callable[[str, BackupPreview], RestartOperation]

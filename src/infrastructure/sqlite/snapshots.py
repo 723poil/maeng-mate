@@ -125,7 +125,7 @@ class SQLiteSnapshots:
         with self._database.transaction() as connection:
             previous_mapping = self._previous_mapping(connection, run)
             if run.kind == "meeting" and (
-                run.source is None or run.source.allows_event_alert("calendar")
+                run.source is not None and run.source.allows_event_alert("calendar")
             ):
                 enqueue_calendar(
                     connection,
@@ -136,7 +136,7 @@ class SQLiteSnapshots:
                     previous_mapping,
                     run.mapping_hash,
                 )
-            if run.source is None or run.source.allows_event_alert("meeting"):
+            if run.source is not None and run.source.allows_event_alert("meeting"):
                 enqueue_meeting_reminders(
                     connection,
                     run,
@@ -212,7 +212,7 @@ class SQLiteSnapshots:
             )
             # 종료·업데이트 취소는 실행권만 정리하고 장애 배너를 만들지 않는다.
             if code != "cancelled":
-                if run.source is None or run.source.allows_event_alert("sync_error"):
+                if run.source is not None and run.source.allows_event_alert("sync_error"):
                     enqueue_sync_failure(connection, run, finished, code, retrying=retrying)
             connection.execute(
                 "UPDATE work_source_state SET lease_until=NULL WHERE source_id=? AND generation=?",

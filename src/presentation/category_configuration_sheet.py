@@ -26,7 +26,7 @@ from AppKit import (
 )
 from Foundation import NSObject
 
-from src.application.source_settings import SourceColumn, SourceSettingsError
+from src.application.source_settings import SourceSettingsError
 from src.application.work_settings import (
     category_configuration_payload,
     parse_category_configuration,
@@ -391,9 +391,7 @@ class CategoryConfigurationSheet:
     def update_alerts(self) -> None:
         """소스와 무관하게 공유 칼럼에서 규칙의 조건을 선택한다."""
         self._alert_body.setSubviews_([])
-        columns = tuple(
-            SourceColumn(item.id, item.name, item.kind) for item in self._columns if item.name
-        )
+        columns = tuple(item for item in self._columns if item.name)
         editor = ColumnAlertEditor(
             self._alert_body,
             columns,

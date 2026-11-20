@@ -5,6 +5,7 @@ from datetime import UTC, datetime, time
 
 from src.infrastructure.sqlite.connection import Database
 from tests.fixtures.clock import Clock
+from tests.fixtures.preferences import enable_notifications
 
 
 async def test_departure_schedule_reschedule_and_once_per_offset(db: Database) -> None:
@@ -14,6 +15,7 @@ async def test_departure_schedule_reschedule_and_once_per_offset(db: Database) -
     from src.infrastructure.sqlite.day_records import SQLiteDayStore
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
 
+    enable_notifications(db, "departure_30", "departure_10", "departure_7")
     clock = Clock(datetime(2026, 11, 16, 8, tzinfo=SEOUL).timestamp())
     rules = WorkRules(480, 240, 120, time(12), time(13), time(0), time(23, 59))
     store = SQLiteDayStore(db, now=clock.now, policy=FlexibleDeparturePolicy())
@@ -28,11 +30,9 @@ async def test_departure_schedule_reschedule_and_once_per_offset(db: Database) -
     )
     queue = SQLiteNotifications(db, now=clock.now)
     jobs = await db.fetch("SELECT due_at FROM notification_jobs ORDER BY due_at")
-    # 기존 구독과 호환되는 다섯 시각이 실제로 저장되어야 한다.
+    # 직접 지정한 세 시각만 실제로 저장되어야 한다.
     departure = datetime(2026, 11, 16, 17, tzinfo=SEOUL).timestamp()
-    assert [row["due_at"] for row in jobs] == [
-        departure - minutes * 60 for minutes in (30, 10, 5, 3, 1)
-    ]
+    assert [row["due_at"] for row in jobs] == [departure - minutes * 60 for minutes in (30, 10, 7)]
     clock.value = datetime(2026, 11, 16, 16, 30, tzinfo=SEOUL).timestamp()
     claimed = await queue.claim()
     assert len(claimed) == 1
@@ -60,6 +60,7 @@ async def test_claim_is_unique_and_abandoned_delivery_becomes_unknown(db: Databa
 
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
 
+    enable_notifications(db, "calendar")
     clock = Clock()
     with db.transaction() as connection:
         connection.execute(
@@ -82,7 +83,10 @@ async def test_new_calendar_is_personal_and_initial_snapshot_is_only_baseline(db
     clock = Clock()
     observed = clock.now().isoformat()
     source = SourceMapping(
-        "meeting", "fake-calendar", {"title": "t", "participants": "p", "period": "d"}
+        "meeting",
+        "fake-calendar",
+        {"title": "t", "participants": "p", "period": "d"},
+        event_alert_triggers=frozenset({"calendar"}),
     )
     store = SQLiteSnapshots(db, clock=clock, notification_user_id="fake-self")
     period = Period(
@@ -123,6 +127,7 @@ async def test_correction_after_claim_cancels_old_and_preserves_new_reservation(
     from src.infrastructure.sqlite.day_records import SQLiteDayStore
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
 
+    enable_notifications(db, "departure_30")
     clock = Clock(datetime(2026, 11, 16, 8, tzinfo=SEOUL).timestamp())
     rules = WorkRules(480, 240, 120, time(12), time(13), time(0), time(23, 59))
     store = SQLiteDayStore(db, now=clock.now, policy=FlexibleDeparturePolicy())
@@ -153,10 +158,14 @@ async def test_calendar_cancelled_before_delivery_is_not_requested(db: Database)
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
     from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
 
+    enable_notifications(db, "calendar")
     clock = Clock()
     observed = clock.now().isoformat()
     source = SourceMapping(
-        "meeting", "fake-calendar", {"title": "t", "participants": "p", "period": "d"}
+        "meeting",
+        "fake-calendar",
+        {"title": "t", "participants": "p", "period": "d"},
+        event_alert_triggers=frozenset({"calendar"}),
     )
     store = SQLiteSnapshots(db, clock=clock, notification_user_id="fake-self")
     first = await store.begin_run(source, observed)
@@ -183,6 +192,7 @@ async def test_queue_only_claims_current_source_and_user(db: Database) -> None:
     """설정에서 제거한 소스나 이전 사용자 알림을 전달하지 않는다."""
     from src.infrastructure.sqlite.notifications import SQLiteNotifications, notification_key
 
+    enable_notifications(db, "calendar")
     clock = Clock()
     current = notification_key("fake-source:fake-self")
     other = notification_key("fake-source:fake-other")
@@ -209,10 +219,14 @@ async def test_calendar_point_in_past_is_not_a_new_upcoming_event(db: Database) 
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
     from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
 
+    enable_notifications(db, "calendar")
     clock = Clock()
     observed = clock.now().isoformat()
     source = SourceMapping(
-        "meeting", "fake-point", {"title": "t", "participants": "p", "period": "d"}
+        "meeting",
+        "fake-point",
+        {"title": "t", "participants": "p", "period": "d"},
+        event_alert_triggers=frozenset({"calendar"}),
     )
     store = SQLiteSnapshots(db, clock=clock, notification_user_id="fake-self")
     run = await store.begin_run(source, observed)
@@ -240,10 +254,14 @@ async def test_date_event_notification_expires_at_final_seoul_midnight(db: Datab
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
     from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
 
+    enable_notifications(db, "calendar")
     clock = Clock(datetime(2026, 11, 16, 23, tzinfo=SEOUL).timestamp())
     observed = clock.now().isoformat()
     source = SourceMapping(
-        "meeting", "fake-date", {"title": "t", "participants": "p", "period": "d"}
+        "meeting",
+        "fake-date",
+        {"title": "t", "participants": "p", "period": "d"},
+        event_alert_triggers=frozenset({"calendar"}),
     )
     store = SQLiteSnapshots(db, clock=clock, notification_user_id="fake-self")
     run = await store.begin_run(source, observed)
@@ -326,6 +344,7 @@ async def test_meeting_reschedule_invalidates_claim_and_respects_completed_deliv
     from src.infrastructure.sqlite.notifications import SQLiteNotifications
     from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
 
+    enable_notifications(db, "meeting")
     clock = Clock()
     observed = clock.now().isoformat()
     mapping = SourceMapping(

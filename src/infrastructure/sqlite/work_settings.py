@@ -24,11 +24,8 @@ from src.domain.preferences import (
 from src.domain.source_display import SOURCE_CHANNELS
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.field_alerts import retire_changed_rules
-from src.infrastructure.sqlite.preferences import (
-    read_preferences,
-    revoke_muted_deliveries,
-    write_preferences,
-)
+from src.infrastructure.sqlite.preference_document import read_preferences, write_preferences
+from src.infrastructure.sqlite.preferences import revoke_muted_deliveries
 
 
 def read_work_settings_row(connection: sqlite3.Connection) -> tuple[int, str | bytes] | None:
@@ -250,11 +247,7 @@ def save_event_subscriptions(
         return
     current = read_preferences(connection, SOURCE_CHANNELS)
     muted = dict(current.muted_source_notifications)
-    default = {
-        kind
-        for kind in NOTIFICATION_TYPES
-        if kind not in current.notification_types and not kind.startswith("departure_")
-    }
+    default = {kind for kind in NOTIFICATION_TYPES if kind not in current.notification_types}
     for item in updates:
         key = f"category:{item.category_id}"
         previous = set(muted.get(key, default))

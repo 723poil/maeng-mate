@@ -40,7 +40,7 @@ async def test_publish_and_missing(db: Database) -> None:
 
 async def test_returning_tasks_compare_with_last_seen_values(db: Database) -> None:
     """누락을 반복해도 이전 정상 값과 비교해 재등장한 업무의 실제 변경만 기록한다."""
-    mapping = source()
+    mapping = replace(source(), event_alert_triggers=frozenset({"status"}))
     item = normalize_page(page(), mapping, OBSERVED)
     assert isinstance(item, Task)
     store = SQLiteSnapshots(

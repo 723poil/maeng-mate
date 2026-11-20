@@ -880,9 +880,7 @@ def resolve_category_mapping(
         calendar_column=columns.get(config.calendar_date) if config.calendar_date else None,
         calendar_date_override=config.calendar_date is not None,
         alert_rules=alerts,
-        event_alert_triggers=frozenset(rule.trigger for rule in config.event_alerts)
-        if config.event_alerts is not None
-        else None,
+        event_alert_triggers=frozenset(rule.trigger for rule in config.event_alerts or ()),
     )
 
 
@@ -936,6 +934,9 @@ def read_display(
                 and (enabled_types is None or kind in enabled_types)
             )
             enabled_types = tuple(kind for kind, _ in events)
+    if config is None or config.event_alerts is None:
+        # 이전 문서도 명시적으로 선택한 종류만 노출하고 연결된 속성에서 규칙을 만들지 않는다.
+        events = tuple(event for event in events if enabled_types and event[0] in enabled_types)
     return SourceDisplay(
         source.source_id,
         source.kind,

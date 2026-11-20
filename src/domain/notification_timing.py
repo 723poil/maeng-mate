@@ -5,7 +5,17 @@ from datetime import date, datetime, time
 from src.domain.models import Period
 from src.domain.work_dates import SEOUL
 
-DEPARTURE_REMINDER_MINUTES = (30, 10, 5, 3, 1)
+
+def departure_minutes(kind: str) -> int | None:
+    """퇴근 당일에 지정할 수 있는 분 단위 구독 키를 읽는다."""
+    prefix = "departure_"
+    if not kind.startswith(prefix):
+        return None
+    digits = kind[len(prefix) :]
+    if not (1 <= len(digits) <= 4 and digits.isascii() and digits.isdecimal()):
+        return None
+    minutes = int(digits)
+    return minutes if minutes < 24 * 60 and digits == str(minutes) else None
 
 
 def calendar_alert_expiry(period: Period | None, now: datetime) -> float | None:

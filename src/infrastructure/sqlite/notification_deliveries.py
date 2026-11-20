@@ -7,18 +7,20 @@ from uuid import uuid4
 
 from src.application.notifications import NotificationJob
 from src.application.notion_links import notion_link
-from src.domain.notification_timing import DEPARTURE_REMINDER_MINUTES
 from src.domain.preferences import Preferences
 from src.infrastructure.sqlite.notification_keys import departure_key, notification_key
 
 
 def delivery_kinds(
-    connection: sqlite3.Connection, row: sqlite3.Row, qa_scopes: tuple[str, ...]
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    qa_scopes: tuple[str, ...],
+    preferences: Preferences,
 ) -> tuple[str, ...]:
     """저장된 사실로 알림 종류를 분류하며 제목 문자열에 의존하지 않는다."""
     kind = row["kind"]
     if kind == "departure":
-        for minutes in DEPARTURE_REMINDER_MINUTES:
+        for minutes in preferences.departure_offsets:
             if row["logical_key"] == departure_key(row["day"], minutes):
                 return (f"departure_{minutes}",)
         return ()
@@ -85,7 +87,7 @@ def prepare_deliveries(
     titles: Mapping[str, str] | None = None,
 ) -> None:
     """한 알림의 대상 채널을 한 번 확정해 이후 채널 추가로 과거 알림을 보내지 않는다."""
-    kinds = delivery_kinds(connection, row, qa_scopes)
+    kinds = delivery_kinds(connection, row, qa_scopes, preferences)
     if allowed_types is not None:
         kinds = tuple(kind for kind in kinds if kind in allowed_types)
     legacy = connection.execute(

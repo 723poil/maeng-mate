@@ -22,11 +22,10 @@ from Foundation import NSObject
 from src.application.source_settings import CategoryDraft
 from src.application.work_settings import category_documents, parse_categories
 from src.domain.category_configuration import CategoryConfiguration
-from src.domain.category_event_alerts import EventAlertSelection
+from src.domain.category_event_alerts import EVENT_ALERT_OPTIONS, EventAlertSelection
 from src.domain.source_display import SourceCategory
 from src.presentation.category_configuration_sheet import CategoryConfigurationSheet
 from src.presentation.native_views import button, card, frame, label, place_label
-from src.presentation.notification_preferences import event_alert_states
 from src.presentation.preferences_controller import PreferencesController
 from src.presentation.source_settings_form import SourceEditor
 
@@ -260,12 +259,13 @@ class CategorySettingsForm:
 
     def _event_states(self, key: str) -> dict[str, bool]:
         """현재 카테고리의 설정값을 알림 규칙 편집기에 전달한다."""
-        state = self.editor.state
-        return event_alert_states(
-            key,
-            state.active_display if state is not None else (),
-            self._preferences.value if self._preferences is not None else None,
-        )
+        value = self._preferences.value if self._preferences is not None else None
+        if value is None:
+            return {}
+        return {
+            event.trigger: any(value.notification_enabled(kind, key) for kind in event.kinds)
+            for event in EVENT_ALERT_OPTIONS
+        }
 
     def remove(self, index: int) -> None:
         """연결이 없는 카테고리만 사용자 확인 뒤 삭제한다."""

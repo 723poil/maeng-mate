@@ -436,7 +436,7 @@ def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> 
         stored_columns=(),
         calendar_column=None,
         calendar_date_override=False,
-        event_alert_triggers=None,
+        event_alert_triggers=frozenset(),
     ) != replace(
         after,
         display_columns=None,
@@ -444,7 +444,7 @@ def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> 
         stored_columns=(),
         calendar_column=None,
         calendar_date_override=False,
-        event_alert_triggers=None,
+        event_alert_triggers=frozenset(),
     ):
         return False
     return source_attribute_types(before) == source_attribute_types(after)

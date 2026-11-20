@@ -10,7 +10,8 @@ from src.application.notifications import DeliveryResult, NotificationJob, parse
 from src.application.notion_links import notion_link
 from src.domain.daily_work import DayRecord, DeparturePolicy
 from src.domain.models import CalendarEvent, WorkItem
-from src.domain.notification_timing import DEPARTURE_REMINDER_MINUTES, calendar_alert_expiry
+from src.domain.notification_timing import calendar_alert_expiry
+from src.domain.source_display import SOURCE_CHANNELS
 from src.domain.work_dates import SEOUL, canonical_identity
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.field_alerts import field_alert_current
@@ -22,7 +23,7 @@ from src.infrastructure.sqlite.notification_deliveries import (
     prepare_deliveries,
 )
 from src.infrastructure.sqlite.notification_keys import departure_key, notification_key
-from src.infrastructure.sqlite.preferences import read_preferences
+from src.infrastructure.sqlite.preference_document import read_preferences
 from src.infrastructure.sqlite.task_changes import task_job_current
 
 
@@ -42,7 +43,16 @@ def enqueue_departure(
             (day,),
         )
         return
-    for minutes in DEPARTURE_REMINDER_MINUTES:
+    offsets = read_preferences(connection, SOURCE_CHANNELS).departure_offsets
+    # 설정에서 지운 미래 예약만 제거한다. 실행권과 발송 이력은 중복 방지를 위해 남긴다.
+    selected_keys = [departure_key(day, minutes) for minutes in offsets]
+    connection.execute(
+        """DELETE FROM notification_jobs WHERE day=? AND kind='departure' AND state='pending'
+        AND logical_key NOT IN (SELECT value FROM json_each(?))
+        AND NOT EXISTS (SELECT 1 FROM notification_deliveries WHERE job_id=notification_jobs.id)""",
+        (day, json.dumps(selected_keys)),
+    )
+    for minutes in offsets:
         due = result.departure - timedelta(minutes=minutes)
         if due <= now:
             continue  # 이미 지난 퇴근 알림을 새 입력만으로 뒤늦게 만들지 않는다.

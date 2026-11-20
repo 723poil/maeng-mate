@@ -51,7 +51,7 @@ def upgrade_category_configuration(payload: dict[str, object]) -> dict[str, obje
 
 
 def upgrade_category_event_alerts(payload: dict[str, object]) -> dict[str, object] | None:
-    """기존 카테고리에서 사용하던 알림만 사용자 규칙으로 한 번 등록한다."""
+    """예전 소스에서 명시적으로 선택한 알림만 카테고리 규칙으로 이전한다."""
     settings = parse_settings(payload)
     categories = []
     changed = False
@@ -62,13 +62,11 @@ def upgrade_category_event_alerts(payload: dict[str, object]) -> dict[str, objec
             continue
         registered: dict[str, CategoryEventAlert] = {}
         for style in settings.display:
-            if style.key != item.key:
+            if style.key != item.key or style.notification_types is None:
                 continue
             for kind, title in style.events:
                 trigger = EVENT_ALERT_KINDS.get(kind)
-                if trigger is not None and (
-                    style.notification_types is None or kind in style.notification_types
-                ):
+                if trigger is not None and kind in style.notification_types:
                     registered.setdefault(trigger, CategoryEventAlert(trigger, title))
         categories.append(
             replace(item, configuration=replace(current, event_alerts=tuple(registered.values())))

@@ -5,7 +5,17 @@ from datetime import datetime
 
 from src.application.desktop import CollectionView, DayUpdate, DayView, DesktopSnapshot, MenuEntry
 from src.domain.daily_work import LeaveType
+from src.domain.preferences import Preferences
 from src.domain.work_dates import SEOUL
+from src.infrastructure.sqlite.connection import Database
+from src.infrastructure.sqlite.preferences import SQLitePreferences
+
+
+def enable_notifications(database: Database, *kinds: str) -> None:
+    """임시 DB에 시나리오에 필요한 알림과 전달 채널만 명시한다."""
+    SQLitePreferences(database).save(
+        Preferences(notifications_enabled=True, channels=("macos",), notification_types=kinds)
+    )
 
 
 class PreferencesDesktopFixture:

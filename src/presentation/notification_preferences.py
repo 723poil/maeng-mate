@@ -3,8 +3,6 @@
 from AppKit import (
     NSBox,
     NSBoxSeparator,
-    NSButton,
-    NSPushOnPushOffButton,
     NSScrollView,
     NSSwitch,
     NSView,
@@ -12,11 +10,10 @@ from AppKit import (
 from Foundation import NSObject
 
 from src.application.notifications import NotificationChannel
-from src.domain.category_event_alerts import EVENT_ALERT_KINDS, EVENT_ALERT_OPTIONS
-from src.domain.notification_timing import DEPARTURE_REMINDER_MINUTES
-from src.domain.preferences import Preferences
-from src.domain.source_alerts import is_source_alert_kind
-from src.domain.source_display import SourceDisplay, display_groups
+from src.domain.category_event_alerts import EVENT_ALERT_TRIGGERS
+from src.domain.notification_timing import departure_minutes
+from src.domain.source_display import SourceCategory
+from src.presentation.category_sheet_controls import field
 from src.presentation.native_views import button, card, frame, label, place_label
 
 ROW_HEIGHT = 34
@@ -24,32 +21,19 @@ GROUP_GAP = 12
 HEADING_HEIGHT = 22
 
 
-def category_alert_choices(
-    sources: tuple[SourceDisplay, ...],
-) -> dict[str, tuple[str, tuple[str, ...]]]:
-    """두 화면에 같은 이름·순서·알림 키를 사용한다."""
-    choices: dict[str, tuple[str, tuple[str, ...]]] = {}
-    for source in sources:
-        for kind, title in source.events:
-            identity = kind if is_source_alert_kind(kind) else EVENT_ALERT_KINDS.get(kind, kind)
-            previous = choices.get(identity, (title, ()))[1]
-            choices[identity] = (title, tuple(dict.fromkeys((*previous, kind))))
-    return choices
-
-
-def event_alert_states(
-    group: str, display: tuple[SourceDisplay, ...], preferences: Preferences | None
-) -> dict[str, bool]:
-    """카테고리 편집에 알림 화면과 같은 스위치 값을 제공한다."""
-    value = preferences or Preferences()
-    choices = category_alert_choices(tuple(item for item in display if item.key == group))
-    return {
-        item.trigger: any(
-            value.notification_enabled(kind, group)
-            for kind in choices.get(item.trigger, ("", item.kinds))[1]
-        )
-        for item in EVENT_ALERT_OPTIONS
+def category_alert_choices(category: SourceCategory) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """소스 연결 전에도 사용자가 등록한 규칙의 이름과 구독 키를 표시한다."""
+    config = category.configuration
+    if config is None:
+        return {}
+    choices = {
+        event.trigger: (event.name, EVENT_ALERT_TRIGGERS[event.trigger].kinds)
+        for event in config.event_alerts or ()
     }
+    for entry in config.alerts:
+        rule = entry.rule
+        choices[rule.notification_kind] = (rule.name, (rule.notification_kind,))
+    return choices
 
 
 class NotificationPreferences:
@@ -78,7 +62,8 @@ class NotificationPreferences:
         self.document.addSubview_(self.fixed)
         self.groups = NSView.alloc().initWithFrame_(frame(0, 0, 584, 0))
         self.document.addSubview_(self.groups)
-        self._display: tuple[SourceDisplay, ...] | None = None
+        self._categories: tuple[SourceCategory, ...] | None = None
+        self.inactive_rules: set[str] = set()
         self.source_types: dict[tuple[str, tuple[str, ...]], NSSwitch] = {}
         top = self._base_height - 8 - identity_height
         card(self.fixed, 16, top - 40, 552, 40)
@@ -90,33 +75,59 @@ class NotificationPreferences:
             self.fixed, tuple((channel.key, channel.title) for channel in channels), top
         )
         top -= len(channels) * ROW_HEIGHT + GROUP_GAP
-        self.types: dict[str, NSButton | NSSwitch] = {}
-        self._heading(self.fixed, "퇴근 예정 알림", top)
+        self._heading(self.fixed, "퇴근 예정 알림 · 몇 분 전", top)
         top -= HEADING_HEIGHT
         card(self.fixed, 16, top - ROW_HEIGHT, 552, ROW_HEIGHT)
-        for index, minutes in enumerate(DEPARTURE_REMINDER_MINUTES):
-            control = button(
-                self.fixed, f"{minutes}분 전", 28 + index * 108, top - 30, 96, actions, "changed:"
-            )
-            control.setButtonType_(NSPushOnPushOffButton)
-            self.types[f"departure_{minutes}"] = control
-        self.update_sources(())
+        self.departure = field(self.fixed, "", 28, top - 29, 412, "여러 시각은 쉼표로 구분")
+        self.departure.setTarget_(actions)
+        self.departure.setAction_("applyDeparture:")
+        self.apply_departure = button(
+            self.fixed, "적용", 458, top - 29, 96, actions, "applyDeparture:"
+        )
+        self._shown_offsets: tuple[int, ...] | None = None
+        self.update_categories(())
 
-    def update_sources(self, display: tuple[SourceDisplay, ...]) -> None:
-        """활성 카테고리의 알림만 추가하고 기존 폼과 스크롤 위치를 유지한다."""
-        if display == self._display:
+    def read_offsets(self) -> tuple[int, ...]:
+        """빈 입력은 모두 해제하고 중복되거나 유효하지 않은 시각은 저장하지 않는다."""
+        raw = self.departure.stringValue().strip()
+        offsets = []
+        for item in raw.split(",") if raw else ():
+            minutes = departure_minutes("departure_" + item.strip())
+            if minutes is None:
+                raise ValueError("퇴근 알림 시각을 0~1439분 사이의 정수로 입력하세요.")
+            if minutes in offsets:
+                raise ValueError("같은 퇴근 알림 시각이 두 번 입력되었습니다.")
+            offsets.append(minutes)
+        return tuple(sorted(offsets, reverse=True))
+
+    def show_offsets(self, offsets: tuple[int, ...]) -> None:
+        """다른 스위치가 갱신될 때 적용 전 입력을 덮어쓰지 않는다."""
+        if offsets != self._shown_offsets:
+            self._shown_offsets = offsets
+            self.departure.setStringValue_(", ".join(map(str, offsets)))
+
+    def update_categories(self, categories: tuple[SourceCategory, ...]) -> None:
+        """저장된 카테고리 규칙을 표시하고 기존 폼과 스크롤 위치를 유지한다."""
+        if categories == self._categories:
             return
         old_height = self.document.frame()[1][1]
         origin = self._page.contentView().bounds()[0][1]
         offset = max(0.0, old_height - self._viewport - origin)
-        self._display = display
+        self._categories = categories
         self.groups.setSubviews_([])
         self.source_types.clear()
+        self.inactive_rules = {
+            entry.rule.notification_kind
+            for category in categories
+            if category.configuration is not None
+            for entry in category.configuration.alerts
+            if not entry.rule.enabled
+        }
         ordered: list[tuple[str, str, dict[str, tuple[str, tuple[str, ...]]]]] = []
-        for key, sources in display_groups(display).items():
-            choices = category_alert_choices(sources)
+        for category in categories:
+            choices = category_alert_choices(category)
             if choices:
-                ordered.append((key, sources[0].title, choices))
+                ordered.append((category.key, category.name, choices))
         extra = 58 + sum(
             HEADING_HEIGHT + len(rows) * ROW_HEIGHT + GROUP_GAP for _, _, rows in ordered
         )
@@ -142,6 +153,8 @@ class NotificationPreferences:
             controls = self._rows(
                 self.groups, tuple((choice, row[0]) for choice, row in rows.items()), top
             )
+            for key_id in controls.keys() & self.inactive_rules:
+                controls[key_id].setToolTip_("카테고리 설정에서 이 규칙 사용을 켜세요.")
             self.source_types.update(
                 {(key, kinds): controls[choice] for choice, (_, kinds) in rows.items()}
             )

@@ -60,6 +60,10 @@ class PreferencesActions(NSObject):
         """규칙과 전달 채널을 편집하는 카테고리로 이동한다."""
         self.owner._sidebar.select(SettingsPage.CATEGORIES)
 
+    def applyDeparture_(self, sender: object) -> None:
+        """직접 입력한 퇴근 알림 시각만 저장한다."""
+        self.owner.apply_departure_offsets()
+
     def changed_(self, sender: object) -> None:
         """선택 변경을 자동 저장 초안으로 전달한다."""
         self.owner.changed()
@@ -352,7 +356,6 @@ class PreferencesWindow:
             )
         self._enabled = controls.enabled
         self._channels = controls.channels
-        self._types = controls.types
 
     def _show_page(self, selected: SettingsPage) -> None:
         """선택한 기능만 보여주고 다른 페이지의 입력 상태는 유지한다."""
@@ -416,6 +419,24 @@ class PreferencesWindow:
             self.controller.change(replace(value, sections=(*sections, *omitted)))
         self.render()
 
+    def apply_departure_offsets(self) -> None:
+        """설정된 다른 구독을 보존하고 퇴근 시각만 바꾼다."""
+        value = self.controller.value
+        if value is None:
+            return
+        try:
+            offsets = self._notification_view.read_offsets()
+        except ValueError as error:
+            self._status.setStringValue_(str(error))
+            return
+        other = tuple(key for key in value.notification_types if not key.startswith("departure_"))
+        self.controller.change(
+            replace(
+                value, notification_types=(*other, *(f"departure_{minutes}" for minutes in offsets))
+            )
+        )
+        self.render()
+
     def changed(self) -> None:
         """표시와 알림 선택을 한 설정 버전의 초안으로 모은다."""
         value = self.controller.value
@@ -423,6 +444,8 @@ class PreferencesWindow:
             return
         muted = dict(value.muted_source_notifications)
         for (group, kinds), control in self._notification_view.source_types.items():
+            if kinds[0] in self._notification_view.inactive_rules:
+                continue
             enabled = control.state() == 1
             if enabled == any(value.notification_enabled(kind, group) for kind in kinds):
                 continue
@@ -430,10 +453,7 @@ class PreferencesWindow:
                 muted.get(
                     group,
                     tuple(
-                        kind
-                        for kind in NOTIFICATION_TYPES
-                        if kind not in value.notification_types
-                        and not kind.startswith("departure_")
+                        kind for kind in NOTIFICATION_TYPES if kind not in value.notification_types
                     ),
                 )
             )
@@ -448,15 +468,6 @@ class PreferencesWindow:
                 notifications_enabled=self._enabled.state() == 1,
                 channels=tuple(
                     key for key, control in self._channels.items() if control.state() == 1
-                ),
-                notification_types=tuple(
-                    key
-                    for key in NOTIFICATION_TYPES
-                    if (
-                        self._types[key].state() == 1
-                        if key in self._types
-                        else key in value.notification_types
-                    )
                 ),
                 muted_source_notifications=muted,
             )
@@ -728,6 +739,7 @@ class PreferencesWindow:
         )
         source_state = self._source_form.editor.state if self._source_form is not None else None
         display = source_state.active_display if source_state is not None else ()
+        categories = source_state.categories if source_state is not None else ()
         state = (
             value,
             controller.busy,
@@ -736,6 +748,7 @@ class PreferencesWindow:
             alert_settings_pending,
             identity_message,
             display,
+            categories,
         )
         if state == self._render_state:
             return
@@ -756,12 +769,12 @@ class PreferencesWindow:
                 if item.category is not None
             },
         )
-        self._notification_view.update_sources(display)
+        self._notification_view.update_categories(categories)
         self._enabled.setEnabled_(editable and not alert_settings_pending)
         for control in (
             *self._channels.values(),
-            *self._types.values(),
-            *self._notification_view.source_types.values(),
+            self._notification_view.departure,
+            self._notification_view.apply_departure,
         ):
             control.setEnabled_(
                 editable
@@ -769,16 +782,27 @@ class PreferencesWindow:
                 and value is not None
                 and value.notifications_enabled
             )
+        for (group, kinds), control in self._notification_view.source_types.items():
+            active = kinds[0] not in self._notification_view.inactive_rules
+            control.setEnabled_(
+                editable
+                and not alert_settings_pending
+                and value is not None
+                and value.notifications_enabled
+                and active
+            )
+            control.setState_(
+                int(
+                    active
+                    and value is not None
+                    and any(value.notification_enabled(kind, group) for kind in kinds)
+                )
+            )
         if value is not None:
             self._enabled.setState_(int(value.notifications_enabled))
             for key, control in self._channels.items():
                 control.setState_(int(key in value.channels))
-            for key, control in self._types.items():
-                control.setState_(int(key in value.notification_types))
-            for (group, kinds), control in self._notification_view.source_types.items():
-                control.setState_(
-                    int(any(value.notification_enabled(kind, group) for kind in kinds))
-                )
+            self._notification_view.show_offsets(value.departure_offsets)
         self._status.setToolTip_(None)
         self._reload.setEnabled_(not controller.busy)
         self._status.setStringValue_(

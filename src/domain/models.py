@@ -30,7 +30,7 @@ class SourceMapping:
     stored_columns: tuple[DisplayColumn, ...] = ()
     calendar_column: DisplayColumn | None = None
     calendar_date_override: bool = False
-    event_alert_triggers: frozenset[str] | None = None
+    event_alert_triggers: frozenset[str] = frozenset()
 
     @property
     def has_person_scope(self) -> bool:
@@ -40,7 +40,7 @@ class SourceMapping:
 
     def allows_event_alert(self, trigger: str) -> bool:
         """소속 카테고리에 등록한 조건에 대해서만 알림을 예약한다."""
-        return self.event_alert_triggers is None or trigger in self.event_alert_triggers
+        return trigger in self.event_alert_triggers
 
     def collected_columns(self) -> dict[str, str]:
         """표시 또는 활성 알림 규칙에 쓰는 속성을 한 번씩 읽는다."""

@@ -11,7 +11,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(root / 'src/assets/app-icon.svg'), 'src/assets'),
-        (str(root / 'src/presentation/assets/MenuMark.svg'), 'src/presentation/assets'),
+        (str(root / 'src/presentation/assets'), 'src/presentation/assets'),
         (str(root / 'src/infrastructure/skill_resources'), 'src/infrastructure/skill_resources'),
         (str(assets / 'build-info.json'), '.'),
     ],

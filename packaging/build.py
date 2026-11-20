@@ -63,9 +63,8 @@ def main() -> None:
     sources = sorted((ROOT / "src").rglob("*.py")) + sorted(
         (ROOT / "src/infrastructure/skill_resources").rglob("*")
     )
-    sources.extend(
-        [ROOT / "src/presentation/assets/MenuMark.svg", ROOT / "src/assets/app-icon.svg"]
-    )
+    sources.extend(sorted((ROOT / "src/presentation/assets").glob("*.svg")))
+    sources.append(ROOT / "src/assets/app-icon.svg")
     digest = hashlib.sha256()
     for source in sources:
         if source.is_file() and "__pycache__" not in source.parts:

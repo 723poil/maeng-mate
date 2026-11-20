@@ -7,12 +7,14 @@ from src.infrastructure.sqlite.schema import SCHEMA_VERSION
 
 
 async def require_migrated_database(database: Database) -> None:
-    """이전·미생성 DB는 외부 조회나 실행권 변경 전에 안내한다."""
+    """최고 버전이 현재 코드와 일치할 때만 업무 실행을 허용한다."""
     try:
-        versions = await database.fetch(
-            "SELECT version FROM schema_versions WHERE version=?", (SCHEMA_VERSION,)
-        )
-        if not versions:
+        versions = await database.fetch("SELECT MAX(version) AS version FROM schema_versions")
+        # 버전 이력은 누적되므로 현재 버전 행이 있어도 상위 버전이 우선한다.
+        version = versions[0]["version"]
+        if isinstance(version, int) and version > SCHEMA_VERSION:
+            raise ConfigError("현재 앱보다 높은 버전의 DB입니다. 최신 앱으로 실행하세요.")
+        if version != SCHEMA_VERSION:
             raise SnapshotError("storage_failed")
     except SnapshotError:
         raise ConfigError("DB 준비가 필요합니다. migrate 명령을 먼저 실행하세요.") from None

@@ -88,22 +88,34 @@ def main() -> None:
         environment["SPARKLE_FEED_URL"] = RELEASES + "/latest/download/appcast.xml"
     dist = ROOT / "dist"
     build = ROOT / "build/distribution"
-    notification_dist = build / "notification-dist"
-    print("알림 앱 빌드 중…", flush=True)
-    run(
-        [
-            sys.executable,
-            "-m",
-            "PyInstaller",
-            "--noconfirm",
-            "--distpath",
-            str(notification_dist),
-            "--workpath",
-            str(build / "notification-work"),
-            str(ROOT / "packaging/notification.spec"),
-        ],
-        env=environment,
-    )
+    # 중간 빌드에도 같은 발신자 ID의 앱이 남지 않도록 임시 위치에서 압축한다.
+    archive = assets / "NotificationAgent.zip"
+    with tempfile.TemporaryDirectory() as directory:
+        notification_dist = Path(directory)
+        print("알림 앱 빌드 중…", flush=True)
+        run(
+            [
+                sys.executable,
+                "-m",
+                "PyInstaller",
+                "--noconfirm",
+                "--distpath",
+                str(notification_dist),
+                "--workpath",
+                str(build / "notification-work"),
+                str(ROOT / "packaging/notification.spec"),
+            ],
+            env=environment,
+        )
+        run(
+            [
+                "/usr/bin/ditto",
+                "-c",
+                "-k",
+                str(notification_dist / "NotificationAgent.app"),
+                str(archive),
+            ]
+        )
     print("Maeng Mate 앱 빌드 중…", flush=True)
     run(
         [
@@ -127,11 +139,7 @@ def main() -> None:
             symlinks=True,
         )
         shutil.copyfile(TOOLS / "LICENSE", app / "Contents/Resources/Sparkle-LICENSE")
-    nested = app / "Contents/Resources/NotificationAgent.app"
-    if nested.exists():
-        shutil.rmtree(nested)
-    shutil.copytree(notification_dist / "NotificationAgent.app", nested, symlinks=True)
-    # 알림 표시 이름·아이콘은 지원 폴더 복사본에서만 바꾸고 원본 앱 서명을 보존한다.
+    shutil.copyfile(archive, app / "Contents/Resources/NotificationAgent.zip")
     run(["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app)])
     run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)])
     print("동봉 실행·리소스 확인 중…", flush=True)

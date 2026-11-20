@@ -17,7 +17,7 @@ from src.bootstrap.instance import application_directory, coordination_lock, pro
 from src.infrastructure.data_backup import create_backup, unpack_backup
 
 
-def export_backup(path: Path) -> None:
+def export_backup(path: str) -> None:
     """온라인 DB와 근무 규칙을 사용자가 고른 새 파일로 저장한다."""
     from src.bootstrap.backup_transaction import pending_restore
 
@@ -27,7 +27,8 @@ def export_backup(path: Path) -> None:
             if pending_restore(home):
                 raise DataBackupError("진행 중인 복원을 마친 뒤 다시 시도하세요.")
             database = Path(data_environment({})["DATABASE_PATH"])
-            create_backup(database, home / "work-rules.json", path)
+            # application에서 받은 경로 값은 파일을 다루는 시작 경계에서만 해석한다.
+            create_backup(database, home / "work-rules.json", Path(path))
     except FileExistsError:
         raise DataBackupError("이미 있는 파일입니다. 새 이름을 선택하세요.") from None
     except (ValueError, OSError, ConfigError, sqlite3.Error):
@@ -50,21 +51,21 @@ def stage_archive(path: Path, directory: Path) -> BackupPreview:
     return BackupPreview(stamp, digest.hexdigest())
 
 
-def preview_backup(path: Path) -> BackupPreview:
+def preview_backup(path: str) -> BackupPreview:
     """서비스가 실행 중인 동안 선택한 파일의 내용과 생성 시각을 확인한다."""
     try:
         with TemporaryDirectory() as temporary:
-            return stage_archive(path, Path(temporary))
+            return stage_archive(Path(path), Path(temporary))
     except (OSError, ValueError, sqlite3.Error):
         raise DataBackupError(
             "백업 파일을 읽을 수 없습니다. 파일 형식과 앱 버전을 확인하세요."
         ) from None
 
 
-def launch_restore(path: Path, preview: BackupPreview) -> RestartOperation:
+def launch_restore(path: str, preview: BackupPreview) -> RestartOperation:
     """메뉴바가 종료되어도 살아 있는 복원 도우미에 확인한 파일을 넘긴다."""
     # 파일 경로와 내부 자료를 launchd 인수나 로그에 남기지 않는다.
-    request = json.dumps({"file": str(path), "stamp": preview.stamp, "digest": preview.digest})
+    request = json.dumps({"file": path, "stamp": preview.stamp, "digest": preview.digest})
     try:
         process = subprocess.Popen(
             executable_command("restore", "apply"),

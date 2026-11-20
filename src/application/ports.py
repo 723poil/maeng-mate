@@ -61,6 +61,10 @@ class SnapshotStore(Protocol):
         """유효한 실행이 없을 때 새 수집 세대를 발급한다."""
         ...
 
+    async def renew_run(self, run: SyncRun) -> None:
+        """만료되지 않은 현재 세대의 실행권만 연장한다."""
+        ...
+
     async def complete_run(
         self,
         run: SyncRun,

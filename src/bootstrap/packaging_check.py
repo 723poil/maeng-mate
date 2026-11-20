@@ -17,7 +17,7 @@ import uvicorn
 from src.bootstrap.build_profile import current_profile
 from src.bootstrap.environment import AppEnvironment
 from src.bootstrap.executable import bundle_contents, packaged
-from src.bootstrap.packaged_app import initialize_database
+from src.bootstrap.packaged_app import extract_notification_app, initialize_database
 from src.bootstrap.resident import ResidentServer
 from src.bootstrap.wiring import build_api
 from src.bootstrap.work_settings import load_work_settings
@@ -51,14 +51,6 @@ def check_bundle() -> None:
         with (contents / "Info.plist").open("rb") as stream:
             info = plistlib.load(stream)
         profile = current_profile()
-        helper = contents / "Resources/NotificationAgent.app/Contents"
-        with (helper / "Info.plist").open("rb") as stream:
-            helper_info = plistlib.load(stream)
-        if (
-            info.get("CFBundleIdentifier") != profile.identifier
-            or helper_info.get("CFBundleIdentifier") != f"{profile.identifier}.notifications"
-        ):
-            raise RuntimeError("앱과 알림의 번들 식별자가 실행 환경과 다릅니다.")
         if info.get("CFBundleVersion") != version("maeng-mate"):
             raise RuntimeError("업데이트 비교 버전과 설치 버전이 다릅니다.")
         if info.get("SUPublicEDKey"):
@@ -66,16 +58,27 @@ def check_bundle() -> None:
 
             # 읽기 전용 DMG에서도 네트워크 요청 없이 동봉 프레임워크를 실제로 로드한다.
             load_controller(contents / "Frameworks/Sparkle.framework")
-        executable = helper / "MacOS/NotificationAgent"
-        result = subprocess.run(
-            [str(executable)],
-            input=json.dumps({"mode": "probe"}),
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if result.returncode or result.stdout.strip() != "ready":
-            raise RuntimeError("동봉 알림 앱 확인 실패")
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "NotificationAgent.app"
+            extract_notification_app(contents, destination)
+            helper = destination / "Contents"
+            with (helper / "Info.plist").open("rb") as stream:
+                helper_info = plistlib.load(stream)
+            if (
+                info.get("CFBundleIdentifier") != profile.identifier
+                or helper_info.get("CFBundleIdentifier") != f"{profile.identifier}.notifications"
+            ):
+                raise RuntimeError("앱과 알림의 번들 식별자가 실행 환경과 다릅니다.")
+            executable = helper / "MacOS/NotificationAgent"
+            result = subprocess.run(
+                [str(executable)],
+                input=json.dumps({"mode": "probe"}),
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if result.returncode or result.stdout.strip() != "ready":
+                raise RuntimeError("동봉 알림 앱 확인 실패")
     with tempfile.TemporaryDirectory(prefix="maeng-bundle-check-") as directory:
         check_skill_install(Path(directory))
         path = str(Path(directory) / "app.sqlite3")

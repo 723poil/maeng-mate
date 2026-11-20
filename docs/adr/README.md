@@ -14,6 +14,7 @@
 | [0008. 영속 알림과 macOS 전달](0008-notification-delivery.md) | 알림 생성, 채널별 결과, 발신 앱과 원본 링크 |
 | [0009. Slack 연동과 DM](0009-slack.md) | 자격 정보, 테스트 알림, 자동 DM |
 | [0010. macOS 실행과 배포](0010-macos-distribution.md) | launchd, 설치·업데이트, DB 백업과 DMG |
+| [0011. 이슈와 PR 관리](0011-issue-triage.md) | 등록 양식, 담당자·리뷰어, 유형·우선순위 라벨, 마일스톤과 해결 이슈 |
 
 ## 기록 방법
 

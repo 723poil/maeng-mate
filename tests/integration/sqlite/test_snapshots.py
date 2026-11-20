@@ -155,6 +155,11 @@ async def test_stored_json_and_hash_remain_compatible(db: Database) -> None:
             expected = asdict(row)
             # 예약 계산값은 영속 큐에만 저장하며 이전 스냅샷 JSON과 해시에 넣지 않는다.
             del expected["alert_due_at"]
+            if isinstance(row, Task):
+                # #29에서 추가된 빈 부모 메타데이터는 이전 저장 형식에 포함되지 않는다.
+                assert row.parent_label is None and row.parent_order is None
+                del expected["parent_label"]
+                del expected["parent_order"]
             for name in ("alert_values", "display_values", "calendar_periods"):
                 if not expected[name]:
                     del expected[name]

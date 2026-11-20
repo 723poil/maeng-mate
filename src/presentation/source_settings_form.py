@@ -30,7 +30,8 @@ from src.presentation.runtime_settings_controller import SettingsEditor
 
 type SourceEditor = SettingsEditor[CollectionDraft, SourceSettingsState]
 HEADER_HEIGHT = 232
-OPTION_HEIGHT = 221
+OPTION_HEIGHT = 150
+PARENT_OPTION_ROW = 34
 COLLAPSED_OPTIONS = 44
 EVENT_CHOICES = ("other", "meeting", "leave")
 COLLECTION_MODES: tuple[SourceKind, ...] = ("task", "meeting", "leave")
@@ -193,17 +194,19 @@ class SourceSettingsForm:
             frame(0, 0, 552, OPTION_HEIGHT - COLLAPSED_OPTIONS)
         )
         self._detail.addSubview_(self._advanced)
-        label(self._advanced, "열기 주소", 12, 76, 84)
-        self.url = self._field(102, 73, 436, "선택 사항", parent=self._advanced)
-        label(self._advanced, "항목 정렬", 12, 41, 88, secondary=True)
+        self._common_options = NSView.alloc().initWithFrame_(frame(0, 34, 552, 72))
+        self._advanced.addSubview_(self._common_options)
+        label(self._common_options, "열기 주소", 12, 43, 84)
+        self.url = self._field(102, 40, 436, "선택 사항", parent=self._common_options)
+        label(self._common_options, "항목 정렬", 12, 9, 84)
         self.sort = self._popup(
-            self._advanced, 102, 37, 170, ["정렬 없음", "날짜순", "제목순"], "changed:"
+            self._common_options, 102, 5, 170, ["정렬 없음", "날짜순", "제목순"], "changed:"
         )
-        self.rounds = self._check("부모 항목 안의 하위 표", 310, 36, 215, "structure:")
-        self.parent_display = self._check("부모 제목 표시", 12, 139, 185, "changed:")
-        self.parent_sort = self._popup(
-            self._advanced, 202, 137, 336, ["부모 정렬 없음"], "changed:"
+        self.rounds = self._check(
+            "부모 항목 안의 하위 표", 284, 6, 254, "structure:", parent=self._common_options
         )
+        self.parent_display = self._check("부모 제목 표시", 102, 39, 168, "changed:")
+        self.parent_sort = self._popup(self._advanced, 284, 38, 254, ["부모 정렬 없음"], "changed:")
         self._parent_orders: list[tuple[str, str | None]] = []
         self._remove = button(self._advanced, "소스 제거", 425, 5, 113, self._actions, "remove:")
         self._round_title: NSPopUpButton | None = None
@@ -918,7 +921,12 @@ class SourceSettingsForm:
     def _layout(self, body_height: float, offset: float = 0.0) -> None:
         """편집 가능한 전체 높이를 스크롤 페이지에 반영한다."""
         self._body_height = body_height
-        detail_height = OPTION_HEIGHT if self._options_open else COLLAPSED_OPTIONS
+        # 부모 옵션은 구조 선택 바로 아래 한 행만 차지하고, 숨기면 공통 행을 당긴다.
+        extra = PARENT_OPTION_ROW if self._uses_rounds() else 0
+        expanded_height = OPTION_HEIGHT + extra
+        detail_height = expanded_height if self._options_open else COLLAPSED_OPTIONS
+        self._common_options.setFrame_(frame(0, 34 + extra, 552, 72))
+        self._advanced.setFrameSize_((552, expanded_height - COLLAPSED_OPTIONS))
         height = max(self._viewport, body_height + HEADER_HEIGHT + detail_height + 40)
         self.document.setFrameSize_((584, height))
         self._header.setFrame_(frame(16, height - HEADER_HEIGHT - 8, 552, HEADER_HEIGHT))

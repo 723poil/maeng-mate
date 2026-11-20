@@ -601,13 +601,24 @@ class SourceSettingsForm:
         body = NSView.alloc().initWithFrame_(frame(0, 0, 628, 100))
         self._role_body = body
         kind = self._mode()
+        category = self.selected_category()
+        config = category.configuration if category else None
+        custom_classification = bool(config and config.classification_column)
         roles = tuple(
             role
             for role in ROLES[kind]
             if role.key in selected or any(column.kind in role.types for column in schema.columns)
+            if not (role.key == "category" and role.key not in selected)
         )
         # 업무의 상태는 원문을 수집한다. 옵션별 지정은 일정 분류와 휴가 승인에만 필요하다.
-        rule_role = next((role for role in roles if role.key in {"category", "approval"}), None)
+        rule_role = next(
+            (
+                role
+                for role in roles
+                if role.key == "approval" or (role.key == "category" and not custom_classification)
+            ),
+            None,
+        )
         rule_column = next(
             (
                 col
@@ -913,6 +924,16 @@ class SourceSettingsForm:
                         value["defaultEventType"] = old["defaultEventType"]
             choices = self._selected_options()
             if kind == "meeting" and "category" in values:
+                category = self.selected_category()
+                config = category.configuration if category else None
+                # 공유 분류 설정과 별개로 기존 알림이 쓰는 의미 매핑을 같은 원본에서만 보존한다.
+                if config and config.classification_column:
+                    previous = old.get("properties")
+                    if (
+                        isinstance(previous, dict)
+                        and previous.get("category") == values["category"]
+                    ):
+                        choices = self._default_choices()
                 value["eventTypes"] = {
                     name: EVENT_CHOICES[index] for name, index in choices.items() if index
                 }

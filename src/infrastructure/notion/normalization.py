@@ -287,6 +287,14 @@ def normalize_page(
         )
         for column in source.storage_layout
     }
+    classification = None
+    if column := source.classification_column:
+        # 분류되지 않은 값은 원문을 유지하고 알림의 원본 비교에도 원래 값을 쓴다.
+        original = column_text(props.by_id(column.property_id), column.kind)
+        classification = source.classification_values.get(original, original)
+        display[column.value_key] = (
+            classification if column.full_text else classification[:DISPLAY_VALUE_LIMIT]
+        )
     dates = {
         column.value_key: value
         for column in source.stored_columns
@@ -362,7 +370,7 @@ def normalize_page(
             if "participants" in source.properties
             else (),
             period=read_period(get("period")),
-            category=category,
+            category=classification if classification is not None else category,
             event_type=classify_event(category, source.event_types)
             if "category" in source.properties
             else source.default_event_type,

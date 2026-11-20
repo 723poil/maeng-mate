@@ -767,7 +767,7 @@ def parse_inherited_options(raw: object) -> tuple[CategorySourceOptions, ...]:
 
 def parse_category_configuration(raw: object) -> CategoryConfiguration:
     """칼럼 변경이 기존 날짜·알림·목록 규칙의 참조를 깨는지 검사한다."""
-    if not isinstance(raw, dict) or set(raw) - {"eventAlerts", "mainList"} != {
+    if not isinstance(raw, dict) or set(raw) - {"eventAlerts", "mainList", "classification"} != {
         "columns",
         "calendarVisible",
         "calendarColor",
@@ -785,6 +785,22 @@ def parse_category_configuration(raw: object) -> CategoryConfiguration:
         and (not isinstance(day, str) or day not in by_id or by_id[day].kind != "date")
     ) or type(raw["calendarVisible"]) is not bool:
         raise ValueError
+    classification_column = None
+    classification_values: dict[str, str] = {}
+    if "classification" in raw:
+        classification = raw["classification"]
+        if not isinstance(classification, dict) or set(classification) != {"column", "values"}:
+            raise ValueError
+        classification_column = nonblank(classification["column"])
+        column = by_id.get(classification_column)
+        values = classification["values"]
+        if column is None or column.kind != "text" or not isinstance(values, dict):
+            raise ValueError
+        for key, value in values.items():
+            name = nonblank(key)
+            if name in classification_values:
+                raise ValueError
+            classification_values[name] = nonblank(value)
     return CategoryConfiguration(
         columns,
         raw["calendarVisible"],
@@ -795,6 +811,8 @@ def parse_category_configuration(raw: object) -> CategoryConfiguration:
         parse_inherited_options(raw["inherited"]),
         parse_category_event_alerts(raw["eventAlerts"]) if "eventAlerts" in raw else None,
         parse_main_list(raw["mainList"], columns) if "mainList" in raw else None,
+        classification_column,
+        tuple(classification_values.items()),
     )
 
 
@@ -939,6 +957,16 @@ def category_configuration_payload(value: CategoryConfiguration) -> dict[str, ob
             }
             for item in value.columns
         ],
+        **(
+            {
+                "classification": {
+                    "column": value.classification_column,
+                    "values": dict(value.classification_values),
+                }
+            }
+            if value.classification_column
+            else {}
+        ),
         "calendarVisible": value.calendar_visible,
         "calendarColor": value.calendar_color,
         "calendarDate": value.calendar_date,
@@ -1108,6 +1136,8 @@ def resolve_category_mapping(
     required = {rule.column_id for rule in applicable_alerts if rule.enabled}
     # 이전 표시 설정에서 숨긴 칼럼도 현재 목록 규칙이 참조하면 수집한다.
     required.update(rule_fields)
+    if config.classification_column:
+        required.add(config.classification_column)
     storage = tuple(
         column
         for key, column in columns.items()
@@ -1115,6 +1145,10 @@ def resolve_category_mapping(
     )
     return replace(
         source,
+        classification_column=columns.get(config.classification_column)
+        if config.classification_column
+        else None,
+        classification_values=dict(config.classification_values),
         stored_columns=storage,
         display_columns=shown if custom_display else None,
         calendar_column=columns.get(config.calendar_date) if config.calendar_date else None,

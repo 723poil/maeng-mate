@@ -64,3 +64,5 @@ class CategoryConfiguration:
     inherited: tuple[CategorySourceOptions, ...] = ()
     event_alerts: tuple[CategoryEventAlert, ...] | None = ()
     main_list: MainListRules | None = None
+    classification_column: str | None = None
+    classification_values: tuple[tuple[str, str], ...] = ()

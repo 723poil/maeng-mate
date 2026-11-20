@@ -34,6 +34,9 @@ class SourceMapping:
     failure_rules: tuple[SourceAlertRule, ...] = ()
     event_alert_triggers: frozenset[str] = frozenset()
 
+    classification_column: DisplayColumn | None = None
+    classification_values: Mapping[str, str] = field(default_factory=dict)
+
     @property
     def has_person_scope(self) -> bool:
         """사람 칼럼을 비워 둔 사용자 정의 소스만 표 전체를 사용한다."""

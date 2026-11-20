@@ -30,6 +30,12 @@ def source_fingerprint(source: SourceMapping) -> str:
     # 기본 설정을 생략해야 이전 스냅샷과 같은 소스로 인식한다.
     if source.provider != "notion":
         payload["provider"] = source.provider
+    if column := source.classification_column:
+        payload["classification"] = (
+            column.value_key,
+            column.kind,
+            dict(source.classification_values),
+        )
     if source.event_types:
         payload["event_types"] = dict(source.event_types)
     if source.section != "tasks":

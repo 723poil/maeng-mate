@@ -112,6 +112,11 @@ class Callbacks(NSObject):
         """팝오버를 열거나 닫는다."""
         self.owner.toggle()
 
+    def applicationShouldHandleReopen_hasVisibleWindows_(self, app: object, visible: bool) -> bool:
+        """Finder가 실행 중인 메뉴바로 직접 보낸 재열기를 처리한다."""
+        self.owner.show_panel()
+        return False
+
     def calendar_(self, sender: object) -> None:
         """메인 표시와 별개로 캘린더 창을 연다."""
         self.owner.open_calendar()
@@ -207,6 +212,7 @@ class MenuBarApp:
             NotificationChannel("macos", "macOS 알림"),
         ),
         notification_status: Callable[[], str | None] | None = None,
+        panel_requested: Callable[[], bool] | None = None,
         shutdown_requested: Callable[[], bool] | None = None,
         today: Callable[[], str] = local_day,
     ) -> None:
@@ -291,12 +297,14 @@ class MenuBarApp:
         self._display_day = today()
         self._preview = preview
         self._notification_status = notification_status
+        self._panel_requested = panel_requested
         self._shutdown_requested = shutdown_requested
         self._notification_error: str | None = None
         self._application = NSApplication.sharedApplication()
         self._application.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
         self._callbacks = Callbacks.alloc().init()
         self._callbacks.owner = self
+        self._application.setDelegate_(self._callbacks)
         self._controller = DesktopController(client)
         self._dirty = False
         self._save_blocked = False
@@ -598,6 +606,11 @@ class MenuBarApp:
         if self._panel.is_visible():
             self._panel.hide()
         else:
+            self.show_panel()
+
+    def show_panel(self) -> None:
+        """반복 열기 요청에서도 이미 열린 패널을 유지한다."""
+        if not self._panel.is_visible():
             self._resize_lists()
             self._application.activateIgnoringOtherApps_(True)
             self._panel.show(self._status_item.button())
@@ -688,6 +701,8 @@ class MenuBarApp:
 
     def tick(self) -> None:
         """저장 중 바뀐 선택은 이전 응답으로 되돌리지 않고 다음 버전으로 저장한다."""
+        if self._panel_requested and self._panel_requested():
+            self.show_panel()
         if self._calendar_controller is not None:
             visible = self._compact_calendar_visible() or (
                 self._calendar_window is not None and self._calendar_window.is_visible()

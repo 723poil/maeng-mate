@@ -46,6 +46,13 @@ def load_controller(framework: Path) -> StandardController:
 class UpdateDelegate(NSObject):
     """설치 직전의 종료 요청에서 작성 중인 자료와 실행 중인 서버를 보호한다."""
 
+    reopen: Callable[[], None]
+
+    def applicationShouldHandleReopen_hasVisibleWindows_(self, app: object, visible: bool) -> bool:
+        """업데이트 델리게이트가 활성화된 동안에도 Finder 열기를 전달한다."""
+        self.reopen()
+        return False
+
     installing: bool
     pending: Callable[[], bool]
     stop_resident: Callable[[], None]
@@ -107,8 +114,11 @@ class UpdateDelegate(NSObject):
 class SparkleUpdates:
     """메뉴바가 실행되는 동안 약한 참조인 업데이트 델리게이트를 보관한다."""
 
-    def __init__(self, framework: Path, stop_resident: Callable[[], None]) -> None:
+    def __init__(
+        self, framework: Path, stop_resident: Callable[[], None], reopen: Callable[[], None]
+    ) -> None:
         """메인 루프가 시작할 때 연결할 프레임워크와 종료 동작을 보관한다."""
+        self.reopen = reopen
         self.framework = framework
         self.stop_resident = stop_resident
         self.controller: StandardController | None = None
@@ -120,6 +130,7 @@ class SparkleUpdates:
             return
         instance = load_controller(self.framework)
         self.delegate = UpdateDelegate.alloc().init()
+        self.delegate.reopen = self.reopen
         self.delegate.pending = pending
         self.delegate.installing = False
         self.delegate.stop_resident = self.stop_resident

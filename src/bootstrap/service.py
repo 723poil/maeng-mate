@@ -230,7 +230,15 @@ def _run_service(action: str) -> None:
 
 def run_service(action: str) -> None:
     """설치·시작·중지를 직렬화하되 상태 확인은 언제든 허용한다."""
-    if action == "status":
+    if action == "finder":
+        from src.bootstrap.instance import request_panel
+        from src.bootstrap.packaged_app import launch_action
+
+        # 앞선 설치가 완료된 뒤 기록을 읽어 같은 빌드를 다시 설치하지 않는다.
+        with coordination_lock("service", wait=True):
+            _run_service(launch_action())
+            request_panel()
+    elif action == "status":
         _run_service(action)
     else:
         with coordination_lock("service"):

@@ -41,6 +41,11 @@ def state_directory() -> Path:
     )
 
 
+def request_panel() -> None:
+    """메뉴바가 다음 화면 갱신 때 소비할 열기 요청을 게시한다."""
+    (state_directory() / "open-panel").touch(mode=0o600)
+
+
 def owned_roots(root: Path) -> tuple[Path, ...]:
     """현재 프로젝트와 설치 때 기록한 원본·실행본만 관리 대상으로 삼는다."""
     roots = {root.resolve(), runtime_root().resolve(), application_directory().resolve()}
@@ -60,14 +65,16 @@ def owned_roots(root: Path) -> tuple[Path, ...]:
 
 
 @contextmanager
-def _state_lock(path: Path, *, shared: bool, busy_message: str) -> Iterator[None]:
-    """잠금을 기다리지 않고 획득하며 본문이나 정리가 실패해도 파일을 닫는다."""
+def _state_lock(
+    path: Path, *, shared: bool, busy_message: str, wait: bool = False
+) -> Iterator[None]:
+    """요청한 대기 방식으로 잠금을 획득하며 본문이나 정리가 실패해도 파일을 닫는다."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
         try:
-            fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, operation if wait else operation | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ConfigError(busy_message) from None
         try:
@@ -190,12 +197,16 @@ def stop_owned_process(root: Path, role: Role, *, expected_pid: int | None = Non
 
 @contextmanager
 def coordination_lock(
-    name: Literal["storage", "service", "restore-trial"], *, shared: bool = False
+    name: Literal["storage", "service", "restore-trial"],
+    *,
+    shared: bool = False,
+    wait: bool = False,
 ) -> Iterator[None]:
     """데이터 전환과 서비스 관리가 다른 실행과 겹치지 않게 한다."""
     with _state_lock(
         state_directory() / (name + ".lock"),
         shared=shared,
+        wait=wait,
         busy_message="다른 저장 또는 서비스 작업이 진행 중입니다. 완료 후 다시 실행하세요.",
     ):
         yield

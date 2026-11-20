@@ -19,8 +19,8 @@ from src.infrastructure.private_files import private_file_lock, write_private_fi
 from src.infrastructure.sqlite.backup import copy_database
 from src.infrastructure.sqlite.portable_backup import (
     build_portable_database,
+    prepare_portable_restore,
     preserve_device_access,
-    validate_portable_database,
 )
 from src.infrastructure.work_rules_file import MAX_WORK_RULES_BYTES, WorkRulesFile
 
@@ -159,7 +159,7 @@ def unpack_backup(source: Path, directory: Path) -> str:
                         shutil.copyfileobj(archived, staged, length=_CHUNK_BYTES)
             except (BadZipFile, NotImplementedError):
                 raise ValueError("손상된 백업 파일입니다. 다른 파일을 선택하세요.") from None
-        validate_portable_database(database)
+        prepare_portable_restore(database)
         # 검사를 통과한 파일만 호출자에게 넘기고 실패한 중간 파일은 모두 정리한다.
         cleanup.pop_all()
         return created_at

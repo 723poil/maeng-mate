@@ -3,7 +3,7 @@
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Protocol
 
-from src.application.models import SyncRun
+from src.application.models import CollectedWork, SyncRun
 from src.application.task_search import TaskSearch
 from src.application.today_models import SourceSnapshot
 from src.domain.models import SourceMapping, WorkItem
@@ -16,8 +16,10 @@ type TodayQuery = Callable[[str | None], Awaitable[dict[str, object]]]
 class WorkSource(Protocol):
     """원천 구현을 교체할 수 있는 완전 수집 계약이다."""
 
-    async def collect(self, source: SourceMapping, observed_at: str) -> list[WorkItem]:
-        """필수 페이지가 실패하면 부분 결과 대신 오류를 반환한다."""
+    async def collect(
+        self, source: SourceMapping, observed_at: str
+    ) -> CollectedWork | list[WorkItem]:
+        """완전한 결과를 반환하며 원본 스키마를 제공하지 않는 원천은 행만 반환한다."""
         ...
 
 
@@ -29,7 +31,12 @@ class SnapshotStore(Protocol):
         ...
 
     async def complete_run(
-        self, run: SyncRun, items: Sequence[WorkItem], completed_at: str
+        self,
+        run: SyncRun,
+        items: Sequence[WorkItem],
+        completed_at: str,
+        *,
+        status_options: tuple[str, ...] | None = None,
     ) -> None:
         """전체 정상 결과를 한 번에 확정한다."""
         ...

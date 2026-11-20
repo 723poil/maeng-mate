@@ -5,7 +5,11 @@ import sqlite3
 
 from src.infrastructure.sqlite.connection import Database
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
+
+SOURCE_STATUS_OPTIONS_TABLE = """CREATE TABLE IF NOT EXISTS source_status_options(
+      source_id TEXT PRIMARY KEY REFERENCES work_source_state(source_id),
+      options_json TEXT NOT NULL)"""
 
 NOTIFICATION_TABLE = """CREATE TABLE IF NOT EXISTS notification_jobs(
   id TEXT PRIMARY KEY, logical_key TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('calendar','departure','task','meeting','sync_error','source_change')),
@@ -96,6 +100,7 @@ TABLES = (
       source_id TEXT NOT NULL REFERENCES work_source_state(source_id),
       item_id TEXT NOT NULL, field_id TEXT NOT NULL, value_hash TEXT NOT NULL,
       mapping_hash TEXT NOT NULL, kind_key TEXT NOT NULL, person_scoped INTEGER NOT NULL CHECK(person_scoped IN (0,1)))""",
+    SOURCE_STATUS_OPTIONS_TABLE,
 )
 
 INDEXES = (

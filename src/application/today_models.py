@@ -47,3 +47,4 @@ class SourceSnapshot:
     mapping_matches: bool
     items: tuple[WorkItem, ...]
     next_scheduled_at: datetime | None = None
+    status_options: tuple[str, ...] | None = None

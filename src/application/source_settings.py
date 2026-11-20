@@ -10,6 +10,7 @@ from uuid import UUID
 
 from src.application.category_column_types import scope_property_kinds
 from src.application.category_configuration_upgrade import move_unassigned_settings
+from src.application.models import CollectedWork
 from src.application.notion_links import notion_link
 from src.application.periodic import utc_now
 from src.application.ports import WorkSource
@@ -121,7 +122,9 @@ class ProviderSources:
         """현재 지원하는 수집 어댑터를 조립부에서 받는다."""
         self._readers = dict(readers)
 
-    async def collect(self, source: SourceMapping, observed_at: str) -> list[WorkItem]:
+    async def collect(
+        self, source: SourceMapping, observed_at: str
+    ) -> CollectedWork | list[WorkItem]:
         """설정에 지정된 어댑터에 정규화를 위임한다."""
         return await self._readers[source.provider].collect(source, observed_at)
 

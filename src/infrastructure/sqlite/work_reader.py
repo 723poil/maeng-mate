@@ -137,7 +137,20 @@ class SQLiteWorkReader:
             if item.id != row["item_id"]:
                 raise QueryReadError()
             items.append(item)
-        return replace(header, items=tuple(items))
+        options = None
+        if source.kind == "task" and "status" in source.properties:
+            row = connection.execute(
+                "SELECT options_json FROM source_status_options WHERE source_id=?",
+                (source.source_id,),
+            ).fetchone()
+            if row is not None:
+                value = json.loads(row["options_json"])
+                if not isinstance(value, list) or not all(
+                    isinstance(entry, str) for entry in value
+                ):
+                    raise QueryReadError()
+                options = tuple(value)
+        return replace(header, items=tuple(items), status_options=options)
 
 
 def source_versions(

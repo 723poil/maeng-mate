@@ -7,6 +7,7 @@ from urllib.parse import quote, unquote
 import httpx
 
 from src.application.category_column_types import scope_property_kinds
+from src.application.models import CollectedWork
 from src.application.source_settings import SourceSchema
 from src.domain.display_columns import DisplayColumn
 from src.domain.main_list import ListFilter
@@ -33,6 +34,19 @@ def needs_property_fetch(prop: dict[str, object], kind: str) -> bool:
         record(part).get("type") not in (None, "text") or "mention" in record(part)
         for part in values
     )
+
+
+def status_options(prop: dict[str, object]) -> tuple[str, ...]:
+    """연결된 상태 칼럼에서 행 사용 여부와 관계없이 원본 선택값을 읽는다."""
+    kind = text(prop.get("type"))
+    if kind not in {"status", "select"}:
+        raise SourceError("mapping_invalid")
+    options = tuple(
+        text(record(option).get("name")) for option in array(record(prop.get(kind)).get("options"))
+    )
+    if any(not name.strip() for name in options) or len(set(options)) != len(options):
+        raise SourceError("invalid_response")
+    return options
 
 
 def resolve_child_scope(
@@ -77,13 +91,18 @@ class NotionSource:
         """기존 비동기 조회 진입점은 같은 요청 간격으로 카탈로그 탐색에 위임한다."""
         return await inspect_columns(self._api, identifier, rounds=rounds)
 
-    async def collect(self, source: SourceMapping, observed_at: str) -> list[WorkItem]:
+    async def collect(self, source: SourceMapping, observed_at: str) -> CollectedWork:
         """전체 페이지와 필수 속성을 수집한 경우에만 결과를 반환한다."""
         try:
             async with asyncio.timeout(120):
                 if source.round_title_property is not None:
                     return await self._collect_qa_rounds(source, observed_at)
-                return await self._collect_rows(source, observed_at)
+                options = None
+                if source.kind == "task" and (status_id := source.properties.get("status")):
+                    schema = await self._api.data_schema(source.source_id)
+                    properties = PageProperties(record(schema.get("properties")))
+                    options = status_options(properties.by_id(status_id))
+                return CollectedWork(await self._collect_rows(source, observed_at), options)
         except TimeoutError:
             raise SourceError("timeout") from None
 
@@ -148,7 +167,7 @@ class NotionSource:
             prop[kind] = values
             fetched.add(key)
 
-    async def _collect_qa_rounds(self, source: SourceMapping, observed_at: str) -> list[WorkItem]:
+    async def _collect_qa_rounds(self, source: SourceMapping, observed_at: str) -> CollectedWork:
         """모든 차시의 항목을 읽은 뒤 한 부모 소스의 완전한 결과로 반환한다."""
         if source.kind != "task" or source.round_title_property is None:
             raise SourceError("mapping_invalid")
@@ -162,6 +181,8 @@ class NotionSource:
         seen: set[str] = set()
         seen_rounds: set[str] = set()
         seen_children: set[str] = set()
+        status_name = source.properties.get("status")
+        options: dict[str, None] = {}
         async for raw in self._api.source_pages(source.source_id):
             page = record(raw)
             page_id = text(page.get("id"))
@@ -181,6 +202,11 @@ class NotionSource:
                 seen_children.add(child_id)
                 child_schema = await self._api.data_schema(child_id)
                 properties = record(child_schema.get("properties"))
+                if status_name is not None:
+                    # 이전 연결에서 자식별 타입이 달라도 상태·선택은 같은 역할로 읽는다.
+                    options.update(
+                        dict.fromkeys(status_options(record(properties.get(status_name))))
+                    )
                 mapping = {
                     role: text(record(properties.get(name)).get("id"))
                     for role, name in source.properties.items()
@@ -236,7 +262,10 @@ class NotionSource:
                             },
                         )
                     )
-        return result
+        # 자식 표가 없으면 빈 선택 목록을 가진 칼럼을 실제로 확인한 것이 아니다.
+        return CollectedWork(
+            result, tuple(options) if seen_children and status_name is not None else None
+        )
 
     def _resolve_child_column(
         self, column: DisplayColumn, properties: dict[str, object]

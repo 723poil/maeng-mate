@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Literal, NotRequired, TypedDict
 
 from src.application.errors import SnapshotError, SourceReadError
+from src.application.models import CollectedWork
 from src.application.ports import SnapshotStore, WorkSource
 from src.domain.models import SourceMapping
 
@@ -54,7 +55,9 @@ async def synchronize(
             return {"status": "skipped", "reason": error.code}
         raise
     try:
-        items = await reader.collect(source, started)
+        result = await reader.collect(source, started)
+        # 행만 제공하는 원천은 선택값을 확인하지 못한 상태로 저장한다.
+        collected = result if isinstance(result, CollectedWork) else CollectedWork(result)
     except asyncio.CancelledError:
         await store.fail_run(run, "cancelled")
         raise
@@ -64,10 +67,18 @@ async def synchronize(
     except Exception:
         await store.fail_run(run, "source_failed")
         return {"status": "failed", "code": "source_failed"}
-    complete = asyncio.create_task(store.complete_run(run, items, now().isoformat()))
+    completed_at = now().isoformat()
+    if collected.status_options is None:
+        # 스키마가 없는 원천과 기존 저장소는 행만 전달하던 계약을 계속 사용한다.
+        commit = store.complete_run(run, collected.items, completed_at)
+    else:
+        commit = store.complete_run(
+            run, collected.items, completed_at, status_options=collected.status_options
+        )
+    complete = asyncio.create_task(commit)
     try:
         await asyncio.shield(complete)
-        return {"status": "succeeded", "count": len(items)}
+        return {"status": "succeeded", "count": len(collected.items)}
     except asyncio.CancelledError:
         try:
             await complete

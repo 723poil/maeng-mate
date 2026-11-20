@@ -128,7 +128,7 @@ class EntryList:
                 label(view, "-", badge_width + 7, 5.5, 9, size=11, secondary=True)
                 title_x = badge_width + 21
             # 상태를 사용하지 않는 소스도 독립적으로 연결한 기한·차시를 표시한다.
-            middle = item.deadline or item.round_name
+            middle = item.deadline or (None if item.parent_label else item.round_name)
             if middle is not None:
                 middle_label = label(
                     view,
@@ -154,6 +154,13 @@ class EntryList:
             title = " ".join(
                 (item.title if item.status is not None else f"{item.detail}  {item.title}").split()
             )
+        # 부모 제목은 표시 칼럼과 독립적으로 선택하며 긴 값은 도움말에도 남긴다.
+        tooltip = [item.title]
+        if item.parent_label:
+            title = f"{item.parent_label} · {title}"
+            tooltip.append(item.parent_label)
+        if fields:
+            tooltip.extend(f"{name}  {value or '—'}" for name, value in fields)
         row = button(
             view,
             title,
@@ -168,11 +175,7 @@ class EntryList:
         row.setAlignment_(0)
         row.cell().setRepresentedObject_(item.url)
         row.setEnabled_(item.url is not None)
-        row.setToolTip_(
-            "\n".join((item.title, *(f"{name}  {value or '—'}" for name, value in fields)))
-            if fields
-            else item.title
-        )
+        row.setToolTip_("\n".join(tooltip))
 
     def _custom_title(
         self, view: NSView, item: MenuEntry, fields: tuple[tuple[str, str], ...]

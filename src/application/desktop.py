@@ -66,6 +66,7 @@ class MenuEntry:
     source_id: str | None = None
     display_fields: tuple[tuple[str, str], ...] | None = None
     badge_field_indices: frozenset[int] = frozenset()
+    parent_label: str | None = None
 
 
 @dataclass(frozen=True)

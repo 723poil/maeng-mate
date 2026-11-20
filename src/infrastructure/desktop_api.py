@@ -107,14 +107,13 @@ def entries(
                 notion_link(raw.get("url")),
                 task_status,
                 deadline,
-                text(raw["parentLabel"])
-                if raw.get("parentLabel") is not None
-                else text(raw["qaRound"])
-                if raw.get("qaRound") is not None
-                else None,
+                text(raw["qaRound"]) if raw.get("qaRound") is not None else None,
                 text(raw["sourceId"]) if raw.get("sourceId") is not None else None,
                 display_fields,
                 badge_indices,
+                parent_label=text(raw["parentLabel"])
+                if raw.get("parentLabel") is not None
+                else None,
             )
         )
     return tuple(result)

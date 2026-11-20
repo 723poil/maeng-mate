@@ -268,6 +268,7 @@ class NotionSource:
                     properties=mapping,
                     round_title_property=None,
                     display_columns=resolved if not source.stored_columns else None,
+                    role_columns=(),
                     stored_columns=resolved if source.stored_columns else (),
                     alert_rules=resolved_rules,
                     classification_rules=tuple(

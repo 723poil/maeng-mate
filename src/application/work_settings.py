@@ -40,6 +40,7 @@ from src.domain.source_display import (
     SourceDisplay,
     source_notifications,
 )
+from src.domain.source_roles import ROLE_TEMPLATES, source_roles
 from src.domain.source_scope import SourceScope, calendar_conditions
 from src.domain.task_display import QATaskDisplayPolicy
 from src.domain.work_dates import canonical_identity
@@ -279,6 +280,7 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
             "calendarVisible",
             "category",
             "categoryId",
+            "columnRoles",
             "columnLabels",
             "displayColumns",
             "alertRules",
@@ -306,21 +308,18 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
             raise ValueError
         if any(len(nonblank(value)) > 250 for value in labels.values()):
             raise ValueError
-    required_keys = {
-        "task": {"title", "assignees", "status"},
-        "meeting": {"title", "participants", "period"},
-        "leave": {"people", "period", "approval"},
-    }[kind]
-    optional_keys = (
-        {"dueDate"} if kind == "task" else {"category", "cancelled"} if kind == "meeting" else set()
-    )
+    roles = source_roles(kind, item.get("columnRoles"))
+    required_keys = {role.key for role in roles if role.required}
     if flexible and kind in {"task", "meeting"}:
-        # 표를 읽는 데 필요한 역할만 필수로 둔다.
-        optional_roles = {"assignees", "status"} if kind == "task" else {"participants"}
-        optional_keys |= optional_roles
-        required_keys -= optional_roles
-    if not required_keys <= properties.keys() or properties.keys() - required_keys - optional_keys:
+        required_keys -= {"assignees", "status", "participants"}
+    if not required_keys <= properties.keys() or properties.keys() - {role.key for role in roles}:
         raise ValueError
+    builtin = {role.key for role in ROLE_TEMPLATES[kind]}
+    custom_columns = tuple(
+        DisplayColumn(role.key, role.title, role.types[0], properties[role.key])
+        for role in roles
+        if role.key not in builtin and role.key in properties
+    )
     approved: tuple[str, ...] = ()
     if kind == "leave":
         values = item["approvedValues"]
@@ -388,6 +387,7 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         parent_label=parent_label,
         parent_order=str(parent_order),
         parent_number_property=nonblank(number_property) if parent_order == "column" else None,
+        role_columns=custom_columns,
         classification_column=column,
         classification_values=classes,
         classification_rules=rules,

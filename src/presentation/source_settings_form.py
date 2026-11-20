@@ -2,16 +2,16 @@
 
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from urllib.parse import unquote
+from uuid import uuid4
 
 from AppKit import NSButton, NSMenuItem, NSPopUpButton, NSScrollView, NSTextField, NSView
 from Foundation import NSObject
 
 from src.application.notion_page_links import PageLinksError, page_url
 from src.application.source_settings import (
-    ROLES,
     CollectionDraft,
-    ColumnRole,
     SourceColumn,
     SourceDraft,
     SourceSchema,
@@ -21,8 +21,10 @@ from src.application.source_settings import (
 )
 from src.application.work_settings import category_bindings, column_bindings_payload
 from src.domain.category_configuration import ColumnBinding
+from src.domain.display_columns import DISPLAY_COLUMN_TYPES
 from src.domain.models import SourceKind
 from src.domain.source_display import SOURCE_SORTS, SourceCategory
+from src.domain.source_roles import ROLE_TEMPLATES, ColumnRole, roles_payload, source_roles
 from src.domain.work_dates import canonical_identity
 from src.presentation.column_setup_sheet import ColumnSetupSheet
 from src.presentation.native_views import button, card, frame, label
@@ -109,6 +111,10 @@ class SourceFormActions(NSObject):
         """상태나 유형 칼럼이 바뀌면 선택값을 다시 구성한다."""
         self.owner.change_columns()
 
+    def addRole_(self, sender: object) -> None:
+        """선택한 원본 타입의 사용자 역할을 추가한다."""
+        self.owner.add_role()
+
     def rules_(self, sender: object) -> None:
         """기존 데이터 분류의 원본 쪽 매핑을 편집한다."""
         self.owner.mark_edited()
@@ -148,6 +154,8 @@ class SourceSettingsForm:
         self._body_height = 0.0
         self._mapping: dict[str, tuple[NSPopUpButton, tuple[SourceColumn, ...]]] = {}
         self._options: dict[str, NSButton | NSPopUpButton] = {}
+        self._role_names: dict[str, NSTextField] = {}
+        self._roles = ROLE_TEMPLATES["task"]
         self._choices: dict[str, int] = {}
         self._body: NSView | None = None
         self._role_body: NSView | None = None
@@ -316,6 +324,7 @@ class SourceSettingsForm:
             titles.append("휴가 승인 조회")
         set_titles(self.mode, titles)
         self.mode.selectItemAtIndex_(1 if mode == "meeting" else 2 if mode == "leave" else 0)
+        self._roles = source_roles(self._mode(), raw.get("columnRoles"))
         self.rounds.setState_(int("parentTitleProperty" in raw or "roundTitleProperty" in raw))
         self._parent_orders = []
         sort = raw.get("sort", "default")
@@ -418,6 +427,7 @@ class SourceSettingsForm:
 
     def change_mode(self) -> None:
         """조회한 표는 유지하고 새 수집 방식에 맞는 연결만 그린다."""
+        self._roles = ROLE_TEMPLATES[self._mode()]
         supports_rounds = self._mode() == "task"
         self.rounds.setHidden_(not supports_rounds)
         if not supports_rounds and self.rounds.state() == 1:
@@ -501,6 +511,12 @@ class SourceSettingsForm:
         self._schema = schema
         self.error = None
         if not same_table:
+            saved_roles = (
+                self._original.get("columnRoles")
+                if self._uses_saved_layout() and self._original.get("kind") == self._mode()
+                else None
+            )
+            self._roles = source_roles(self._mode(), saved_roles)
             saved_classification = (
                 self._original.get("classification") if self._uses_saved_layout() else None
             )
@@ -670,6 +686,7 @@ class SourceSettingsForm:
         if self._body is not None:
             self._body.setHidden_(True)
             self.document.setSubviews_([self._header, self._detail])
+        self._role_names.clear()
         self._mapping.clear()
         self._options.clear()
         self._round_title = None
@@ -684,7 +701,7 @@ class SourceSettingsForm:
         kind = self._mode()
         roles = tuple(
             role
-            for role in ROLES[kind]
+            for role in self._roles
             if role.key in selected or any(column.kind in role.types for column in schema.columns)
         )
         # 완료·일정·승인 판정은 자유롭게 정하는 표시 이름과 별도로 원본 값에 적용한다.
@@ -706,7 +723,7 @@ class SourceSettingsForm:
         options = (
             tuple(dict.fromkeys((*rule_column.options, *self._choices))) if rule_column else ()
         )
-        height = 48 + 32 * (len(roles) + bool(schema.round_titles))
+        height = 84 + 32 * (len(roles) + bool(schema.round_titles))
         if options:
             # 소제목과 다음 상위 행 사이의 여백은 하위 설정이 있을 때만 확보한다.
             height += 32 + 32 * len(options)
@@ -732,6 +749,13 @@ class SourceSettingsForm:
             y -= 32
             if role == rule_role and rule_column and options:
                 y = self._draw_rule_options(body, y, rule_column, kind, options)
+        self._role_types = tuple(
+            dict.fromkeys(col.kind for col in schema.columns if col.kind in DISPLAY_COLUMN_TYPES)
+        )
+        self._new_role_type = self._popup(body, 160, 6, 225, list(self._role_types), "changed:")
+        button(body, "역할 추가", 400, 6, 206, self._actions, "addRole:").setEnabled_(
+            bool(self._role_types)
+        )
         body.setFrameSize_((628, height))
         self._update_sheet()
 
@@ -814,6 +838,7 @@ class SourceSettingsForm:
         window = self.document.window()
         if window is None:
             return
+        previous_definitions = self._roles
         previous_roles = self._selected_columns()
         previous_options = self._selected_options()
         previous_round = (
@@ -826,6 +851,7 @@ class SourceSettingsForm:
             if applied:
                 self.mark_edited()
             else:
+                self._roles = previous_definitions
                 self._choices = previous_options
                 self._draw(previous_roles, preserve_scroll=True)
                 if self._round_title is not None and previous_round is not None:
@@ -875,8 +901,11 @@ class SourceSettingsForm:
 
     def _validate_roles(self, values: dict[str, str]) -> None:
         """켜 둔 동작에 필요한 칼럼만 요구한다."""
+        self._read_role_names()
+        if any(not 0 < len(role.title) <= 80 for role in self._roles):
+            raise SourceSettingsError("역할 이름은 1~80자로 입력하세요.")
         optional = {"assignees", "participants", "status"}
-        for role in ROLES[self._mode()]:
+        for role in self._roles:
             if role.required and role.key not in optional and role.key not in values:
                 raise SourceSettingsError(f"'{role.title}'에 사용할 원본 칼럼을 선택하세요.")
 
@@ -897,7 +926,9 @@ class SourceSettingsForm:
         columns = tuple(col for col in schema.columns if col.kind in role.types)
         required = role.required and role.key not in {"assignees", "participants", "status"}
         person = role.key in {"assignees", "participants"}
-        label(body, role.title + (" *" if required else ""), 12, y + 4, 144)
+        name = self._field(12, y, 144, "역할 이름", parent=body)
+        name.setStringValue_(role.title)
+        self._role_names[role.key] = name
         popup = self._popup(
             body,
             160,
@@ -921,9 +952,26 @@ class SourceSettingsForm:
         )
         self._mapping[role.key] = popup, columns
 
+    def _read_role_names(self) -> None:
+        """다시 그리기 전에 편집한 이름을 역할 ID에 보존한다."""
+        self._roles = tuple(
+            replace(role, title=self._role_names[role.key].stringValue().strip())
+            if role.key in self._role_names
+            else role
+            for role in self._roles
+        )
+
+    def add_role(self) -> None:
+        """새 역할의 ID는 표시 이름이나 원본 연결을 변경해도 유지한다."""
+        self._read_role_names()
+        kind = self._role_types[self._new_role_type.indexOfSelectedItem()]
+        self._roles += (ColumnRole(str(uuid4()), "새 역할", (kind,), False),)
+        self.change_columns()
+
     def change_columns(self) -> None:
         """바뀐 역할에 따라 연결된 상태 옵션만 다시 계산한다."""
         self.mark_edited()
+        self._read_role_names()
         round_index = self._round_title.indexOfSelectedItem() if self._round_title else None
         selected = self._selected_columns()
         key = {"task": "status", "meeting": "category", "leave": "approval"}[self._mode()]
@@ -996,6 +1044,7 @@ class SourceSettingsForm:
                 "kind": kind,
                 "dataSourceId": schema.id,
                 "properties": values,
+                "columnRoles": roles_payload(self._roles),
                 "columnLabels": {
                     key: column.name[:250]
                     for key in values
@@ -1011,7 +1060,7 @@ class SourceSettingsForm:
             stays_legacy = (
                 old.get("kind") == kind
                 and old.get("flexible") is not True
-                and all(role.key in values for role in ROLES[kind] if role.required)
+                and all(role.key in values for role in self._roles if role.required)
                 and (self._round_title is None or section == "qa")
             )
             if not stays_legacy:

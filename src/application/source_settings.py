@@ -30,50 +30,15 @@ from src.application.work_settings import (
     source_documents,
 )
 from src.domain.category_event_alerts import EVENT_ALERT_TRIGGERS, EventAlertSelection
-from src.domain.display_columns import TITLE_COLUMN_TYPES
-from src.domain.models import SourceKind, SourceMapping, WorkItem
+from src.domain.models import SourceMapping, WorkItem
 from src.domain.source_alerts import AlertDelivery, is_source_alert_kind
 from src.domain.source_display import SourceCategory, SourceDisplay
+from src.domain.source_roles import ROLE_TEMPLATES, STATUS
 from src.domain.source_scope import field_parts
 
 
 class SourceSettingsError(ValueError):
     """연결·입력 오류를 원본 응답과 분리한다."""
-
-
-@dataclass(frozen=True)
-class ColumnRole:
-    """내부 필드가 받을 수 있는 원천 칼럼 타입이다."""
-
-    key: str
-    title: str
-    types: tuple[str, ...]
-    required: bool = True
-
-
-TITLE = ColumnRole("title", "항목 제목", TITLE_COLUMN_TYPES)
-STATUS = ("status", "select")
-PERIOD = ColumnRole("period", "일정 시작·종료", ("date",))
-ROLES: dict[SourceKind, tuple[ColumnRole, ...]] = {
-    "task": (
-        TITLE,
-        ColumnRole("assignees", "내 항목만 보기", ("people",)),
-        ColumnRole("status", "상태로 사용", STATUS),
-        ColumnRole("dueDate", "마감일로 사용", ("date",), False),
-    ),
-    "meeting": (
-        TITLE,
-        ColumnRole("participants", "내 일정만 보기", ("people",)),
-        PERIOD,
-        ColumnRole("category", "일정 유형", STATUS, False),
-        ColumnRole("cancelled", "취소 여부", ("checkbox",), False),
-    ),
-    "leave": (
-        ColumnRole("people", "휴가 대상자", ("people",)),
-        PERIOD,
-        ColumnRole("approval", "승인 상태", STATUS),
-    ),
-}
 
 
 @dataclass(frozen=True)
@@ -271,7 +236,7 @@ def validate_columns(mapping: SourceMapping, schema: SourceSchema) -> None:
     ):
         raise SourceSettingsError("부모 표의 숫자 칼럼을 다시 선택하세요.")
     columns = {column.name if rounds else unquote(column.id): column for column in schema.columns}
-    for role in ROLES[mapping.kind]:
+    for role in ROLE_TEMPLATES[mapping.kind]:
         value = mapping.properties.get(role.key)
         if value is None and not role.required:
             continue

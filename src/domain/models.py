@@ -66,6 +66,8 @@ class SourceMapping:
     parent_order: str = "none"
     parent_number_property: str | None = None
 
+    role_columns: tuple[DisplayColumn, ...] = ()
+
     @property
     def has_person_scope(self) -> bool:
         """사람 칼럼을 비워 둔 사용자 정의 소스만 표 전체를 사용한다."""
@@ -91,6 +93,7 @@ class SourceMapping:
     def storage_layout(self) -> tuple[DisplayColumn, ...]:
         """새 연결은 숨겨 둔 칼럼도 저장하고 이전 소스는 기존 저장 구성을 쓴다."""
         layout = self.stored_columns or self.display_columns or ()
+        layout = (*layout, *self.role_columns)
         column = self.classification_column
         return (*layout, column) if column and column not in layout else layout
 

@@ -1,6 +1,6 @@
 """카테고리의 저장 칼럼·메인 목록·캘린더·알림을 한 설정 시트에서 관리한다."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import replace
 from uuid import uuid4
 from weakref import proxy
@@ -37,7 +37,6 @@ from src.domain.category_configuration import (
     CategoryColumn,
     CategoryConfiguration,
 )
-from src.domain.category_event_alerts import EventAlertSelection
 from src.domain.display_columns import display_line
 from src.domain.source_display import SOURCE_COLORS, SourceCategory
 from src.presentation.category_sheet_controls import field, popup, set_entries
@@ -115,10 +114,10 @@ class CategoryConfigurationSheet:
         self,
         parent: NSWindow,
         category: SourceCategory,
-        apply: Callable[[SourceCategory, tuple[EventAlertSelection, ...]], None],
+        apply: Callable[[SourceCategory], None],
         closed: Callable[[], None],
         *,
-        event_states: Mapping[str, bool] | None = None,
+        people_columns: frozenset[str] = frozenset(),
     ) -> None:
         """설정 변경을 외부 저장 전까지 이 시트에 보관한다."""
         self.parent = parent
@@ -129,9 +128,7 @@ class CategoryConfigurationSheet:
         self._calendar_date = self._original.calendar_date
         self._dates: tuple[str, ...] = ()
         self._alert_rules = tuple(item.rule for item in self._original.alerts)
-        self._event_alerts = self._original.event_alerts or ()
-        self._event_states = dict(event_states or {})
-        self._event_changes: dict[str, bool] = {}
+        self._people_columns = people_columns
         self._alert_editor: ColumnAlertEditor | None = None
         self._display_help = display_help_popover()
         self._tab = 0
@@ -235,17 +232,6 @@ class CategoryConfigurationSheet:
     def show(self) -> None:
         """기존 설정 창에 대화상자를 붙인다."""
         self.parent.beginSheet_completionHandler_(self.window, self._complete)
-
-    @property
-    def category_key(self) -> str:
-        """알림 화면과 같은 카테고리 키로 상태를 갱신한다."""
-        return self._category.key
-
-    def update_event_states(self, states: Mapping[str, bool]) -> None:
-        """시트에서 바꾼 값을 보존하며 마지막 알림 설정을 보여 준다."""
-        self._event_states = dict(states)
-        if self._alert_editor is not None:
-            self._alert_editor.update_event_states(states)
 
     def _complete(self, result: int) -> None:
         """시트가 닫힌 뒤 편집기 참조를 해제한다."""
@@ -398,13 +384,9 @@ class CategoryConfigurationSheet:
             self._alert_rules,
             False,
             self.clear_status,
-            events=self._event_alerts,
-            event_states=self._event_states,
-            event_changes=self._event_changes,
+            people_columns=self._people_columns,
         )
-        editor.set_scope_description(
-            "이 카테고리에 연결한 표의 알림입니다. 사람 필터를 켠 표에서는 내 항목만 확인합니다."
-        )
+        editor.set_scope_description("기준 데이터와 조건을 선택하세요.")
         self._alert_editor = editor
 
     def clear_status(self) -> None:
@@ -424,7 +406,6 @@ class CategoryConfigurationSheet:
                 self._calendar_date = None
         elif self._tab == 3 and self._alert_editor is not None:
             self._alert_rules = self._alert_editor.draft()
-            self._event_alerts, self._event_changes = self._alert_editor.event_draft()
 
     def select(self, index: int) -> None:
         """유효하지 않은 편집을 버리지 않고 현재 탭에 안내한다."""
@@ -496,7 +477,7 @@ class CategoryConfigurationSheet:
             channels,
             tuple(CategoryAlert(rule, old_scopes.get(rule.id)) for rule in self._alert_rules),
             overrides,
-            self._event_alerts,
+            (),
             main_list=main_list,
         )
         name = self.name.stringValue().strip()
@@ -516,11 +497,7 @@ class CategoryConfigurationSheet:
             self.status.setStringValue_(str(error))
             self.status.setToolTip_(str(error))
             return
-        selections = tuple(
-            EventAlertSelection(category.id, trigger, enabled)
-            for trigger, enabled in self._event_changes.items()
-        )
-        self._apply(category, selections)
+        self._apply(category)
         self.close()
 
 

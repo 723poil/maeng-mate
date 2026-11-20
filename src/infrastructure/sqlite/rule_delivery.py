@@ -49,6 +49,10 @@ def category_rules(category: SourceCategory) -> dict[str, RuleRoute]:
         for entry in config.alerts
         if entry.rule.enabled
     }
+    # 이전 실행본이 만든 대기 건만 이어받고 새 수집은 UUID 규칙으로 발송한다.
+    for entry in config.alerts:
+        if entry.rule.enabled and entry.rule.previous_kind:
+            rules[entry.rule.previous_kind] = route(entry.rule)
     for event in config.event_alerts or ():
         for kind in EVENT_ALERT_TRIGGERS[event.trigger].kinds:
             rules[kind] = route(event)

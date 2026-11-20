@@ -21,7 +21,7 @@ def build_collection(
     scheduled: bool,
 ) -> tuple[WorkSource, SnapshotStore]:
     """같은 알림 정책을 쓰고 예약 실행에만 주기 확인과 빠른 재시도를 적용한다."""
-    reader = ProviderSources({"notion": NotionSource(token, client)})
+    reader = ProviderSources({"notion": NotionSource(token, client, user_id=user_id)})
     store = SQLiteSnapshots(
         database,
         scheduled=scheduled,

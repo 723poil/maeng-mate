@@ -52,6 +52,9 @@ SOURCE_ERROR_CODES = frozenset(
 )
 
 
+COLLECTION_FAILURE_CODES = SOURCE_ERROR_CODES | {"storage_failed", "source_failed"}
+
+
 class SourceReadError(ValueError):
     """외부 원문 없이 고정 오류 분류와 안전한 대기 시간만 전달한다."""
 

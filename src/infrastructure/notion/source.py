@@ -35,8 +35,16 @@ def needs_property_fetch(prop: dict[str, object], kind: str) -> bool:
 class NotionSource:
     """쓰기를 제공하지 않는 Notion 읽기 어댑터다."""
 
-    def __init__(self, token: str, client: httpx.AsyncClient, *, interval: float = 0.4) -> None:
+    def __init__(
+        self,
+        token: str,
+        client: httpx.AsyncClient,
+        *,
+        interval: float = 0.4,
+        user_id: str | None = None,
+    ) -> None:
         """HTTP와 요청 간격을 주입하고 비밀값은 객체 표현에 노출하지 않는다."""
+        self._user_id = user_id
         self._api = NotionReadApi(token, client, interval=interval)
 
     async def inspect_columns(self, identifier: str, *, rounds: bool) -> tuple[SourceSchema, ...]:
@@ -65,7 +73,11 @@ class NotionSource:
             seen.add(identifier)
             properties = PageProperties(record(page.get("properties")))
             await self._fill_columns(identifier, source, properties)
-            result.append(normalize_page(page, source, observed_at, properties=properties))
+            result.append(
+                normalize_page(
+                    page, source, observed_at, properties=properties, user_id=self._user_id
+                )
+            )
         return result
 
     async def _fill_columns(

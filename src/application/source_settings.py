@@ -222,7 +222,9 @@ def mapping_signature(settings: Settings | None) -> object:
     # 전달 문구와 채널은 큐가 저장 시점의 규칙을 읽는다. 수집 매핑에는 영향을 주지 않는다.
     sources = tuple(
         replace(
-            source, alert_rules=tuple(replace(rule, delivery=None) for rule in source.alert_rules)
+            source,
+            alert_rules=tuple(replace(rule, delivery=None) for rule in source.alert_rules),
+            failure_rules=tuple(replace(rule, delivery=None) for rule in source.failure_rules),
         )
         for source in settings.sources
     )
@@ -330,13 +332,16 @@ class SourceSettingsService:
         current, existing = stored
         stored_sources = canonical_sources(source_documents(current.payload))
         if isinstance(value, CategoryDraft):
+            if value.event_selections or any(
+                item.configuration and item.configuration.event_alerts for item in value.categories
+            ):
+                raise SourceSettingsError(
+                    "알림 설정을 다시 열고 기준 데이터와 조건으로 규칙을 등록하세요."
+                )
             previous_categories = {item.id: item for item in existing.categories}
-            categories = allow_enabled_events(
-                tuple(
-                    preserve_rule_delivery(item, previous_categories.get(item.id))
-                    for item in value.categories
-                ),
-                value.event_selections,
+            categories = tuple(
+                preserve_rule_delivery(item, previous_categories.get(item.id))
+                for item in value.categories
             )
             validate_category_names(categories, existing.categories)
             sources = stored_sources
@@ -383,22 +388,7 @@ class SourceSettingsService:
         }
         parsed = parse_settings(payload)
         if isinstance(value, CategoryDraft):
-            registered = {
-                (category.id, rule.trigger)
-                for category in parsed.categories
-                if category.configuration is not None
-                for rule in category.configuration.event_alerts or ()
-            }
-            if any(
-                (item.category_id, item.trigger) not in registered
-                for item in value.event_selections
-            ):
-                raise SourceSettingsError("저장할 알림 규칙을 다시 선택하세요.")
-            return self._state(
-                *self._store.save_document(
-                    value.revision, payload, event_selections=value.event_selections
-                )
-            )
+            return self._state(*self._store.save_document(value.revision, payload))
         previous = {source.source_id: source for source in existing.sources}
         for source in parsed.sources:
             if same_source_bindings(previous.get(source.source_id), source):
@@ -445,34 +435,6 @@ def preserve_rule_delivery(
     return replace(category, configuration=replace(config, alerts=alerts, event_alerts=events))
 
 
-def allow_enabled_events(
-    categories: tuple[SourceCategory, ...], selections: tuple[EventAlertSelection, ...]
-) -> tuple[SourceCategory, ...]:
-    """카테고리에서 명시적으로 켠 규칙은 이전 소스별 끄기 설정을 갱신한다."""
-    wanted: dict[str, set[str]] = {}
-    for item in selections:
-        if item.enabled:
-            option = EVENT_ALERT_TRIGGERS.get(item.trigger)
-            if option is None:
-                raise SourceSettingsError("저장할 알림 조건을 다시 선택하세요.")
-            wanted.setdefault(item.category_id, set()).update(option.kinds)
-    result = []
-    for category in categories:
-        config = category.configuration
-        kinds = wanted.get(category.id)
-        if config is None or not kinds:
-            result.append(category)
-            continue
-        inherited = tuple(
-            replace(item, notification_types=tuple(sorted(set(item.notification_types) | kinds)))
-            if item.notification_types is not None
-            else item
-            for item in config.inherited
-        )
-        result.append(replace(category, configuration=replace(config, inherited=inherited)))
-    return tuple(result)
-
-
 def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> bool:
     """표시 이름과 순서만 바꿀 때는 원본 스키마를 다시 조회하지 않는다."""
     if before is None or replace(
@@ -483,6 +445,7 @@ def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> 
         calendar_column=None,
         calendar_date_override=False,
         event_alert_triggers=frozenset(),
+        failure_rules=(),
     ) != replace(
         after,
         display_columns=None,
@@ -491,6 +454,7 @@ def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> 
         calendar_column=None,
         calendar_date_override=False,
         event_alert_triggers=frozenset(),
+        failure_rules=(),
     ):
         return False
     return source_attribute_types(before) == source_attribute_types(after)

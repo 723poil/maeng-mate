@@ -1,7 +1,8 @@
 """카테고리에 정의한 저장 칼럼과 직접 입력한 조건으로 알림을 작성한다."""
 
-from collections.abc import Callable, Mapping
-from uuid import uuid4
+from collections.abc import Callable
+from dataclasses import replace
+from uuid import UUID, uuid4
 from weakref import proxy
 
 from AppKit import (
@@ -23,15 +24,13 @@ from AppKit import (
 )
 from Foundation import NSIndexSet, NSObject
 
+from src.application.errors import COLLECTION_FAILURE_CODES
 from src.application.source_settings import SourceSettingsError
 from src.domain.category_configuration import CategoryColumn
-from src.domain.category_event_alerts import (
-    EVENT_ALERT_OPTIONS,
-    EVENT_ALERT_TRIGGERS,
-    CategoryEventAlert,
-)
 from src.domain.source_alerts import (
+    COLLECTION_STATE,
     MAX_SOURCE_ALERT_RULES,
+    UNBOUND_COLUMN,
     AlertDelivery,
     AlertSchedule,
     ScheduleMode,
@@ -70,7 +69,7 @@ class AlertEditorActions(NSObject):
 
     def numberOfRowsInTableView_(self, table: NSTableView) -> int:
         """목록은 작성된 규칙만 포함한다."""
-        return self.owner.listed_count
+        return self.owner.rule_count
 
     def tableView_viewForTableColumn_row_(
         self, table: NSTableView, column: NSTableColumn | None, row: int
@@ -82,12 +81,9 @@ class AlertEditorActions(NSObject):
         """클릭과 방향키 선택을 같은 편집기에 반영한다."""
         self.owner.select_rule(self.owner.rule_list.selectedRow())
 
-    def newRule_(self, sender: NSPopUpButton) -> None:
+    def newRule_(self, sender: object) -> None:
         """선택한 종류의 빈 규칙 편집기를 연다."""
-        index = sender.indexOfSelectedItem()
-        sender.selectItemAtIndex_(0)
-        if index > 0:
-            self.owner.open_new(event=index == 2)
+        self.owner.open_new()
 
     def removeRule_(self, sender: object) -> None:
         """선택한 규칙을 설정 초안에서 뺀다."""
@@ -122,17 +118,16 @@ class ColumnAlertEditor:
         person_scoped: bool,
         clear_sheet_status: Callable[[], None],
         *,
-        events: tuple[CategoryEventAlert, ...] = (),
-        event_states: Mapping[str, bool] | None = None,
-        event_changes: Mapping[str, bool] | None = None,
+        people_columns: frozenset[str] = frozenset(),
     ) -> None:
-        """시트를 적용할 때까지 규칙 편집을 외부에 저장하지 않는다."""
-        self._columns = columns
+        """실제 카테고리 칼럼과 수집 상태를 입력으로 사용한다."""
+        self._columns = (*columns, CategoryColumn(COLLECTION_STATE, "수집 상태", "collection"))
+        self._people_columns = (
+            people_columns
+            | {c.id for c in columns if c.legacy_kind == "people"}
+            | {r.column_id for r in rules if r.member}
+        )
         self._rules = list(rules)
-        self._events = list(events)
-        self._event_states = dict(event_states or {})
-        self._event_changes = dict(event_changes or {})
-        self._event_index: int | None = None
         self._index = 0
         self._preview: SourceAlertRule | None = None
         self._updating_list = False
@@ -140,22 +135,25 @@ class ColumnAlertEditor:
         self._actions = AlertEditorActions.alloc().init()
         self._actions.owner = proxy(self)
         self.view = parent
-        self._scope = label(parent, "", 10, 348, 620, secondary=True)
+        self._scope = label(parent, "", 10, 348, 390, secondary=True)
+        self.item_filter = self._popup(413, 344, 215, "target:")
+        self._titles(
+            self.item_filter, ["소스의 항목 범위", "회의로 분류된 항목만", "지나지 않은 일정만"]
+        )
         card(parent, 0, 41, 242, 290)
         label(parent, "알림 규칙", 14, 294, 105, bold=True)
-        self._new = self._popup(126, 290, 104, "newRule:")
-        self._titles(self._new, ["+ 새 규칙", "칼럼 변경·날짜 예약", "업무·일정·수집 이벤트"])
+        self._new = button(parent, "+ 새 규칙", 126, 290, 104, self._actions, "newRule:")
         self._empty = label(parent, "등록된 규칙이 없습니다.", 14, 249, 214, secondary=True)
         self.rule_list = self._make_list(parent)
         card(parent, 254, 41, 388, 290)
         self._editor_title = label(parent, "", 268, 294, 360, bold=True)
         label(parent, "알림 이름", 268, 261, 86)
         self.name = self._field(359, 257, 269, "알림에 표시할 이름")
-        column_label = label(parent, "알림 받을 칼럼", 268, 230, 86)
+        label(parent, "기준 데이터", 268, 230, 86)
         self.column = self._popup(359, 226, 269, "column:")
         self.condition = self._popup(359, 195, 269, "condition:")
         self._schedule_choices: tuple[tuple[ScheduleMode, str], ...] = ()
-        condition_label = label(parent, "언제 보낼지", 268, 199, 86)
+        label(parent, "언제 보낼지", 268, 199, 86)
         self._target_label = label(parent, "변경 후 값", 268, 168, 86)
         self.target = self._field(359, 164, 269, "원본의 값과 같게 입력")
         self._target_choice = self._popup(359, 164, 269, "target:")
@@ -174,35 +172,16 @@ class ColumnAlertEditor:
         for field in (self.name, self.target, self.message):
             field.setDelegate_(self._actions)
         self._remove = button(parent, "규칙 삭제", 522, 57, 106, self._actions, "removeRule:")
-        self._edit_controls: tuple[NSView, ...] = (
-            column_label,
-            self.column,
-            condition_label,
-            self.condition,
-        )
-        self._event_label = label(parent, "언제 보낼지", 268, 230, 86)
-        self.event_condition = self._popup(359, 226, 269, "target:")
-        self._titles(
-            self.event_condition, ["조건 선택", *(event.condition for event in EVENT_ALERT_OPTIONS)]
-        )
         self.status = label(parent, "", 14, 14, 610, secondary=True)
         self.rule_list.setDataSource_(self._actions)
         self.rule_list.setDelegate_(self._actions)
         self.set_person_scope(person_scoped)
-        if events:
-            self._fill_event(0)
-        else:
-            self._fill(0)
+        self._fill(0)
 
     @property
     def rule_count(self) -> int:
         """작성 중인 빈 입력은 규칙 수에 넣지 않는다."""
         return len(self._rules)
-
-    @property
-    def listed_count(self) -> int:
-        """이벤트와 칼럼 조건을 한 목록에 표시한다."""
-        return len(self._events) + self.rule_count
 
     def _make_list(self, parent: NSView) -> NSTableView:
         """규칙이 많아도 편집기를 밀어내지 않는 스크롤 목록을 만든다."""
@@ -230,31 +209,15 @@ class ColumnAlertEditor:
 
     def rule_row(self, index: int) -> NSView | None:
         """등록한 이름·조건·켜짐 상태를 선택 가능한 한 행으로 표시한다."""
-        if not 0 <= index < self.listed_count:
+        if not 0 <= index < self.rule_count:
             return None
-        if index < len(self._events):
-            event = self._events[index]
-            name = (
-                (self.name.stringValue().strip() or event.name)
-                if index == self._event_index
-                else event.name
-            )
-            detail = EVENT_ALERT_TRIGGERS[event.trigger].condition
-            enabled = (
-                self.enabled.state() == 1
-                if index == self._event_index
-                else self.event_enabled(event.trigger)
-            )
-            state = "켜짐" if enabled else "꺼짐"
-        else:
-            position = index - len(self._events)
-            rule = (
-                self._preview
-                if self._preview is not None and position == self._index
-                else self._rules[position]
-            )
-            name, detail = rule.name, self._rule_summary(rule)
-            state = "켜짐" if rule.enabled else "꺼짐"
+        rule = (
+            self._preview
+            if self._preview is not None and index == self._index
+            else self._rules[index]
+        )
+        name, detail = rule.name, self._rule_summary(rule)
+        state = "켜짐" if rule.enabled else "꺼짐"
         cell = AlertRuleCell.alloc().initWithFrame_(frame(0, 0, RULE_LIST_WIDTH, RULE_ROW_HEIGHT))
         title = label(cell, name, 9, 21, 145, bold=True)
         cell.setTextField_(title)
@@ -271,6 +234,10 @@ class ColumnAlertEditor:
         name = next((item.name for item in self._columns if item.id == rule.column_id), None)
         if name is None:
             return "연결할 칼럼을 다시 선택하세요"
+        if rule.column_id == COLLECTION_STATE:
+            return f"수집 실패 · {rule.target}" if rule.target else "수집 실패"
+        if rule.member is not None:
+            return f"{name} · {'내 계정' if rule.member == 'self' else '지정한 사람'} 추가"
         if rule.schedule is not None:
             if rule.schedule.mode == "before_start":
                 return f"{name} · 시작 {rule.schedule.value}분 전"
@@ -286,26 +253,14 @@ class ColumnAlertEditor:
         """목록을 갱신하면서 프로그램 선택이 편집 콜백을 다시 부르지 않게 한다."""
         self._updating_list = True
         try:
-            position = self._event_index
-            existing = (
-                position < len(self._events)
-                if position is not None
-                else self._index < self.rule_count
-            )
+            existing = self._index < self.rule_count
             self._editor_title.setStringValue_("규칙 편집" if existing else "새 규칙")
-            self._new.setEnabled_(
-                self.rule_count < MAX_SOURCE_ALERT_RULES
-                or len(self._events) < len(EVENT_ALERT_OPTIONS)
-            )
+            self._new.setEnabled_(self.rule_count < MAX_SOURCE_ALERT_RULES)
             self._remove.setEnabled_(existing)
-            self._empty.setHidden_(self.listed_count > 0)
-            self.rule_list.setHidden_(self.listed_count == 0)
+            self._empty.setHidden_(self.rule_count > 0)
+            self.rule_list.setHidden_(not self.rule_count)
             self.rule_list.reloadData()
-            row = (
-                (position if position is not None else len(self._events) + self._index)
-                if existing
-                else None
-            )
+            row = self._index if existing else None
             if row is not None:
                 self.rule_list.selectRowIndexes_byExtendingSelection_(
                     NSIndexSet.indexSetWithIndex_(row), False
@@ -316,62 +271,6 @@ class ColumnAlertEditor:
                 self.rule_list.deselectAll_(None)
         finally:
             self._updating_list = False
-
-    def event_enabled(self, trigger: str) -> bool:
-        """외부 알림 설정 위에 이 시트에서 바꾼 선택을 덮어쓴다."""
-        return self._event_changes.get(trigger, self._event_states.get(trigger, False))
-
-    def update_event_states(self, states: Mapping[str, bool]) -> None:
-        """알림 설정이 읽혀도 시트에서 직접 바꾼 값은 보존한다."""
-        if states == self._event_states:
-            return
-        # 새 이벤트의 미선택 상태는 기존 구독을 다시 읽더라도 자동으로 켜지지 않는다.
-        index = self._event_index
-        selected = self._chosen_event() if index is not None and index < len(self._events) else None
-        if index is not None and selected is not None and selected != self._events[index].trigger:
-            selected = None
-        unchanged = selected is not None and (self.enabled.state() == 1) == self.event_enabled(
-            selected
-        )
-        self._event_states = dict(states)
-        if unchanged and selected is not None:
-            self.enabled.setState_(int(self.event_enabled(selected)))
-        self._refresh_list()
-
-    def _chosen_event(self) -> str | None:
-        """사용자가 고른 조건만 이벤트로 등록한다."""
-        index = self.event_condition.indexOfSelectedItem() - 1
-        return EVENT_ALERT_OPTIONS[index].trigger if 0 <= index < len(EVENT_ALERT_OPTIONS) else None
-
-    def _fill_event(self, index: int) -> None:
-        """기존 이벤트를 복원하거나 아무 조건도 선택하지 않은 편집기를 연다."""
-        self._event_index = index
-        self._index = self.rule_count
-        self._preview = None
-        rule = self._events[index] if index < len(self._events) else None
-        self.name.setStringValue_(rule.name if rule else "")
-        self._fill_delivery(rule.delivery if rule else None, existing=rule is not None)
-        position = next(
-            (
-                i
-                for i, event in enumerate(EVENT_ALERT_OPTIONS, 1)
-                if rule and event.trigger == rule.trigger
-            ),
-            0,
-        )
-        self.event_condition.selectItemAtIndex_(position)
-        self.enabled.setState_(int(rule is not None and self.event_enabled(rule.trigger)))
-        self._present_event(True)
-        self.render_condition()
-        self.status.setStringValue_("")
-        self._refresh_list(reveal_selection=True)
-
-    def _present_event(self, show: bool) -> None:
-        """조건 종류에 맞는 입력만 보여 준다."""
-        for control in self._edit_controls:
-            control.setHidden_(show)
-        self._event_label.setHidden_(not show)
-        self.event_condition.setHidden_(not show)
 
     def _popup(
         self, x: float, y: float, width: float, selector: str | None = None
@@ -420,7 +319,6 @@ class ColumnAlertEditor:
     def _fill(self, index: int) -> None:
         """저장한 값 또는 새 규칙을 정확한 원본 속성으로 복원한다."""
         self._index = index
-        self._event_index = None
         rule = self._rules[index] if index < len(self._rules) else None
         self._preview = None
         self.name.setStringValue_(rule.name if rule else "")
@@ -445,13 +343,23 @@ class ColumnAlertEditor:
                 ),
                 0,
             )
+        if rule and rule.member:
+            mode = 4 if rule.member == "self" else 5
         self.condition.selectItemAtIndex_(mode)
+        self.item_filter.selectItemAtIndex_(
+            (None, "meeting", "upcoming").index(rule.item_filter if rule else None)
+        )
         self.enabled.setState_(int(rule is not None and rule.enabled))
         self._fill_delivery(rule.delivery if rule else None, existing=rule is not None)
         self._load_target(
-            rule.schedule.value if rule and rule.schedule else rule.target if rule else None
+            rule.schedule.value
+            if rule and rule.schedule
+            else rule.member
+            if rule and rule.member not in (None, "self")
+            else rule.target
+            if rule
+            else None
         )
-        self._present_event(False)
         self.render_condition()
         self.status.setStringValue_("")
         self._refresh_list(reveal_selection=True)
@@ -492,9 +400,14 @@ class ColumnAlertEditor:
         self._schedule_choices = (
             SCHEDULE_CHOICES if column and column.kind in {"date", "time"} else ()
         )
-        self._titles(
-            self.condition, [*CHANGE_CONDITIONS, *(title for _, title in self._schedule_choices)]
-        )
+        if column and column.id == COLLECTION_STATE:
+            choices = ["조건 선택", "수집이 실패할 때", "지정한 오류가 발생할 때"]
+        elif column and column.id in self._people_columns:
+            choices = [*CHANGE_CONDITIONS, "내 계정이 추가될 때", "지정한 사람이 추가될 때"]
+        else:
+            choices = [*CHANGE_CONDITIONS, *(title for _, title in self._schedule_choices)]
+        self._titles(self.condition, choices)
+        self.item_filter.setEnabled_(column is not None and column.id != COLLECTION_STATE)
 
     def _schedule_mode(self) -> ScheduleMode | None:
         """값 변경 조건과 같은 목록에서 사용자가 선택한 예약 방식을 확인한다."""
@@ -507,7 +420,9 @@ class ColumnAlertEditor:
         """참·거짓 칼럼만 선택지를 제공하고 다른 값은 직접 입력한다."""
         column = self._chosen()
         self._visible_column = column
-        options = ("참", "거짓") if column and column.kind == "boolean" else ()
+        options: tuple[str, ...] = ("참", "거짓") if column and column.kind == "boolean" else ()
+        if column and column.id == COLLECTION_STATE:
+            options = tuple(sorted(COLLECTION_FAILURE_CODES))
         self._target_values = options
         self.target.setStringValue_(value or "")
         self.target.setPlaceholderString_(
@@ -525,6 +440,7 @@ class ColumnAlertEditor:
         """속성을 바꾸면 이전 선택형 값을 새 조건에 실수로 쓰지 않는다."""
         if self._visible_column != self._chosen():
             self._load_conditions()
+            self.item_filter.selectItemAtIndex_(0)
             self._load_target(None)
         self.input_changed()
         self.render_condition()
@@ -533,9 +449,7 @@ class ColumnAlertEditor:
         """현재 입력의 오류 상태만 지운다."""
         self.status.setStringValue_("")
         self._clear_sheet_status()
-        if self._event_index is not None:
-            self._refresh_list()
-        elif self._index < self.rule_count:
+        if self._index < self.rule_count:
             current = self._rules[self._index]
             try:
                 preview = self._read_rule(current.id)
@@ -547,13 +461,32 @@ class ColumnAlertEditor:
 
     def render_condition(self) -> None:
         """모든 변경을 알리는 조건이면 값 선택을 접는다."""
-        specific = self._event_index is None and self.condition.indexOfSelectedItem() == 2
-        mode = self._schedule_mode() if self._event_index is None else None
+        column = self._chosen()
+        person = bool(
+            column
+            and column.id in self._people_columns
+            and self.condition.indexOfSelectedItem() == 5
+        )
+        failure = bool(column and column.id == COLLECTION_STATE)
+        specific = self.condition.indexOfSelectedItem() == 2 or person
+        mode = self._schedule_mode()
         self._target_label.setStringValue_(
-            "몇 분 전" if mode == "before_start" else "알림 시각" if mode else "변경 후 값"
+            "사람 ID"
+            if person
+            else "오류 코드"
+            if failure
+            else "몇 분 전"
+            if mode == "before_start"
+            else "알림 시각"
+            if mode
+            else "변경 후 값"
         )
         self.target.setPlaceholderString_(
-            "분 입력"
+            "Notion 사용자 ID"
+            if person
+            else "오류 코드 입력"
+            if failure
+            else "분 입력"
             if mode == "before_start"
             else "HH:MM · 서울 시간"
             if mode
@@ -568,8 +501,11 @@ class ColumnAlertEditor:
         name, column = self.name.stringValue().strip(), self._chosen()
         if not name or len(name) > 80 or any(ord(char) < 32 for char in name):
             raise SourceSettingsError("알림 이름을 1~80자로 입력하세요.")
+        existing = self._rules[self._index] if self._index < self.rule_count else None
         if column is None:
-            raise SourceSettingsError("값이 바뀌면 알림을 받을 칼럼을 선택하세요.")
+            if existing and existing.column_id == UNBOUND_COLUMN and self.enabled.state() != 1:
+                return replace(existing, name=name, delivery=self._read_delivery())
+            raise SourceSettingsError("규칙에 사용할 기준 데이터를 선택하세요.")
         mode = self.condition.indexOfSelectedItem()
         if mode == 0:
             raise SourceSettingsError("알림을 보낼 조건을 선택하세요.")
@@ -596,7 +532,14 @@ class ColumnAlertEditor:
             )
         except ValueError as error:
             raise SourceSettingsError(str(error)) from error
-        return SourceAlertRule(
+        member = None
+        if column.id in self._people_columns and mode in (4, 5):
+            try:
+                member = "self" if mode == 4 else str(UUID(self.target.stringValue().strip()))
+            except ValueError as error:
+                raise SourceSettingsError("Notion 사용자 ID를 입력하세요.") from error
+        selected_filter = self.item_filter.indexOfSelectedItem()
+        proposed = SourceAlertRule(
             identifier,
             name,
             column.id,
@@ -605,13 +548,29 @@ class ColumnAlertEditor:
             self.enabled.state() == 1,
             delivery=self._read_delivery(),
             schedule=schedule,
+            member=member,
+            item_filter="meeting"
+            if selected_filter == 1
+            else "upcoming"
+            if selected_filter == 2
+            else None,
         )
+        if (
+            existing
+            and replace(
+                existing,
+                previous_kind=None,
+                name=name,
+                delivery=proposed.delivery,
+                enabled=proposed.enabled,
+            )
+            == proposed
+        ):
+            return replace(proposed, previous_kind=existing.previous_kind)
+        return proposed
 
     def _commit(self) -> None:
         """현재 행이 비어 있으면 그대로 두고 작성한 조건만 반영한다."""
-        if self._event_index is not None:
-            self._commit_event(self._event_index)
-            return
         existing = self._rules[self._index] if self._index < len(self._rules) else None
         if (
             existing is None
@@ -631,38 +590,6 @@ class ColumnAlertEditor:
         else:
             raise SourceSettingsError("소스마다 규칙을 24개까지 저장할 수 있습니다.")
 
-    def _commit_event(self, index: int) -> None:
-        """이벤트 이름과 조건이 유효하면 카테고리 사용자 규칙으로 반영한다."""
-        existing = self._events[index] if index < len(self._events) else None
-        name, trigger = self.name.stringValue().strip(), self._chosen_event()
-        if (
-            existing is None
-            and not name
-            and trigger is None
-            and not self.message.stringValue().strip()
-            and self.delivery_channel.indexOfSelectedItem() == 0
-            and self.enabled.state() != 1
-        ):
-            return
-        if not name or len(name) > 80 or any(ord(char) < 32 for char in name):
-            raise SourceSettingsError("알림 이름을 1~80자로 입력하세요.")
-        if trigger is None:
-            raise SourceSettingsError("알림을 보낼 이벤트 조건을 선택하세요.")
-        if any(i != index and event.trigger == trigger for i, event in enumerate(self._events)):
-            raise SourceSettingsError("같은 이벤트 조건이 이미 등록되어 있습니다.")
-        rule = CategoryEventAlert(trigger, name, self._read_delivery())
-        enabled = self.enabled.state() == 1
-        if (
-            existing is None
-            or existing.trigger != trigger
-            or enabled != self.event_enabled(trigger)
-        ):
-            self._event_changes[trigger] = enabled
-        if existing is None:
-            self._events.append(rule)
-        else:
-            self._events[index] = rule
-
     def _commit_before_navigation(self) -> bool:
         """현재 규칙이 완성되지 않았으면 이름과 입력을 보존한다."""
         try:
@@ -675,54 +602,30 @@ class ColumnAlertEditor:
 
     def select_rule(self, index: int) -> None:
         """선택한 사용자 규칙을 열고 이전 입력을 유지한다."""
-        if self._updating_list or not 0 <= index < self.listed_count:
-            return
-        if index < len(self._events):
-            if index != self._event_index and self._commit_before_navigation():
-                self._fill_event(index)
-            return
-        position = index - len(self._events)
         if (
-            self._event_index is not None or position != self._index
-        ) and self._commit_before_navigation():
-            self._fill(position)
+            not self._updating_list
+            and 0 <= index < self.rule_count
+            and index != self._index
+            and self._commit_before_navigation()
+        ):
+            self._fill(index)
 
-    def open_new(self, *, event: bool = False) -> None:
-        """내용을 보존하고 사용자가 선택한 종류의 규칙을 만든다."""
+    def open_new(self) -> None:
+        """새 규칙은 기준 데이터와 조건을 비운 상태에서 시작한다."""
         if self._commit_before_navigation():
-            if event:
-                self._fill_event(len(self._events))
-            else:
-                self._fill(self.rule_count)
+            self._fill(self.rule_count)
 
     def remove(self) -> None:
-        """선택한 조건의 규칙만 초안에서 지운다."""
-        index = self._event_index
-        if index is not None and index < len(self._events):
-            self._events.pop(index)
-            if self._events:
-                self._fill_event(min(index, len(self._events) - 1))
-            else:
-                self._fill(0)
-        elif index is None and self._index < self.rule_count:
+        """선택한 사용자 규칙만 삭제한다."""
+        if self._index < self.rule_count:
             self._rules.pop(self._index)
-            if self._events and not self._rules:
-                self._fill_event(0)
-            else:
-                self._fill(min(self._index, self.rule_count))
+            self._fill(min(self._index, self.rule_count))
 
     def draft(self) -> tuple[SourceAlertRule, ...]:
         """완성된 규칙과 현재 입력을 시트 적용 결과에 포함한다."""
-        previous = (tuple(self._rules), tuple(self._events))
+        previous = tuple(self._rules)
         self._commit()
-        if previous != (tuple(self._rules), tuple(self._events)):
+        if previous != tuple(self._rules):
             self._preview = None
             self._refresh_list()
         return tuple(self._rules)
-
-    def event_draft(self) -> tuple[tuple[CategoryEventAlert, ...], dict[str, bool]]:
-        """등록된 이벤트와 현재 시트에서 변경한 스위치를 반환한다."""
-        active = {item.trigger for item in self._events}
-        return tuple(self._events), {
-            key: value for key, value in self._event_changes.items() if key in active
-        }

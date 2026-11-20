@@ -7,6 +7,7 @@ from src.domain.work_dates import canonical_identity
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.field_alerts import field_alert_scopes
 from src.infrastructure.sqlite.notification_keys import (
+    failure_rule_scope,
     meeting_scope,
     notification_key,
     sync_error_scope,
@@ -51,6 +52,13 @@ def build_notifications(
                 if source.section == "qa":
                     qa_scopes.append(task)
             fields = field_alert_scopes(source, user)
+            fields.update(
+                {
+                    failure_rule_scope(source.source_id, digest, rule.id, rule.target): rule
+                    for rule in source.failure_rules
+                    if rule.enabled
+                }
+            )
             keys.extend(fields)
             source_keys.extend(keys)
             for key in keys:
@@ -59,7 +67,14 @@ def build_notifications(
                 if display.channels is not None:
                     source_channels[key] = display.channels
                 if display.notification_types is not None:
-                    source_types[key] = display.notification_types
+                    source_types[key] = (
+                        *display.notification_types,
+                        *(
+                            r.previous_kind
+                            for r in (*source.alert_rules, *source.failure_rules)
+                            if r.enabled and r.previous_kind
+                        ),
+                    )
             # 칼럼별 알림은 소스의 일반 구독 대신 해당 규칙의 종류를 사용한다.
             for scope, rule in fields.items():
                 source_types[scope] = (rule.notification_kind,)

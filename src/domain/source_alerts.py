@@ -9,6 +9,8 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 MAX_SOURCE_ALERT_RULES = 24
+COLLECTION_STATE = "$collection"
+UNBOUND_COLUMN = "$unbound"
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,10 @@ class SourceAlertRule:
     time_only: bool = False
     delivery: AlertDelivery | None = None
     schedule: AlertSchedule | None = None
+    member: str | None = None
+    item_filter: Literal["meeting", "upcoming"] | None = None
+    # 이미 예약된 이전 형식의 발송 이력에만 연결한다. 새 규칙 판정에는 사용하지 않는다.
+    previous_kind: str | None = None
 
     @property
     def comparison_kind(self) -> str:
@@ -97,6 +103,8 @@ class SourceAlertRule:
 
     def accepts(self, digest: str) -> bool:
         """대상값 미지정은 모든 변경을 대상으로 한다."""
+        if self.member is not None:
+            return digest == alert_value_key("present")
         return self.target is None or alert_value_key(self.target, self.comparison_kind) == digest
 
 

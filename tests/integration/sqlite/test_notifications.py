@@ -467,3 +467,88 @@ async def test_column_reminders_follow_source_dates_and_survive_restart(db: Data
     # 이미 지난 예약을 뒤늦게 추가하지 않는다.
     await publish("2026-12-29")
     assert await due_times() == {} and await queue.claim() == ()
+
+
+async def test_migrated_rules_compare_existing_rows_with_the_first_new_snapshot(
+    db: Database,
+) -> None:
+    """기존 소스의 역할을 실제 칼럼에 연결하고 업데이트 전후의 변경만 한 번 발송한다."""
+    from uuid import uuid4
+
+    from src.application.work_settings import category_documents, empty_work_settings
+    from src.bootstrap.environment import AppEnvironment
+    from src.bootstrap.notification_wiring import build_notifications
+    from src.domain.category_configuration import CategoryColumn, CategoryConfiguration
+    from src.domain.category_event_alerts import CategoryEventAlert
+    from src.domain.source_alerts import UNBOUND_COLUMN
+    from src.domain.source_display import SourceCategory
+    from src.infrastructure.notion.normalization import normalize_page
+    from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
+    from src.infrastructure.sqlite.work_settings import SQLiteWorkSettings
+    from tests.fixtures.notion import page
+
+    person = CategoryColumn(str(uuid4()), "검토자", "text")
+    status = CategoryColumn(str(uuid4()), "검토 단계", "text")
+    config = CategoryConfiguration(
+        columns=(person, status),
+        event_alerts=(
+            CategoryEventAlert("assigned", "새 검토자"),
+            CategoryEventAlert("status", "검토 단계 변경"),
+            CategoryEventAlert("due", "기한"),
+        ),
+    )
+    category = SourceCategory(str(uuid4()), "검토", config)
+    source = {
+        "kind": "task",
+        "dataSourceId": str(uuid4()),
+        "categoryId": category.id,
+        "properties": {"title": "t", "status": "s", "assignees": "p"},
+        "columnMappings": {
+            person.id: {"propertyId": "p", "kind": "people"},
+            status.id: {"propertyId": "s", "kind": "status"},
+        },
+    }
+    work = SQLiteWorkSettings(db)
+    work.initialize(
+        {
+            **empty_work_settings(),
+            "categoryAssignmentVersion": 1,
+            "categories": category_documents((category,)),
+            "sources": [source],
+        }
+    )
+    enable_notifications(db, "task_assigned", "task_status", "task_due")
+    stored = work.read_validated()
+    assert stored is not None
+    mapping = stored[1].active_sources[0]
+    clock = Clock()
+    stamp = clock.now().isoformat()
+    snapshots = SQLiteSnapshots(db, clock=clock, notification_user_id="me")
+    raw = page()
+    initial = normalize_page(raw, mapping, stamp)
+    await snapshots.complete_run(await snapshots.begin_run(mapping, stamp), [initial], stamp)
+    converted = work.prepare_categories()
+    assert converted is not None and work.prepare_categories() == converted
+    settings = converted[1]
+    saved = settings.categories[0].configuration
+    assert saved is not None and saved.event_alerts == ()
+    assigned, changed, unbound = (entry.rule for entry in saved.alerts)
+    assert assigned.column_id == person.id and assigned.member == "self"
+    assert changed.column_id == status.id and changed.enabled
+    assert unbound.column_id == UNBOUND_COLUMN and not unbound.enabled
+    # 이전 수집을 했던 기존 행은 상태 알림만, 새 행은 배정 알림만 발생한다.
+    mapping = settings.active_sources[0]
+    props = raw["properties"]
+    assert isinstance(props, dict)
+    props["Status"] = {"id": "s", "type": "status", "status": {"name": "검토 완료"}}
+    items = [
+        normalize_page(item, mapping, stamp, user_id="me") for item in (raw, {**raw, "id": "new"})
+    ]
+    await snapshots.complete_run(await snapshots.begin_run(mapping, stamp), items, stamp)
+    await snapshots.complete_run(await snapshots.begin_run(mapping, stamp), items, stamp)
+    queue, _ = build_notifications(
+        AppEnvironment("fixture", database=str(db.path), notion_user_id="me"), settings
+    )
+    assert queue is not None
+    records = await db.fetch("SELECT title FROM notification_jobs ORDER BY title")
+    assert records == [{"title": name} for name in sorted([assigned.name, changed.name])]

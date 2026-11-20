@@ -148,13 +148,13 @@ class SQLiteWorkSettings:
                 return None
             # 읽기 잠금을 놓은 뒤 다른 창이 저장했을 수 있어 방금 읽은 버전을 이전한다.
             current, _ = latest
-            upgrade = upgrade_work_settings(current)
+            preferences = read_preferences(connection, SOURCE_CHANNELS)
+            upgrade = upgrade_work_settings(current, preferences)
             if upgrade is None:
                 return latest
             document = upgrade.document
             settings = _write(connection, document.revision, document.payload)
             if upgrade.category_keys is not None:
-                preferences = read_preferences(connection, SOURCE_CHANNELS)
                 if upgrade.category_keys or preferences.revision > 0:
                     write_preferences(
                         connection,

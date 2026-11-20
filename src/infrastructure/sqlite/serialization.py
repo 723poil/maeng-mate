@@ -61,6 +61,15 @@ def collection_fingerprint(source: SourceMapping) -> str:
         for rule in source.alert_rules
         if rule.enabled and rule.schedule is not None
     )
+    members = sorted(
+        (rule.id, rule.column_id, rule.member)
+        for rule in source.alert_rules
+        if rule.enabled and rule.member is not None
+    )
+    if members:
+        return fingerprint(
+            (digest, sorted(columns.items()), sorted(stored), full_text, schedules, members)
+        )
     if schedules:
         return fingerprint((digest, sorted(columns.items()), sorted(stored), full_text, schedules))
     if full_text:

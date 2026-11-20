@@ -2,47 +2,55 @@
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import datetime
 
 from src.application.models import SyncRun
 from src.application.notion_links import notion_link
 from src.application.work_settings import Settings, parse_settings
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
-from src.domain.source_alerts import AlertSchedule, SourceAlertRule
-from src.domain.work_dates import canonical_identity
+from src.domain.notification_timing import calendar_alert_expiry
+from src.domain.source_alerts import AlertSchedule, SourceAlertRule, alert_value_key
+from src.domain.work_dates import SEOUL, canonical_identity
+from src.infrastructure.sqlite.decoding import decode_item
 from src.infrastructure.sqlite.notification_deliveries import logical_completed
-from src.infrastructure.sqlite.notification_keys import notification_key
+from src.infrastructure.sqlite.notification_keys import failure_rule_scope, notification_key
 from src.infrastructure.sqlite.serialization import fingerprint, source_fingerprint
+from src.infrastructure.sqlite.task_changes import notification_body
 
 
 def field_alert_scopes(source: SourceMapping, user: str | None) -> dict[str, SourceAlertRule]:
     """규칙, 원본 매핑, 본인 범위를 한 발송 범위로 묶는다."""
-    if source.has_person_scope and user is None:
-        return {}
-    identity = canonical_identity(user) if source.has_person_scope and user else None
+    identity = canonical_identity(user) if user else None
     mapping = source_fingerprint(source)
     return {
         fingerprint(
             (
                 source.source_id,
                 mapping,
-                identity,
+                identity if source.has_person_scope or rule.member == "self" else None,
                 rule.id,
                 rule.column_id,
                 rule.comparison_kind,
                 rule.target,
+                *((rule.member, rule.item_filter) if rule.member or rule.item_filter else ()),
                 *((rule.schedule.mode, rule.schedule.value) if rule.schedule else ()),
             )
         ): rule
         for rule in source.alert_rules
         if rule.enabled
+        and (
+            user is not None
+            or (rule.member != "self" and (rule.member is not None or not source.has_person_scope))
+        )
     }
 
 
 def saved_rule_bindings(
     settings: Settings,
-) -> dict[tuple[str, str], tuple[str, str, str | None, AlertSchedule | None, str]]:
+) -> dict[
+    tuple[str, str], tuple[str, str, str | None, AlertSchedule | None, str | None, str | None, str]
+]:
     """규칙 이름을 제외한 실제 조건을 저장값과 실행값 사이에서 비교한다."""
     return {
         (source.source_id, rule.notification_kind): (
@@ -50,6 +58,8 @@ def saved_rule_bindings(
             rule.comparison_kind,
             rule.target,
             rule.schedule,
+            rule.member,
+            rule.item_filter,
             source_fingerprint(source),
         )
         for source in settings.active_sources
@@ -60,6 +70,19 @@ def saved_rule_bindings(
 
 def retire_changed_rules(connection: sqlite3.Connection, before: Settings, after: Settings) -> None:
     """규칙을 끄거나 바꾸면 이전 예약과 기준을 설정 저장과 함께 무효화한다."""
+
+    def failure_scopes(settings: Settings) -> set[str]:
+        """수집 실패 조건이 달라지거나 해제되면 예전 오류의 실행권도 함께 취소한다."""
+        return {
+            failure_rule_scope(source.source_id, source_fingerprint(source), rule.id, rule.target)
+            for source in settings.active_sources
+            for rule in source.failure_rules
+        }
+
+    connection.executemany(
+        "UPDATE notification_jobs SET state='obsolete' WHERE kind='sync_error' AND source_key=? AND state IN ('pending','delivering')",
+        ((key,) for key in failure_scopes(before) - failure_scopes(after)),
+    )
     stored = saved_rule_bindings(after)
     removed = [
         key for key, binding in saved_rule_bindings(before).items() if stored.get(key) != binding
@@ -110,6 +133,76 @@ def includes_item(source: SourceMapping, item: WorkItem, user: str | None) -> bo
     return user is not None and canonical_identity(user) in map(canonical_identity, people)
 
 
+def seed_converted_baselines(
+    connection: sqlite3.Connection, run: SyncRun, user: str | None
+) -> None:
+    """전환 직후 첫 수집에서도 이전 스냅샷 이후의 실제 배정·값 변경만 알린다."""
+    source = run.source
+    if source is None or user is None:
+        return
+    scopes = {
+        key: rule
+        for key, rule in field_alert_scopes(source, user).items()
+        if rule.previous_kind and rule.schedule is None
+    }
+    if not scopes:
+        return
+    for row in connection.execute(
+        "SELECT DISTINCT scope FROM source_alert_baselines WHERE source_id=?", (run.source_id,)
+    ):
+        scopes.pop(row["scope"], None)
+    if not scopes:
+        return
+
+    user_id = canonical_identity(user)
+
+    # 빈 정상 수집 뒤 첫 신규 행도 구별하도록 빈 항목 ID를 규칙 초기화 표식으로 사용한다.
+    def rows() -> Iterator[tuple[str, str, str, str, str]]:
+        """비교에 쓰던 원래 역할 값만 읽고 사용자·매핑이 다른 이력은 섞지 않는다."""
+        for scope, rule in scopes.items():
+            yield run.source_id, scope, "", "", rule.notification_kind
+        for row in connection.execute(
+            "SELECT payload FROM item_snapshots WHERE source_id=? AND mapping_hash=?",
+            (run.source_id, run.mapping_hash),
+        ):
+            item = decode_item(json.loads(row["payload"]), source)
+            for scope, rule in scopes.items():
+                if rule.member == "self":
+                    people = (
+                        item.assignee_ids
+                        if isinstance(item, Task)
+                        else item.participant_ids
+                        if isinstance(item, CalendarEvent)
+                        else ()
+                    )
+                    value = "present" if user_id in map(canonical_identity, people) else "absent"
+                elif isinstance(item, Task) and includes_item(source, item, user_id):
+                    if rule.previous_kind in {"task_status", "qa_status"}:
+                        value = item.status or ""
+                    elif rule.previous_kind in {"task_due", "qa_due"}:
+                        value = (
+                            " ~ ".join(x for x in (item.due.start, item.due.end) if x)
+                            if item.due
+                            else ""
+                        )
+                    else:
+                        continue
+                else:
+                    continue
+                yield (
+                    run.source_id,
+                    scope,
+                    item.id,
+                    alert_value_key(value, rule.comparison_kind),
+                    rule.notification_kind,
+                )
+
+    connection.executemany(
+        "INSERT INTO source_alert_baselines(source_id,scope,item_id,value_hash,kind_key) VALUES(?,?,?,?,?)",
+        rows(),
+    )
+
+
 def observed_baselines(connection: sqlite3.Connection, run: SyncRun, scope: str) -> dict[str, str]:
     """스테이징의 관측 ID로 한 규칙의 이전 값만 읽으며 재등장한 항목도 포함한다."""
     rows = connection.execute(
@@ -136,11 +229,12 @@ def record_field_alerts(
     baseline_counts = {
         row["scope"]: row["total"]
         for row in connection.execute(
-            "SELECT scope,COUNT(*) AS total FROM source_alert_baselines WHERE source_id=? GROUP BY scope",
+            "SELECT scope,COUNT(NULLIF(item_id,'')) AS total FROM source_alert_baselines WHERE source_id=? GROUP BY scope",
             (source.source_id,),
         )
     }
-    now = datetime.fromisoformat(completed_at).timestamp()
+    observed = datetime.fromisoformat(completed_at)
+    now = observed.timestamp()
     if not scopes and not baseline_counts:
         return
     removed_scopes = baseline_counts.keys() - scopes.keys()
@@ -151,7 +245,28 @@ def record_field_alerts(
         # 기존 기준이 모두 이번 수집에 있으면 누락된 항목의 예약을 찾을 필요가 없다.
         if len(previous) < baseline_counts.get(scope, 0):
             needs_cleanup = True
-        for item in eligible:
+        # 빈 목록을 처음 수집한 뒤 새로 배정된 행도 알릴 수 있도록 규칙 초기화를 기록한다.
+        initialized = scope in baseline_counts
+        if rule.member is not None and not initialized:
+            connection.execute(
+                "INSERT INTO source_alert_baselines(source_id,scope,item_id,value_hash,kind_key) VALUES(?,?,'','',?)",
+                (source.source_id, scope, rule.notification_kind),
+            )
+        for item in items if rule.member is not None else eligible:
+            if isinstance(item, CalendarEvent) and item.cancelled:
+                continue
+            if rule.item_filter == "meeting" and (
+                not isinstance(item, CalendarEvent) or item.event_type != "meeting"
+            ):
+                continue
+            expires = now + 86400
+            if rule.item_filter == "upcoming":
+                if (
+                    not isinstance(item, CalendarEvent)
+                    or (limit := calendar_alert_expiry(item.period, observed)) is None
+                ):
+                    continue
+                expires = limit
             digest = item.alert_values.get(rule.id)
             if digest is None:
                 continue
@@ -167,7 +282,14 @@ def record_field_alerts(
             if rule.schedule is not None:
                 # 처음 본 미래 시각과 누락 후 다시 나타난 미래 시각도 한 번만 예약한다.
                 due = item.alert_due_at.get(rule.id)
-                if due is not None and due.timestamp() >= now:
+                if due is not None and (
+                    due.timestamp() >= now
+                    or (
+                        rule.item_filter == "meeting"
+                        and rule.schedule.mode == "before_start"
+                        and rule.schedule.expires_at(due) > observed
+                    )
+                ):
                     enqueue_field_alert(
                         connection,
                         run,
@@ -179,8 +301,12 @@ def record_field_alerts(
                         rule.schedule.expires_at(due).timestamp(),
                         scheduled=True,
                     )
-            elif before is not None and before != digest and rule.accepts(digest):
-                enqueue_field_alert(connection, run, item, scope, rule, digest, now, now + 86400)
+            elif (
+                before != digest
+                and (before is not None or (rule.member is not None and initialized))
+                and rule.accepts(digest)
+            ):
+                enqueue_field_alert(connection, run, item, scope, rule, digest, now, expires)
         # 관측했지만 사람 범위에서 빠지거나 비교값이 사라진 항목만 기준에서 제거한다.
         for item_id in previous:
             invalidate_field_alert(connection, source.source_id, scope, item_id)
@@ -245,6 +371,18 @@ def enqueue_field_alert(
     """수집 세대별 알림과 최신 값 확인에 필요한 근거를 저장한다."""
     job = notification_key(f"source-change:{scope}:{item.id}:{run.id}")
     title = item.title if not isinstance(item, Leave) else "항목 값 변경"
+    body = title[:160]
+    if rule.previous_kind and rule.delivery is None:
+        # 옛 규칙에 직접 지정한 문구가 없으면 이 변경의 설명과 원래 시각 표시를 이어 쓴다.
+        if isinstance(item, Task) and rule.previous_kind.startswith(("task_", "qa_")):
+            change = connection.execute(
+                "SELECT description FROM task_changes WHERE run_id=? AND item_id=? AND source_id=?",
+                (run.id, item.id, run.source_id),
+            ).fetchone()
+            if change is not None:
+                body = notification_body(title, change["description"])
+        elif rule.previous_kind == "meeting" and isinstance(item, CalendarEvent) and item.period:
+            body = f"{datetime.fromisoformat(item.period.start).astimezone(SEOUL):%H:%M} · {body}"
     logical = job
     if scheduled:
         logical = notification_key(f"scheduled:{scope}:{item.id}:{digest}")
@@ -257,13 +395,32 @@ def enqueue_field_alert(
         if current is not None:
             url = notion_link(item.url)
             if current["state"] == "pending" and (
-                current["body"] != title[:160] or current["notion_url"] != url
+                current["body"] != body or current["notion_url"] != url
             ):
                 connection.execute(
                     "UPDATE notification_jobs SET body=?,notion_url=? WHERE id=?",
-                    (title[:160], url, current["id"]),
+                    (body, url, current["id"]),
                 )
             return
+        if (
+            rule.previous_kind == "meeting"
+            and rule.schedule
+            and rule.schedule.mode == "before_start"
+        ):
+            # 같은 회의의 옛 실행권이나 접수 이력이 있으면 새 UUID로 중복 발송하지 않는다.
+            start = due + int(rule.schedule.value) * 60
+            prior = connection.execute(
+                """SELECT logical_key,state FROM notification_jobs WHERE kind='meeting'
+                AND meeting_source_id=? AND meeting_item_id=? AND meeting_mapping_hash=? AND meeting_start_at=?
+                AND state IN ('pending','delivering','requested','unknown')""",
+                (run.source_id, item.id, run.mapping_hash, start),
+            ).fetchall()
+            if any(
+                row["state"] in ("pending", "delivering")
+                or logical_completed(connection, row["logical_key"])
+                for row in prior
+            ):
+                return
         if logical_completed(connection, logical):
             return
     connection.execute(
@@ -273,7 +430,7 @@ def enqueue_field_alert(
             job,
             logical,
             rule.name,
-            title[:160],
+            body,
             notion_link(item.url),
             due,
             expires,
@@ -291,7 +448,7 @@ def enqueue_field_alert(
             digest,
             run.mapping_hash,
             rule.notification_kind,
-            int(run.source is not None and run.source.has_person_scope),
+            int(run.source is not None and run.source.has_person_scope and rule.member is None),
         ),
     )
 

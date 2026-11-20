@@ -13,12 +13,16 @@ from src.domain.models import SourceMapping, WorkItem
 from src.domain.retry import RetryPolicy
 from src.domain.task_changes import TaskChangePolicy
 from src.infrastructure.sqlite.connection import Database
-from src.infrastructure.sqlite.field_alerts import record_field_alerts
+from src.infrastructure.sqlite.field_alerts import record_field_alerts, seed_converted_baselines
 from src.infrastructure.sqlite.meeting_reminders import enqueue_meeting_reminders
 from src.infrastructure.sqlite.notifications import enqueue_calendar
 from src.infrastructure.sqlite.schedules import advance_schedule, fail_schedule
 from src.infrastructure.sqlite.serialization import source_fingerprint, staging_rows
-from src.infrastructure.sqlite.sync_alerts import enqueue_sync_failure, resolve_sync_failure
+from src.infrastructure.sqlite.sync_alerts import (
+    enqueue_sync_failure,
+    resolve_sync_failure,
+    saved_failure_rules,
+)
 from src.infrastructure.sqlite.task_changes import record_task_changes
 
 
@@ -154,6 +158,8 @@ class SQLiteSnapshots:
                 previous_mapping,
                 self._task_change_policy,
             )
+            if previous_mapping == run.mapping_hash:
+                seed_converted_baselines(connection, run, self._notification_user_id)
             connection.executemany(
                 "INSERT INTO sync_staging(run_id,item_id,payload,semantic_hash) VALUES(?,?,?,?)",
                 staging_rows(run, items),
@@ -212,6 +218,11 @@ class SQLiteSnapshots:
             )
             # 종료·업데이트 취소는 실행권만 정리하고 장애 배너를 만들지 않는다.
             if code != "cancelled":
+                for rule in saved_failure_rules(connection, run):
+                    if rule.enabled and rule.target in (None, code):
+                        enqueue_sync_failure(
+                            connection, run, finished, code, retrying=retrying, rule=rule
+                        )
                 if run.source is not None and run.source.allows_event_alert("sync_error"):
                     enqueue_sync_failure(connection, run, finished, code, retrying=retrying)
             connection.execute(

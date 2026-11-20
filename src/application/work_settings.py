@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from uuid import UUID
 
 from src.application.category_column_types import LEGACY_CATEGORY_TYPES, accepts_column_type
+from src.application.errors import COLLECTION_FAILURE_CODES
 from src.application.notion_links import notion_link
 from src.domain.category_configuration import (
     CATEGORY_COLUMN_TYPES,
@@ -24,7 +25,9 @@ from src.domain.display_columns import DISPLAY_COLUMN_TYPES, MAX_DISPLAY_COLUMNS
 from src.domain.main_list import FIELD_KINDS, ListFilter, ListSort, MainListRules
 from src.domain.models import EventType, SourceMapping
 from src.domain.source_alerts import (
+    COLLECTION_STATE,
     MAX_SOURCE_ALERT_RULES,
+    UNBOUND_COLUMN,
     AlertDelivery,
     AlertSchedule,
     SourceAlertRule,
@@ -369,7 +372,13 @@ def parse_alert_rules(
         raise ValueError
     rules = []
     for item in raw:
-        if not isinstance(item, dict) or set(item) - {"delivery", "schedule"} != {
+        if not isinstance(item, dict) or set(item) - {
+            "delivery",
+            "schedule",
+            "member",
+            "itemFilter",
+            "previousKind",
+        } != {
             "id",
             "name",
             "columnId",
@@ -388,6 +397,23 @@ def parse_alert_rules(
             or type(enabled) is not bool
         ):
             raise ValueError
+        prior = item.get("previousKind")
+        if prior is not None and (not isinstance(prior, str) or prior not in EVENT_ALERT_KINDS):
+            raise ValueError
+        member = item.get("member")
+        if member is not None:
+            if (
+                not isinstance(member, str)
+                or kind not in {"text", "people"}
+                or target is not None
+                or "schedule" in item
+            ):
+                raise ValueError
+            if member != "self":
+                member = str(UUID(member))
+        item_filter = item.get("itemFilter")
+        if item_filter not in (None, "meeting", "upcoming"):
+            raise ValueError
         value = None if target is None else " ".join(target.split())
         rules.append(
             SourceAlertRule(
@@ -398,6 +424,9 @@ def parse_alert_rules(
                 value,
                 enabled,
                 delivery=parse_alert_delivery(item["delivery"]) if "delivery" in item else None,
+                member=member,
+                item_filter=item_filter,
+                previous_kind=prior,
                 schedule=parse_alert_schedule(item["schedule"], kind, target)
                 if "schedule" in item
                 else None,
@@ -419,6 +448,9 @@ def alert_rules_payload(rules: tuple[SourceAlertRule, ...]) -> list[dict[str, ob
             "target": rule.target,
             "enabled": rule.enabled,
             **alert_delivery_payload(rule.delivery),
+            **({"previousKind": rule.previous_kind} if rule.previous_kind else {}),
+            **({"member": rule.member} if rule.member is not None else {}),
+            **({"itemFilter": rule.item_filter} if rule.item_filter is not None else {}),
             **(
                 {"schedule": {"mode": rule.schedule.mode, "value": rule.schedule.value}}
                 if rule.schedule
@@ -588,9 +620,21 @@ def parse_category_alerts(
     for item in raw:
         if not isinstance(item, dict) or set(item) != {"rule", "sources"}:
             raise ValueError
-        rule = parse_alert_rules([item["rule"]], (*CATEGORY_COLUMN_TYPES, *DISPLAY_COLUMN_TYPES))[0]
+        rule = parse_alert_rules(
+            [item["rule"]], (*CATEGORY_COLUMN_TYPES, *DISPLAY_COLUMN_TYPES, "collection")
+        )[0]
         kind = LEGACY_CATEGORY_TYPES.get(rule.column_kind, rule.column_kind)
-        if rule.column_id not in columns or columns[rule.column_id].kind != kind:
+        if rule.column_id == COLLECTION_STATE:
+            if (
+                kind != "collection"
+                or rule.item_filter is not None
+                or (rule.target is not None and rule.target not in COLLECTION_FAILURE_CODES)
+            ):
+                raise ValueError
+        elif rule.column_id == UNBOUND_COLUMN:
+            if rule.enabled or kind not in CATEGORY_COLUMN_TYPES:
+                raise ValueError
+        elif rule.column_id not in columns or columns[rule.column_id].kind != kind:
             raise ValueError
         rules.append(
             CategoryAlert(replace(rule, column_kind=kind), optional_strings(item["sources"]))
@@ -922,6 +966,7 @@ def resolve_category_mapping(
         )
         for entry in config.alerts
         if (matched := columns.get(entry.rule.column_id)) is not None
+        and (entry.rule.member is None or matched.kind == "people")
         and (entry.sources is None or source.source_id in entry.sources)
     )
     required = {
@@ -943,6 +988,13 @@ def resolve_category_mapping(
         calendar_column=columns.get(config.calendar_date) if config.calendar_date else None,
         calendar_date_override=config.calendar_date is not None,
         alert_rules=alerts,
+        failure_rules=tuple(
+            entry.rule
+            for entry in config.alerts
+            if entry.rule.column_id == COLLECTION_STATE
+            and entry.rule.enabled
+            and (entry.sources is None or source.source_id in entry.sources)
+        ),
         event_alert_triggers=frozenset(rule.trigger for rule in config.event_alerts or ()),
     )
 
@@ -1015,7 +1067,11 @@ def read_display(
         source.flexible,
         (
             *events,
-            *((rule.notification_kind, rule.name) for rule in source.alert_rules if rule.enabled),
+            *(
+                (rule.notification_kind, rule.name)
+                for rule in (*source.alert_rules, *source.failure_rules)
+                if rule.enabled
+            ),
         ),
     )
 

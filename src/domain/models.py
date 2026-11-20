@@ -31,6 +31,7 @@ class SourceMapping:
     stored_columns: tuple[DisplayColumn, ...] = ()
     calendar_column: DisplayColumn | None = None
     calendar_date_override: bool = False
+    failure_rules: tuple[SourceAlertRule, ...] = ()
     event_alert_triggers: frozenset[str] = frozenset()
 
     @property

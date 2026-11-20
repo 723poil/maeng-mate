@@ -80,6 +80,10 @@ class CategorySheetActions(NSObject):
         """빈 칼럼 입력을 표시한다."""
         self.owner.add_column()
 
+    def classification_(self, sender: object) -> None:
+        """선택한 기준이 실제로 사용하는 규칙 목록을 표시한다."""
+        self.owner.show_classification()
+
     def addClassification_(self, sender: object) -> None:
         """빈 분류 규칙 행을 추가한다."""
         self.owner.edit_classification(None)
@@ -127,6 +131,7 @@ class CategoryConfigurationSheet:
         apply: Callable[[SourceCategory], None],
         closed: Callable[[], None],
         *,
+        source_rules: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (),
         people_columns: frozenset[str] = frozenset(),
         sources: tuple[AlertSource, ...] = (),
         client: SourceSettingsClient | None = None,
@@ -178,7 +183,10 @@ class CategoryConfigurationSheet:
         columns, main_list, calendar, alerts, classification = self._pages
         label(classification, "기준 칼럼", 10, 385, 110)
         self._classification = popup(classification, 125, 380, 501)
-        label(
+        self._source_rules = source_rules
+        self._classification.setTarget_(self._actions)
+        self._classification.setAction_("classification:")
+        self._classification_help = label(
             classification,
             "텍스트 칼럼을 고르고, 같은 분류로 묶을 원본 값마다 이름을 입력하세요.",
             10,
@@ -191,8 +199,22 @@ class CategoryConfigurationSheet:
         self._classification_rows: list[tuple[NSTextField, NSTextField]] = []
         label(classification, "원본 값", 10, 329, 235)
         label(classification, "분류 이름", 273, 329, 200)
-        button(classification, "+ 규칙 추가", 510, 325, 116, self._actions, "addClassification:")
+        self._add_classification = button(
+            classification, "+ 규칙 추가", 510, 325, 116, self._actions, "addClassification:"
+        )
         self._classification_list = scroll(classification, 0, 0, 642, 310)
+        self._source_rule_list = scroll(classification, 0, 0, 642, 310)
+        rows: list[tuple[str, str]] = []
+        for source, column, rules in source_rules:
+            rows.extend(((f"{source} · {column}", ""), *rules, ("그 밖의 값", "기타")))
+        height = max(310, 30 * len(rows) + 8)
+        body = NSView.alloc().initWithFrame_(frame(0, 0, 622, height))
+        for index, (key, value) in enumerate(rows):
+            y = height - 30 * (index + 1)
+            label(body, key, 10, y, 245 if value else 590, bold=not value).setToolTip_(key)
+            label(body, value, 273, y, 245)
+        self._source_rule_list.setDocumentView_(body)
+        body.scrollPoint_((0, max(0, height - 310)))
         self.render_classification(self._original.classification_values)
         self._main_editor = MainListEditor(
             main_list, self._original.columns, self._original.main_list, self.clear_status
@@ -471,6 +493,18 @@ class CategoryConfigurationSheet:
         self._classification_list.setDocumentView_(body)
         body.scrollPoint_((0, 0 if bottom else max(0, height - 310)))
 
+    def show_classification(self) -> None:
+        """카테고리 기준이 비어 있으면 연결한 소스의 기존 분류를 보여 준다."""
+        inherited = bool(self._source_rules) and self._classification.indexOfSelectedItem() == 0
+        self._source_rule_list.setHidden_(not inherited)
+        self._classification_list.setHidden_(inherited)
+        self._add_classification.setHidden_(inherited)
+        self._classification_help.setStringValue_(
+            "현재 소스별 일정 유형을 사용합니다. 저장 칼럼을 선택하면 공통 분류를 편집할 수 있습니다."
+            if inherited
+            else "텍스트 칼럼을 고르고, 같은 분류로 묶을 원본 값마다 이름을 입력하세요."
+        )
+
     def edit_classification(self, remove: int | None) -> None:
         """작성 중인 값을 보존하면서 행 하나를 추가하거나 지운다."""
         rules = [(a.stringValue(), b.stringValue()) for a, b in self._classification_rows]
@@ -520,12 +554,17 @@ class CategoryConfigurationSheet:
             candidates = [column for column in self._columns if column.kind == "text"]
             self._classification_ids = [column.id for column in candidates]
             set_entries(
-                self._classification, ["사용 안 함", *(column.name for column in candidates)]
+                self._classification,
+                [
+                    "소스별 일정 유형 사용" if self._source_rules else "사용 안 함",
+                    *(column.name for column in candidates),
+                ],
             )
             if self._classification_id in self._classification_ids:
                 self._classification.selectItemAtIndex_(
                     1 + self._classification_ids.index(self._classification_id)
                 )
+            self.show_classification()
         if index == 1:
             self._main_editor.update_columns(tuple(self._columns))
         elif index == 2:
@@ -573,7 +612,7 @@ class CategoryConfigurationSheet:
             self.select(1)
             raise SourceSettingsError(str(error)) from error
         classification_values: dict[str, str] = {}
-        if self._classification_rows and not self._classification_id:
+        if self._classification_rows and not self._classification_id and not self._source_rules:
             raise SourceSettingsError("분류 규칙에 사용할 기준 칼럼을 고르거나 규칙을 삭제하세요.")
         if self._classification_id:
             for origin, target in self._classification_rows:

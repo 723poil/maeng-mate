@@ -260,6 +260,7 @@ class CategorySettingsForm:
         state = self.editor.state
         people: set[str] = set()
         sources: list[AlertSource] = []
+        source_rules: list[tuple[str, str, tuple[tuple[str, str], ...]]] = []
         for raw in state.settings.sources if state else ():
             if raw.get("categoryId") == current.id:
                 mapping = parse_source(raw)
@@ -280,6 +281,19 @@ class CategorySettingsForm:
                         },
                     )
                 )
+                if mapping.kind == "meeting" and "category" in mapping.properties:
+                    source = sources[-1]
+                    prop = unquote(mapping.properties["category"])
+                    names = {"meeting": "회의", "leave": "휴가", "other": "기타"}
+                    source_rules.append(
+                        (
+                            source.name,
+                            source.property_names.get(prop) or "일정 유형",
+                            tuple(
+                                (key, names[value]) for key, value in mapping.event_types.items()
+                            ),
+                        )
+                    )
                 roles = raw.get("properties")
                 person_properties = (
                     {
@@ -303,6 +317,7 @@ class CategorySettingsForm:
             closed,
             people_columns=frozenset(people),
             sources=tuple(sources),
+            source_rules=tuple(source_rules),
             client=self._client,
             global_channels=preferences.channels if preferences is not None else (),
         )

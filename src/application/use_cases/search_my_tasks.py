@@ -30,6 +30,13 @@ def personal_task_context(context: TodayContext, search: TaskSearch | None = Non
             search is None
             or (
                 (search.section == "all" or source.section == search.section)
+                and (
+                    search.category_id is None
+                    or (
+                        (category := context.source_categories.get(source.source_id)) is not None
+                        and category.id == search.category_id
+                    )
+                )
                 and (search.source_id is None or search.source_id == source.source_id)
             )
         )
@@ -68,6 +75,7 @@ async def list_my_task_statuses(
                 **batch.metadata,
                 "name": selected.source_names.get(source.source_id),
                 "section": source.section,
+                **selected.category_fields(source),
                 "tracksStatus": tracks_status,
                 "statuses": list(names),
                 "hasUnspecifiedStatus": has_unset,

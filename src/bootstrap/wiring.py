@@ -203,6 +203,7 @@ def build_today_query(
         sources,
         settings.completed_statuses if desktop else {},
         environment.snapshot_max_age_seconds,
+        source_categories=settings.source_categories,
         source_pages=settings.source_pages,
         desktop_areas={item.id: item.sort for item in settings.display if item.category is not None}
         if desktop
@@ -260,6 +261,7 @@ def build_task_queries(
         environment.notion_user_id,
         sources,
         max_age_seconds=environment.snapshot_max_age_seconds,
+        source_categories=settings.source_categories,
         source_names={
             item.id: item.name or item.title
             for item in settings.display

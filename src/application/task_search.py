@@ -17,7 +17,7 @@ class TaskSearchInputError(ValueError):
     def __init__(self) -> None:
         """허용 형식만 짧게 안내한다."""
         super().__init__(
-            "검색어·표·원본 상태·마감 날짜(YYYY-MM-DD)·개수·offset을 확인하세요. status와 statuses 중 하나만 지정하세요."
+            "검색어·카테고리·표·원본 상태·마감 날짜(YYYY-MM-DD)·개수·offset을 확인하세요. status와 statuses 중 하나만 지정하세요."
         )
 
 
@@ -69,6 +69,7 @@ class TaskSearch:
     limit: int
     offset: int
     source_id: str | None = None
+    category_id: str | None = None
 
     @classmethod
     def parse(cls, payload: object) -> "TaskSearch":
@@ -79,6 +80,7 @@ class TaskSearch:
             "statuses",
             "include_unset",
             "source_id",
+            "category_id",
             "due_from",
             "due_to",
             "section",
@@ -93,6 +95,11 @@ class TaskSearch:
         if type(include_unset) is not bool or (
             source_id is not None
             and (not isinstance(source_id, str) or not source_id.strip() or len(source_id) > 256)
+        ):
+            raise TaskSearchInputError()
+        category_id = payload.get("category_id")
+        if category_id is not None and (
+            not isinstance(category_id, str) or not category_id.strip() or len(category_id) > 256
         ):
             raise TaskSearchInputError()
         section = payload.get("section", "all")
@@ -117,6 +124,7 @@ class TaskSearch:
             limit,
             offset,
             canonical_identity(source_id) if source_id is not None else None,
+            canonical_identity(category_id) if category_id is not None else None,
         )
 
     def payload(self) -> dict[str, object]:
@@ -128,6 +136,7 @@ class TaskSearch:
             else None,
             "include_unset": self.criteria.include_unset,
             "source_id": self.source_id,
+            **({"category_id": self.category_id} if self.category_id is not None else {}),
             "due_from": self.criteria.due_from.isoformat() if self.criteria.due_from else None,
             "due_to": self.criteria.due_to.isoformat() if self.criteria.due_to else None,
             "section": self.section,

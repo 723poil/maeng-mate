@@ -200,7 +200,6 @@ class SourceSettingsForm:
             self._advanced, 102, 37, 170, ["정렬 없음", "날짜순", "제목순"], "changed:"
         )
         self.rounds = self._check("부모 항목 안의 하위 표", 310, 36, 215, "structure:")
-        self.qa = self._check("QA로 조회", 12, 7, 160, "changed:")
         self.parent_display = self._check("부모 제목 표시", 12, 139, 185, "changed:")
         self.parent_sort = self._popup(
             self._advanced, 202, 137, 336, ["부모 정렬 없음"], "changed:"
@@ -280,7 +279,7 @@ class SourceSettingsForm:
 
     def _section(self) -> str:
         """기존 QA 필터는 같은 목록 소스에서 계속 사용한다."""
-        return "qa" if self._mode() == "task" and self.qa.state() == 1 else "tasks"
+        return "qa" if self._mode() == "task" and self._original.get("section") == "qa" else "tasks"
 
     def _fill(self, raw: dict[str, object]) -> None:
         """저장된 건 또는 새 소스의 기본 입력으로 바꾼다."""
@@ -307,7 +306,6 @@ class SourceSettingsForm:
         set_titles(self.mode, titles)
         self.mode.selectItemAtIndex_(1 if mode == "meeting" else 2 if mode == "leave" else 0)
         self.rounds.setState_(int("parentTitleProperty" in raw or "roundTitleProperty" in raw))
-        self.qa.setState_(int(raw.get("section") == "qa"))
         self._parent_orders = []
         sort = raw.get("sort", "default")
         self.sort.selectItemAtIndex_(
@@ -605,7 +603,6 @@ class SourceSettingsForm:
         nested = self._uses_rounds()
         self.parent_display.setHidden_(not nested)
         self.parent_sort.setHidden_(not nested)
-        self.qa.setHidden_(self._mode() != "task")
         if not nested:
             return
         saved = self._original if self._uses_saved_layout() else {}
@@ -972,8 +969,6 @@ class SourceSettingsForm:
                     if (column := self._chosen(key)) is not None
                 },
             }
-            if section == "qa":
-                value["section"] = section
             if self._round_title is not None:
                 value["parentTitleProperty"] = schema.round_titles[
                     self._round_title.indexOfSelectedItem()
@@ -1077,7 +1072,6 @@ class SourceSettingsForm:
             self.url,
             self.mode,
             self.rounds,
-            self.qa,
             self.parent_display,
             self.parent_sort,
             self.sort,

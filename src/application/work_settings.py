@@ -70,9 +70,14 @@ class Settings:
     categories: tuple[SourceCategory, ...] = ()
 
     @property
+    def source_categories(self) -> dict[str, SourceCategory]:
+        """소스별 현재 카테고리를 이름 변경과 독립된 ID로 연결한다."""
+        return {item.id: item.category for item in self.display if item.category is not None}
+
+    @property
     def active_sources(self) -> tuple[SourceMapping, ...]:
         """등록 카테고리에 연결된 소스만 수집과 조회에 사용한다."""
-        active = {item.id for item in self.display if item.category is not None}
+        active = self.source_categories
         return tuple(source for source in self.sources if source.source_id in active)
 
 

@@ -59,7 +59,7 @@ def create_server(reader: McpQueryReader) -> FastMCP:
 
     @server.tool(annotations=read_only)
     async def list_my_task_statuses() -> dict[str, object]:
-        """연결된 업무·QA 소스별 sourceId·name·section과 원본 statuses를 읽는다. statusOptionsBasis는 스키마(schema), 본인 행에서 관찰한 값(observed), 자료 없음(unavailable)을 구별한다. tracksStatus와 hasUnspecifiedStatus, 수집 상태도 확인한다. 상태 검색 전에 소스별로 사용할 이름을 고른다."""
+        """본인이 조회할 수 있는 목록 소스별 sourceId·name, 사용자 카테고리 categoryId·categoryName과 원본 statuses를 읽는다. statusOptionsBasis는 스키마(schema), 본인 행에서 관찰한 값(observed), 자료 없음(unavailable)을 구별한다. tracksStatus와 hasUnspecifiedStatus, 수집 상태도 확인한다. 상태 검색 전에 소스별로 사용할 이름을 고른다."""
         try:
             return await reader.read_task_statuses()
         except StatusReadError:
@@ -79,14 +79,16 @@ def create_server(reader: McpQueryReader) -> FastMCP:
         source_id: str | None = None,
         statuses: list[str] | None = None,
         include_unset: bool = False,
+        category_id: str | None = None,
     ) -> dict[str, object]:
-        """현재 본인 업무·QA를 제목 부분검색·소스·상태·마감 범위로 찾는다. 기본은 모든 상태다. 상태 요청은 list_my_task_statuses로 이름을 확인하고 source_id와 원본 statuses를 함께 지정한다. statuses 중 하나라도 정확히 일치하면 포함하며 status는 한 이름용이다. include_unset은 미지정 행을 포함하고 단독 사용 시 미지정만 찾는다. section은 tasks·qa·all, 날짜는 서울 YYYY-MM-DD 양끝 포함이다. nextOffset으로 이어 읽고 stale·warnings를 확인한다."""
+        """본인의 목록 항목을 사용자 카테고리·제목·소스·상태·마감 범위로 찾는다. 기본은 모든 상태다. 상태 요청은 list_my_task_statuses로 이름을 확인하고 source_id와 원본 statuses를 함께 지정한다. statuses 중 하나라도 정확히 일치하면 포함하며 status는 한 이름용이다. include_unset은 미지정 행을 포함하고 단독 사용 시 미지정만 찾는다. 카테고리 검색에는 목록에서 확인한 categoryId를 category_id로 전달한다. section은 기존 호출용이다. 날짜는 서울 YYYY-MM-DD 양끝 포함이다. nextOffset으로 이어 읽고 stale·warnings를 확인한다."""
         try:
             search = TaskSearch.parse(
                 {
                     "query": query,
                     "status": status,
                     "source_id": source_id,
+                    "category_id": category_id,
                     "statuses": statuses,
                     "include_unset": include_unset,
                     "due_from": due_from,

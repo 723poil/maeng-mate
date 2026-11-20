@@ -35,6 +35,7 @@ def task_view(
         "status": item.status,
         **({"tracksStatus": False} if not tracks_status else {}),
         "section": source.section,
+        **context.category_fields(source),
         "qaRound": item.qa_round,
         **({"parentLabel": item.parent_label} if item.parent_label is not None else {}),
         "url": item.url,

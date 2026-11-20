@@ -37,6 +37,10 @@ class LocalStatusReader:
         """제목 검색어가 요청 URL 로그에 남지 않도록 본문으로 전달한다."""
         return await self._read("/v1/tasks/search", payload=search.payload())
 
+    async def read_task_statuses(self) -> dict[str, object]:
+        """검색 조건을 고르기 위해 인증된 개인 상태 목록만 읽는다."""
+        return await self._read("/v1/tasks/statuses")
+
     async def _read(
         self,
         path: str,

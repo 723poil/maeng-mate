@@ -5,7 +5,6 @@ from datetime import date, datetime
 from unicodedata import normalize
 
 from src.domain.models import Task
-from src.domain.task_display import TaskDisplayGroup, display_group
 from src.domain.work_dates import SEOUL
 
 
@@ -14,11 +13,12 @@ class TaskCriteria:
     """외부 저장소와 무관하게 검색 조건을 함께 적용한다."""
 
     query: str | None
-    status: str | None
+    statuses: frozenset[str] | None
     due_from: date | None
     due_to: date | None
+    include_unset: bool = False
 
-    def matches(self, task: Task, *, completed: bool) -> bool:
+    def matches(self, task: Task) -> bool:
         """기한 범위는 구간의 마지막 날짜를 사용하며 양 끝 날짜를 포함한다."""
         if (
             self.query
@@ -26,13 +26,12 @@ class TaskCriteria:
             not in normalize("NFC", task.title).casefold()
         ):
             return False
-        if self.status:
-            requested = display_group(self.status)
-            actual = TaskDisplayGroup.COMPLETED if completed else display_group(task.status)
-            if requested == TaskDisplayGroup.OTHER:
-                if self.status.casefold() != (task.status or "").casefold():
+        # 상태 이름은 표마다 의미가 달라 공백·대소문자와 언어를 그대로 비교한다.
+        if self.statuses is not None or self.include_unset:
+            if task.status is None:
+                if not self.include_unset:
                     return False
-            elif requested != actual:
+            elif self.statuses is None or task.status not in self.statuses:
                 return False
         if self.due_from is None and self.due_to is None:
             return True

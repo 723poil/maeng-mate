@@ -14,11 +14,11 @@ from src.application.periodic import IntervalUpdate
 from src.application.ports import PeriodicStatusQuery, SnapshotReader, TodayQuery
 from src.application.runtime_settings_service import RuntimeSettingsService
 from src.application.source_settings import SourceSettingsService
-from src.application.task_search import TaskSearch, TaskSearchQuery
+from src.application.task_search import TaskSearch, TaskSearchQuery, TaskStatusesQuery
 from src.application.today_models import MainListCard, TodayContext
 from src.application.use_cases.get_my_today import get_my_today
 from src.application.use_cases.get_system_status import get_system_status
-from src.application.use_cases.search_my_tasks import search_my_tasks
+from src.application.use_cases.search_my_tasks import list_my_task_statuses, search_my_tasks
 from src.application.work_rules_settings import WorkRulesService
 from src.application.work_settings import Settings
 from src.bootstrap.calendar_wiring import build_calendar_service
@@ -120,6 +120,7 @@ def build_api(
         if environment.database and settings
         else None
     )
+    task_search, task_statuses = build_task_queries(environment, settings, reader=work_reader)
     return create_app(
         environment.token,
         query_status,
@@ -136,7 +137,8 @@ def build_api(
             environment, settings, reader=work_reader, page_links=page_links, desktop=True
         ),
         page_links_service=page_links,
-        query_tasks=build_task_search_query(environment, settings, reader=work_reader),
+        query_tasks=task_search,
+        query_task_statuses=task_statuses,
         query_periodic=periodic_status,
         query_desktop_periodic=desktop_periodic_status,
         update_interval=update_interval,
@@ -199,10 +201,9 @@ def build_today_query(
     context = TodayContext(
         user or "",
         sources,
-        settings.completed_statuses,
+        settings.completed_statuses if desktop else {},
         environment.snapshot_max_age_seconds,
         source_pages=settings.source_pages,
-        qa_display_policy=settings.qa_display_policy,
         desktop_areas={item.id: item.sort for item in settings.display if item.category is not None}
         if desktop
         else {},
@@ -237,30 +238,33 @@ def build_today_query(
     return query
 
 
-def build_task_search_query(
+def build_task_queries(
     environment: AppEnvironment,
     settings: Settings | None,
     *,
     reader: SnapshotReader | None = None,
-) -> TaskSearchQuery | None:
+) -> tuple[TaskSearchQuery | None, TaskStatusesQuery | None]:
     """업무·QA 검색에도 현재 설정 소스와 본인 ID만 주입한다."""
     if environment.database is None or environment.notion_user_id is None or settings is None:
-        return None
+        return None, None
     sources = tuple(
         source
         for source in settings.active_sources
         if source.kind == "task" and source.has_person_scope
     )
     if not sources:
-        return None
+        return None, None
     if reader is None:
         reader = SQLiteWorkReader(Database(environment.database))
     context = TodayContext(
         environment.notion_user_id,
         sources,
-        settings.completed_statuses,
-        environment.snapshot_max_age_seconds,
-        qa_display_policy=settings.qa_display_policy,
+        max_age_seconds=environment.snapshot_max_age_seconds,
+        source_names={
+            item.id: item.name or item.title
+            for item in settings.display
+            if item.category is not None
+        },
     )
     policy = select_policy(environment.relevance_policy)
 
@@ -268,7 +272,11 @@ def build_task_search_query(
         """인증 경계에서 검증한 검색 조건만 순수 조회에 전달한다."""
         return await search_my_tasks(search, reader, context, policy, now)
 
-    return query
+    async def statuses() -> dict[str, object]:
+        """검색과 같은 스냅샷과 개인 권한으로 원본 상태 목록을 읽는다."""
+        return await list_my_task_statuses(reader, context, policy, now)
+
+    return query, statuses
 
 
 async def with_page_links(

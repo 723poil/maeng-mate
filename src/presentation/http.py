@@ -28,7 +28,7 @@ from src.application.runtime_settings_service import RuntimeSettingsClient
 from src.application.slack_notifications import SlackNotificationDelivery
 from src.application.slack_settings import SlackSettingsClient
 from src.application.source_settings import SourceSettingsClient
-from src.application.task_search import TaskSearchQuery
+from src.application.task_search import TaskSearchQuery, TaskStatusesQuery
 from src.application.work_records import WorkRecordsService
 from src.application.work_rules_settings import WorkRulesClient
 from src.presentation.calendar_http import create_calendar_router
@@ -60,6 +60,7 @@ def create_app(
     notification_store: NotificationStore | None = None,
     slack_notification_delivery: SlackNotificationDelivery | None = None,
     query_tasks: TaskSearchQuery | None = None,
+    query_task_statuses: TaskStatusesQuery | None = None,
     preferences_store: PreferencesStore | None = None,
     notification_channels: tuple[str, ...] = ("macos",),
     runtime_settings_service: RuntimeSettingsClient | None = None,
@@ -178,7 +179,7 @@ def create_app(
             raise HTTPException(503, detail="저장된 업무 자료를 조회할 수 없습니다.") from None
 
     app.include_router(create_collection_router(update_interval))
-    app.include_router(create_task_router(query_tasks))
+    app.include_router(create_task_router(query_tasks, query_task_statuses))
     app.include_router(create_day_router(day_service))
     app.include_router(create_work_records_router(work_records_service))
     app.include_router(create_work_rules_router(work_rules_service))

@@ -55,7 +55,7 @@ class SnapshotReader(Protocol):
 
 
 class McpQueryReader(Protocol):
-    """MCP 도구가 사용할 수 있는 네 가지 개인 조회 계약이다."""
+    """MCP 도구에서 허용하는 개인 조회 계약이다."""
 
     async def read_status(self) -> dict[str, object]:
         """인증된 조회 결과만 반환하고 원문 오류는 공개하지 않는다."""
@@ -67,6 +67,10 @@ class McpQueryReader(Protocol):
 
     async def read_workday(self) -> dict[str, object]:
         """근무 기록·퇴근 예상과 계산 상태만 읽고 수정하지 않는다."""
+        ...
+
+    async def read_task_statuses(self) -> dict[str, object]:
+        """조회 가능한 업무·QA 소스별로 원본 상태 선택지를 반환한다."""
         ...
 
     async def search_tasks(self, search: TaskSearch) -> dict[str, object]:

@@ -7,7 +7,7 @@ from datetime import datetime
 from src.domain.display_columns import DisplayColumn
 from src.domain.main_list import MainListRules
 from src.domain.models import SourceMapping, WorkItem
-from src.domain.task_display import QATaskDisplayPolicy, StatusTaskDisplayPolicy, TaskDisplayPolicy
+from src.domain.task_display import StatusTaskDisplayPolicy, TaskDisplayPolicy
 
 
 @dataclass(frozen=True)
@@ -29,9 +29,9 @@ class TodayContext:
     max_age_seconds: int = 1200
     task_display_policy: TaskDisplayPolicy = field(default_factory=StatusTaskDisplayPolicy)
     source_pages: Mapping[str, str] = field(default_factory=dict)
-    qa_display_policy: TaskDisplayPolicy = field(default_factory=QATaskDisplayPolicy)
     page_links_revision: int = 0
     desktop_areas: Mapping[str, str] = field(default_factory=dict)
+    source_names: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     main_cards: Mapping[str, MainListCard] = field(default_factory=dict, kw_only=True)
     display_columns: Mapping[str, tuple[DisplayColumn, ...]] = field(default_factory=dict)
 

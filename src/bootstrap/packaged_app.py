@@ -5,6 +5,8 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,33 +66,42 @@ def prepare_state(values: Mapping[str, str]) -> None:
     initialize_database(path)
 
 
+def extract_notification_app(contents: Path, destination: Path) -> None:
+    """서명된 앱에 동봉된 압축본을 풀고 실제 발신 실행 파일을 확인한다."""
+    archive = contents / "Resources/NotificationAgent.zip"
+    result = subprocess.run(
+        ["/usr/bin/ditto", "-x", "-k", str(archive), str(destination)],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode or not (destination / "Contents/MacOS/NotificationAgent").is_file():
+        raise ConfigError("동봉 알림 앱을 복원하지 못했습니다.")
+
+
 def install_resources() -> None:
     """동봉 알림 원본을 쓰기 가능한 지원 폴더로 복사하고 설치 위치를 기록한다."""
     contents = bundle_contents()
     support = application_directory()
-    source = contents / "Resources/NotificationAgent.app"
-    if not (source / "Contents/MacOS/NotificationAgent").is_file():
-        raise ConfigError("동봉 알림 앱을 찾지 못했습니다. 앱을 다시 설치하세요.")
     destination = support / "NotificationAgent.app"
-    staged = support / ".NotificationAgent.packaged.app"
     previous = support / ".NotificationAgent.previous.app"
-    if any(path.is_symlink() for path in (support, destination, staged, previous)):
+    if any(path.is_symlink() for path in (support, destination, previous)):
         raise ConfigError("앱 지원 폴더의 실제 경로를 확인하세요.")
-    if staged.exists():
-        shutil.rmtree(staged)
-    shutil.copytree(source, staged, symlinks=True)
-    if previous.exists():
-        shutil.rmtree(previous)
-    if destination.exists():
-        destination.rename(previous)
-    try:
-        staged.rename(destination)
-    except OSError:
+    # 압축 해제가 끝나기 전까지 현재 발신 앱을 보존한다.
+    with tempfile.TemporaryDirectory(dir=support) as directory:
+        staged = Path(directory) / "sender"
+        extract_notification_app(contents, staged)
         if previous.exists():
-            previous.rename(destination)
-        raise ConfigError("알림 앱 설치를 완료하지 못했습니다.") from None
-    if previous.exists():
-        shutil.rmtree(previous)
+            shutil.rmtree(previous)
+        if destination.exists():
+            destination.rename(previous)
+        try:
+            staged.rename(destination)
+        except OSError:
+            if previous.exists():
+                previous.rename(destination)
+            raise ConfigError("알림 앱 설치를 완료하지 못했습니다.") from None
+        if previous.exists():
+            shutil.rmtree(previous)
     (support / "notification-identity.json").unlink(missing_ok=True)
 
 

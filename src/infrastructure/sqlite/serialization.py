@@ -30,6 +30,8 @@ def source_fingerprint(source: SourceMapping) -> str:
     # 기본 설정을 생략해야 이전 스냅샷과 같은 소스로 인식한다.
     if source.provider != "notion":
         payload["provider"] = source.provider
+    if source.origin != source.source_id:
+        payload["origin"] = source.origin
     if column := source.classification_column:
         # 단일 칼럼의 고유 값 매핑은 이전과 같은 의미이므로 정상 스냅샷을 재사용한다.
         values = dict(source.classification_values)

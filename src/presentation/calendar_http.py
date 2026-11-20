@@ -35,7 +35,10 @@ def calendar_payload(value: CalendarMonth) -> dict[str, object]:
     items = []
     detail_budget = 900_000
     truncated = value.truncated
-    for item in value.items:
+
+    def serialize(item: CalendarItem) -> dict[str, object]:
+        """같은 일정의 모든 표시 후보가 월 응답의 상세 크기 한도를 공유한다."""
+        nonlocal detail_budget, truncated
         row = calendar_item_payload(item)
         if item.display_fields is not None:
             size = detail_size_within_budget(
@@ -54,6 +57,12 @@ def calendar_payload(value: CalendarMonth) -> dict[str, object]:
             else:
                 row["displayFields"] = []
                 truncated = True  # 월 격자와 제목은 보존하고 긴 상세만 한도를 둔다.
+        return row
+
+    for item in value.items:
+        row = serialize(item)
+        if item.alternatives:
+            row["alternatives"] = [serialize(variant) for variant in item.alternatives]
         items.append(row)
     return {
         "month": value.month,

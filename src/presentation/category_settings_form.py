@@ -280,6 +280,7 @@ class CategorySettingsForm:
                             if isinstance(labels, dict)
                             and isinstance(name := labels.get(role), str)
                         },
+                        origin_id=mapping.origin,
                     )
                 )
                 roles = raw.get("properties")

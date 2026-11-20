@@ -57,6 +57,15 @@ def enqueue_sync_failure(
         scope = failure_rule_scope(run.source_id, run.mapping_hash, rule.id, rule.target)
         if rule.previous_kind != "sync_error":
             logical = notification_key(f"{scope}:{last_success or 0}")
+    # 같은 수집 시도의 원본 오류는 채널별 한 번 전달하고 각 뷰의 복구·재시도는 따로 기록한다.
+    identifier = logical
+    if run.source is not None:
+        attempt = connection.execute(
+            "SELECT started_at FROM sync_runs WHERE id=?", (run.id,)
+        ).fetchone()
+        logical = notification_key(
+            f"sync-failure:{run.source.origin}:{rule.id if rule else 'sync_error'}:{code}:{attempt['started_at']}"
+        )
     body = {
         "storage_failed": "수집한 자료를 이 Mac에 저장하지 못했습니다.",
         "unauthorized": "설정 → Notion에서 토큰을 확인하세요.",
@@ -86,7 +95,7 @@ def enqueue_sync_failure(
             source_key,sync_source_id,sync_mapping_hash,sync_failure_run_id)
         VALUES(?,?,'sync_error',?,?,?,?, 'pending',?,?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body WHERE notification_jobs.state='pending'""",
         (
-            logical,
+            identifier,
             logical,
             rule.name if rule else "수집 실패",
             body,

@@ -34,10 +34,15 @@ class SyncFailed(TypedDict):
 
 
 async def synchronize(
-    source: SourceMapping, reader: WorkSource, store: SnapshotStore, now: Callable[[], datetime]
+    source: SourceMapping,
+    reader: WorkSource,
+    store: SnapshotStore,
+    now: Callable[[], datetime],
+    *,
+    started_at: str | None = None,
 ) -> SyncSucceeded | SyncSkipped | SyncFailed:
     """외부 조회를 DB 트랜잭션 밖에서 실행하고 부분 결과는 확정하지 않는다."""
-    started = now().isoformat()
+    started = started_at or now().isoformat()
     begin = asyncio.create_task(store.begin_run(source, started))
     try:
         # 스레드의 실행권 획득은 취소만으로 중단되지 않으므로 결과를 회수한다.
@@ -51,7 +56,7 @@ async def synchronize(
             await store.fail_run(acquired, "cancelled")
         raise
     except SnapshotError as error:
-        if error.code in {"source_busy", "source_not_due"}:
+        if error.code in {"source_busy", "source_not_due", "newer_observation"}:
             return {"status": "skipped", "reason": error.code}
         raise
     try:

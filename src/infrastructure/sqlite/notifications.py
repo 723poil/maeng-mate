@@ -94,6 +94,7 @@ def enqueue_calendar(
     completed_at: str,
     previous_mapping: str | None,
     mapping_hash: str,
+    origin: str | None = None,
 ) -> None:
     """정상 스냅샷 확정 전에 기존 본인 일정과 비교해 새 항목만 예약한다."""
     if user_id is None:
@@ -122,26 +123,27 @@ def enqueue_calendar(
     for item in items:
         if not isinstance(item, CalendarEvent):
             continue
-        logical = notification_key(f"calendar:{source_id}:{item.id}:{user}")
+        identifier = notification_key(f"calendar:{source_id}:{item.id}:{user}")
+        logical = notification_key(f"calendar:{origin or source_id}:{item.id}:{user}")
         relevant = any(canonical_identity(person) == user for person in item.participant_ids)
         expires = calendar_alert_expiry(item.period, now)
         if item.cancelled or not relevant or expires is None:
             connection.execute(
-                "UPDATE notification_jobs SET state='obsolete' WHERE logical_key=? AND state IN ('pending','delivering')",
-                (logical,),
+                "UPDATE notification_jobs SET state='obsolete' WHERE id=? AND state IN ('pending','delivering')",
+                (identifier,),
             )
             continue
         if item.id in previous:
             connection.execute(
-                "UPDATE notification_jobs SET body=?,notion_url=?,expires_at=MIN(expires_at,?) WHERE logical_key=? AND state='pending'",
-                (item.title[:180], notion_link(item.url), expires, logical),
+                "UPDATE notification_jobs SET body=?,notion_url=?,expires_at=MIN(expires_at,?) WHERE id=? AND state='pending'",
+                (item.title[:180], notion_link(item.url), expires, identifier),
             )
             continue
         connection.execute(
             """INSERT INTO notification_jobs(id,logical_key,kind,title,body,notion_url,due_at,expires_at,state,source_key)
             VALUES(?,?,'calendar','새 일정',?,?,?,?,'pending',?) ON CONFLICT(id) DO NOTHING""",
             (
-                logical,
+                identifier,
                 logical,
                 item.title[:180],
                 notion_link(item.url),

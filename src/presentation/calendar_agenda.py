@@ -109,15 +109,17 @@ class CalendarAgenda:
         for index, item in enumerate(self.items):
             task = item.display_fields is None and item.kind in {"task", "qa"}
             row_height = agenda_height(item)
-            box(
-                view,
-                5,
-                top - row_height + 13,
-                3,
-                row_height - 18,
-                kind_color(item.kind, item.color),
-                1,
-            )
+            segment = (row_height - 18) / len(item.visible_colors)
+            for offset, (kind, color) in enumerate(item.visible_colors):
+                box(
+                    view,
+                    5,
+                    top - row_height + 13 + offset * segment,
+                    3,
+                    segment,
+                    kind_color(kind, color),
+                    1,
+                )
             heading = label(
                 view,
                 (

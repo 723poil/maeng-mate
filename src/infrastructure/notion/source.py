@@ -1,7 +1,10 @@
 """일반 표와 차시별 하위 표의 Notion 행을 수집해 업무 모델로 변환한다."""
 
+from __future__ import annotations
+
 import asyncio
 import re
+from copy import copy
 from dataclasses import replace
 from urllib.parse import quote, unquote
 
@@ -17,7 +20,7 @@ from src.domain.source_scope import SourceScope, field_parts
 from src.infrastructure.notion.catalog import inspect_columns
 from src.infrastructure.notion.errors import SourceError
 from src.infrastructure.notion.normalization import PageProperties, column_text, normalize_page
-from src.infrastructure.notion.read_api import NotionReadApi
+from src.infrastructure.notion.read_api import NotionReadApi, SharedNotionReadApi
 from src.infrastructure.notion.values import array, record, text
 
 
@@ -88,6 +91,12 @@ class NotionSource:
         self._user_id = user_id
         self._api = NotionReadApi(token, client, interval=interval)
 
+    def for_shared_origin(self, source: SourceMapping) -> NotionSource:
+        """같은 표의 여러 매핑에서만 원본 응답을 공유하고 요청 간격은 계속 지킨다."""
+        reader = copy(self)
+        reader._api = SharedNotionReadApi(self._api)
+        return reader
+
     async def inspect_columns(self, identifier: str, *, rounds: bool) -> tuple[SourceSchema, ...]:
         """기존 비동기 조회 진입점은 같은 요청 간격으로 카탈로그 탐색에 위임한다."""
         return await inspect_columns(self._api, identifier, rounds=rounds)
@@ -100,7 +109,7 @@ class NotionSource:
                     return await self._collect_child_tables(source, observed_at)
                 options = None
                 if source.kind == "task" and (status_id := source.properties.get("status")):
-                    schema = await self._api.data_schema(source.source_id)
+                    schema = await self._api.data_schema(source.origin)
                     properties = PageProperties(record(schema.get("properties")))
                     options = status_options(properties.by_id(status_id))
                 return CollectedWork(await self._collect_rows(source, observed_at), options)
@@ -111,7 +120,7 @@ class NotionSource:
         """한 표의 정상 행을 모으고 페이지가 중복되면 전체 수집을 중단한다."""
         result: list[WorkItem] = []
         seen: set[str] = set()
-        async for raw in self._api.source_pages(source.source_id):
+        async for raw in self._api.source_pages(source.origin):
             page = record(raw)
             identifier = text(page.get("id"))
             if identifier in seen:
@@ -174,7 +183,7 @@ class NotionSource:
         """모든 차시의 항목을 읽은 뒤 한 부모 소스의 완전한 결과로 반환한다."""
         if source.kind != "task" or source.round_title_property is None:
             raise SourceError("mapping_invalid")
-        schema = await self._api.data_schema(source.source_id)
+        schema = await self._api.data_schema(source.origin)
         round_property = record(record(schema.get("properties")).get(source.round_title_property))
         if round_property.get("type") != "title":
             raise SourceError("mapping_invalid")
@@ -192,7 +201,7 @@ class NotionSource:
         seen_children: set[str] = set()
         status_name = source.properties.get("status")
         options: dict[str, None] = {}
-        async for raw in self._api.source_pages(source.source_id):
+        async for raw in self._api.source_pages(source.origin):
             page = record(raw)
             page_id = text(page.get("id"))
             if page.get("object") != "page":
@@ -265,6 +274,7 @@ class NotionSource:
                 child = replace(
                     source,
                     source_id=child_id,
+                    origin_id=None,
                     properties=mapping,
                     round_title_property=None,
                     display_columns=resolved if not source.stored_columns else None,

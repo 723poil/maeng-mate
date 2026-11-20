@@ -92,11 +92,15 @@ def desktop_fields(
     return {"displayFields": fields}
 
 
-def main_list_projection(source: SourceMapping, card: MainListCard | None) -> SourceMapping:
+def main_list_projection(
+    source: SourceMapping, card: MainListCard | None, order: str | None = None
+) -> SourceMapping:
     """메인 카드 조회에서만 숨긴 조건·정렬 칼럼을 추가로 읽는다."""
-    if card is None:
+    fields = card.rules.fields if card else set()
+    if order and order.startswith("column:"):
+        fields.add(order.removeprefix("column:"))
+    if not fields:
         return source
-    fields = card.rules.fields
     visible = source.display_columns or ()
     # 카드의 업무 분류는 표시 칼럼을 끈 소스에서도 수집된 분류값을 읽는다.
     hidden = tuple(
@@ -262,6 +266,42 @@ def event_sort_key(item: dict[str, object]) -> tuple[str, str, str]:
     return start, str(item["id"]), str(item["sourceId"])
 
 
+def ordered_source_rows(
+    rows: Iterable[ScopedRow],
+    source: SourceMapping,
+    context: TodayContext,
+    card: MainListCard | None,
+) -> Iterator[ScopedRow]:
+    """한 표시 설정의 칼럼과 방향으로 정렬한 행을 카드 필터와 미리보기에 전달한다."""
+    order = context.desktop_areas.get(source.source_id)
+    if not order or order == "default":
+        yield from rows
+        return
+    descending = context.desktop_sort_directions.get(source.source_id) == "desc"
+    ordered = list(rows)
+    if source.kind != "task" and card and "sourceRowOrder" in card.rules.fields:
+        # 이전한 일정 카드에서 소스 정렬이 같으면 기존 일정 그룹의 순번을 유지한다.
+        groups = {name: rank for rank, name in enumerate(empty_groups())}
+        ordered.sort(key=lambda row: (groups[row[0]], event_sort_key(row[2])))
+    if order == "title":
+        ordered.sort(key=lambda row: str(row[2]["title"]).casefold(), reverse=descending)
+    elif order == "date":
+        ordered.sort(key=lambda row: desktop_date_key(row[2]), reverse=descending)
+        if descending:
+            # 내림차순에서도 날짜가 비어 있는 행은 마지막에 둔다.
+            ordered.sort(key=lambda row: desktop_date_key(row[2])[0] == "~")
+    elif order.startswith("column:"):
+        column_id = order.removeprefix("column:")
+        column = next((c for c in source.storage_layout if c.id == column_id), None)
+        category = context.source_categories.get(source.source_id)
+        config = category.configuration if category else None
+        if column and config:
+            kind = next(c.kind for c in config.columns if c.id == column_id)
+            key = ListSort(column.value_key, descending=descending).sort_key(kind)
+            ordered.sort(key=lambda row: key((row[2], row[1].display_values)), reverse=descending)
+    yield from ordered
+
+
 def main_card_rows(
     rows: Iterable[ScopedRow],
     source: SourceMapping,
@@ -276,25 +316,12 @@ def main_card_rows(
     if not fields:
         yield from rows
         return
-    positions: dict[str, int] = {}
     order = context.desktop_areas.get(source.source_id)
-    if "sourceRowOrder" in fields and order in ("date", "title"):
-        # 업무는 날짜·제목이 같으면 읽은 순서를 유지한다. 일정은 기존 그룹 순번을 보존한다.
-        rows = list(rows)
-        ordered = list(rows)
-        if source.kind != "task":
-            groups = {name: rank for rank, name in enumerate(empty_groups())}
-            ordered.sort(key=lambda r: (groups[r[0]], event_sort_key(r[2])))
-        if order == "title":
-            ordered.sort(key=lambda r: str(r[2]["title"]).casefold())
-        else:
-            ordered.sort(key=lambda r: desktop_date_key(r[2]))
-        positions = {item.id: index for index, (_, item, _) in enumerate(ordered, 1)}
-    for group, item, row in rows:
+    for position, (group, item, row) in enumerate(rows, 1):
         values = main_list_values(item, source, row, day, fields)
         values["sourceOrder"] = str(source_order)
-        if item.id in positions:
-            values["sourceRowOrder"] = str(positions[item.id])
+        if order and order != "default" and "sourceRowOrder" in fields:
+            values["sourceRowOrder"] = str(position)
         if card.rules.includes(values, card.kinds, day):
             if card.rules.sorts:
                 sort_values[(item.source_id, item.id)] = values
@@ -328,12 +355,10 @@ def desktop_card_previews(
     }
     for source_id, items in areas.items():
         order = ordering[source_id]
-        if order == "title":
-            items.sort(key=lambda item: str(item["title"]).casefold())
-        elif order == "date":
-            items.sort(key=desktop_date_key)
-        elif source_id in parent_sorted and not (
-            source_id in cards and cards[source_id].rules.sorts
+        if (
+            order == "default"
+            and source_id in parent_sorted
+            and not (source_id in cards and cards[source_id].rules.sorts)
         ):
             # 카드와 소스의 명시 정렬이 없을 때만 해당 표 안에서 부모 숫자를 비교한다.
             ranked: list[tuple[dict[str, object], Mapping[str, str]]] = [
@@ -477,7 +502,11 @@ async def read_personal_sources(
     )
     snapshots = await reader.read_sources(
         tuple(
-            main_list_projection(source, context.main_cards.get(source.source_id))
+            main_list_projection(
+                source,
+                context.main_cards.get(source.source_id),
+                context.desktop_areas.get(source.source_id),
+            )
             for source in configured
         )
     )
@@ -513,7 +542,10 @@ async def read_personal_sources(
             observed_now,
             task_filter,
         )
-        if card := context.main_cards.get(source.source_id):
+        card = context.main_cards.get(source.source_id)
+        if source.source_id in context.desktop_areas:
+            selected = ordered_source_rows(selected, source, context, card)
+        if card:
             selected = main_card_rows(
                 selected, source, card, context, day, source_order, sort_values
             )

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from src.application.errors import SnapshotError
-from src.application.ports import SnapshotStore, WorkSource
+from src.application.ports import SnapshotStore, WorkSource, collection_readers
 from src.application.use_cases.synchronize import synchronize
 from src.domain.models import SourceMapping
 
@@ -79,12 +79,14 @@ class PeriodicCollector:
                 if not due:
                     await self._wait_for_change(stop, delay)
                     continue
-                for source in due:
+                for source, reader, started in collection_readers(due, self._reader, self._now):
                     if stop.is_set():
                         break
                     self._active_source_id = source.source_id
                     try:
-                        result = await synchronize(source, self._reader, self._store, self._now)
+                        result = await synchronize(
+                            source, reader, self._store, self._now, started_at=started
+                        )
                         if result["status"] == "failed" and result["code"] == "storage_failed":
                             raise SnapshotError("storage_failed")
                     finally:

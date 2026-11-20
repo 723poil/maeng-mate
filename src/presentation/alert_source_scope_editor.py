@@ -31,6 +31,7 @@ class AlertSource:
     rounds: bool
     columns: frozenset[str]
     property_names: Mapping[str, str] = field(default_factory=dict, repr=False)
+    origin_id: str | None = None
 
     def saved_property(self, key: str) -> CategoryColumn:
         """차시 공통 이름 또는 이 표의 역할 연결에 기록한 원본 속성명을 복원한다."""
@@ -239,7 +240,7 @@ class AlertSourceScopeEditor:
         else:
             self._notes[key] = "원본 속성을 불러오는 중…"
             self._pending[key] = self._pool.submit(
-                self._client.inspect, source.provider, source.id, rounds=source.rounds
+                self._client.inspect, source.provider, source.origin_id or key, rounds=source.rounds
             )
             self._start_polling()
         self._show_note(key)
@@ -276,7 +277,8 @@ class AlertSourceScopeEditor:
                     (
                         item
                         for item in schemas
-                        if canonical_identity(item.id) == canonical_identity(key)
+                        if canonical_identity(item.id)
+                        == canonical_identity(self._sources[key].origin_id or key)
                     ),
                     None,
                 )

@@ -1,6 +1,6 @@
 """달력의 일정·출퇴근 표시와 종류별 선택 값이다."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Literal
 
@@ -57,6 +57,28 @@ class CalendarItem:
     category: str | None = None
     badge_field_indices: frozenset[int] = frozenset()
 
+    alternatives: tuple["CalendarItem", ...] = field(default=(), repr=False)
+    colors: tuple[tuple[CalendarKind, str | None], ...] = ()
+
+    def visible_item(self, preferences: CalendarPreferences) -> "CalendarItem | None":
+        """같은 원본 일정에 연결된 설정 중 표시할 것만 골라 색상을 함께 제공한다."""
+        if not self.alternatives:
+            return self if preferences.shows_item(self.kind, self.category_key) else None
+        visible = [
+            item
+            for item in (self, *self.alternatives)
+            if preferences.shows_item(item.kind, item.category_key)
+        ]
+        if not visible:
+            return None
+        colors = tuple(dict.fromkeys((item.kind, item.color) for item in visible))
+        return replace(visible[0], alternatives=(), colors=colors)
+
+    @property
+    def visible_colors(self) -> tuple[tuple[CalendarKind, str | None], ...]:
+        """단독 일정도 겹친 일정과 같은 방식으로 색을 그릴 수 있게 한다."""
+        return self.colors or ((self.kind, self.color),)
+
     def occurs_on(self, day: date) -> bool:
         """자정 종료를 반영해 미리 정규화한 날짜 구간으로 판정한다."""
         return self.first <= day <= self.last
@@ -102,8 +124,9 @@ class CalendarMonth:
         items: dict[date, list[CalendarItem]] = {
             date.fromordinal(ordinal): [] for ordinal in range(first, last + 1)
         }
-        for item in self.items:
-            if not preferences.shows_item(item.kind, item.category_key):
+        for occurrence in self.items:
+            item = occurrence.visible_item(preferences)
+            if item is None:
                 continue
             # 여러 달에 걸친 일정도 현재 격자와 겹치는 날짜만 펼친다.
             start = max(first, item.first.toordinal())
@@ -130,8 +153,9 @@ class CalendarMonth:
         preferences = CalendarPreferences(visible, hidden_categories, shown_categories)
         return tuple(
             item
-            for item in self.items
-            if item.occurs_on(day) and preferences.shows_item(item.kind, item.category_key)
+            for occurrence in self.items
+            if occurrence.occurs_on(day)
+            and (item := occurrence.visible_item(preferences)) is not None
         )
 
     def attendance_on(self, day: date) -> CalendarAttendance | None:

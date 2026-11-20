@@ -14,6 +14,7 @@ async def _run_storage(command: str, env: Mapping[str, str]) -> int:
     """수동 수집만 외부 원천과 DB에 연결하고 자동 작업은 생성하지 않는다."""
     import httpx
 
+    from src.application.ports import collection_readers
     from src.application.use_cases.synchronize import synchronize
     from src.bootstrap.collection_wiring import build_collection
     from src.infrastructure.sqlite.connection import Database
@@ -38,8 +39,10 @@ async def _run_storage(command: str, env: Mapping[str, str]) -> int:
         reader, store = build_collection(
             database, client, token, env.get("NOTION_USER_ID") or None, scheduled=False
         )
-        for source in settings.active_sources:
-            result = await synchronize(source, reader, store, now)
+        for source, source_reader, started in collection_readers(
+            settings.active_sources, reader, now
+        ):
+            result = await synchronize(source, source_reader, store, now, started_at=started)
             summary[result["status"]] += 1
     print(
         f"수집 결과: 성공 {summary['succeeded']}, 실패 {summary['failed']}, 실행 중 {summary['skipped']}"

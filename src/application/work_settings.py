@@ -276,6 +276,8 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         for key in (
             "color",
             "sort",
+            "sortDirection",
+            "sourceId",
             "notificationChannels",
             "notificationTypes",
             "calendarVisible",
@@ -292,11 +294,9 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
     )
     if set(item) != allowed:
         raise ValueError
-    source_id = nonblank(item["dataSourceId"])
-    try:
-        source_id = str(UUID(source_id))
-    except ValueError:
-        pass  # 가상 자료와 호환하되 실제 UUID는 정규 표기로 중복 검사한다.
+    origin_id = canonical_identity(nonblank(item["dataSourceId"]))
+    # 이전 문서는 원본 ID가 곧 논리 ID다. 새 연결만 별도 키를 갖는다.
+    source_id = canonical_identity(nonblank(item.get("sourceId", origin_id)))
     raw = item["properties"]
     if not isinstance(raw, dict):
         raise ValueError
@@ -385,6 +385,7 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         if "displayColumns" in item
         else None,
         parse_alert_rules(item["alertRules"]) if "alertRules" in item else (),
+        origin_id=origin_id,
         parent_label=parent_label,
         parent_order=str(parent_order),
         parent_number_property=nonblank(number_property) if parent_order == "column" else None,
@@ -1181,6 +1182,9 @@ def resolve_category_mapping(
     if links.keys() - {item.id for item in config.columns}:
         raise ValueError
     rule_fields = config.main_list.fields if config.main_list is not None else set()
+    sort = raw.get("sort")
+    if isinstance(sort, str) and sort.startswith("column:"):
+        rule_fields.add(sort.removeprefix("column:"))
     # 업무 분류가 비교 대상이면 화면에 보이지 않는 긴 분류 이름도 전체 값으로 비교한다.
     classification_rule = source.kind == "task" and "statusGroup" in rule_fields
     if classification_rule and source.classification_column:
@@ -1316,7 +1320,18 @@ def read_display(
     )
     if color is not None and (not isinstance(color, str) or color not in SOURCE_COLORS):
         raise ValueError
-    if not isinstance(sort, str) or sort not in SOURCE_SORTS:
+    direction = raw.get("sortDirection", "asc")
+    if not isinstance(direction, str) or direction not in ("asc", "desc"):
+        raise ValueError
+    if not isinstance(sort, str) or (
+        sort not in SOURCE_SORTS
+        and not (
+            sort.startswith("column:")
+            and category is not None
+            and category.configuration is not None
+            and sort.removeprefix("column:") in category_bindings(raw)
+        )
+    ):
         raise ValueError
     calendar_visible = raw.get("calendarVisible", True)
     if not isinstance(calendar_visible, bool):
@@ -1379,6 +1394,7 @@ def read_display(
                 if rule.enabled
             ),
         ),
+        sort_direction=direction,
     )
 
 

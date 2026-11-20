@@ -62,7 +62,11 @@ class SQLiteSnapshots:
                 (source.source_id, source.kind),
             )
             row = connection.execute(
-                "SELECT generation,lease_until FROM work_source_state WHERE source_id=?",
+                """SELECT state.generation,state.lease_until,latest.started_at
+                    FROM work_source_state AS state
+                    LEFT JOIN sync_runs AS latest ON latest.source_id=state.source_id
+                      AND latest.generation=state.generation
+                    WHERE state.source_id=?""",
                 (source.source_id,),
             ).fetchone()
             epoch = self._clock()
@@ -70,6 +74,13 @@ class SQLiteSnapshots:
                 raise SnapshotError("storage_failed")
             if row["lease_until"] is not None and row["lease_until"] > epoch:
                 raise SnapshotError("source_busy")
+            # 다른 실행이 이 연결을 먼저 갱신했으면 이전 회차의 원본 응답으로 덮지 않는다.
+            previous_start = row["started_at"]
+            if previous_start is not None:
+                previous_epoch = datetime.fromisoformat(previous_start).timestamp()
+                # 시계가 뒤로 이동해 이전 기록이 미래이면 새 수집을 영구 차단하지 않는다.
+                if datetime.fromisoformat(started_at).timestamp() < previous_epoch <= epoch:
+                    raise SnapshotError("newer_observation")
             if self._scheduled:
                 schedule = connection.execute(
                     "SELECT next_run_at FROM sync_schedules WHERE source_id=?", (source.source_id,)
@@ -151,6 +162,7 @@ class SQLiteSnapshots:
                     completed_at,
                     previous_mapping,
                     run.mapping_hash,
+                    run.source.origin,
                 )
             if run.source is not None and run.source.allows_event_alert("meeting"):
                 enqueue_meeting_reminders(

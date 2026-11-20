@@ -67,6 +67,12 @@ class SourceMapping:
     parent_number_property: str | None = None
 
     role_columns: tuple[DisplayColumn, ...] = ()
+    origin_id: str | None = None
+
+    @property
+    def origin(self) -> str:
+        """표시 설정이 분리되기 전 연결도 같은 원본 식별자로 읽는다."""
+        return self.origin_id if self.origin_id is not None else self.source_id
 
     @property
     def has_person_scope(self) -> bool:

@@ -1,7 +1,9 @@
 """유스케이스가 요구하는 원천·저장·조회 계약이다."""
 
-from collections.abc import Awaitable, Callable, Sequence
-from typing import Protocol
+from collections import Counter
+from collections.abc import Awaitable, Callable, Iterator, Sequence
+from datetime import datetime
+from typing import Protocol, runtime_checkable
 
 from src.application.models import CollectedWork, SyncRun
 from src.application.task_search import TaskSearch
@@ -21,6 +23,35 @@ class WorkSource(Protocol):
     ) -> CollectedWork | list[WorkItem]:
         """완전한 결과를 반환하며 원본 스키마를 제공하지 않는 원천은 행만 반환한다."""
         ...
+
+
+@runtime_checkable
+class SharedOriginReader(Protocol):
+    """한 수집 주기에서 같은 원본을 읽는 매핑에 전용 읽기 세션을 제공한다."""
+
+    def for_shared_origin(self, source: SourceMapping) -> WorkSource:
+        """원본 읽기 결과만 공유하고 각 매핑의 업무 변환은 따로 실행한다."""
+        ...
+
+
+def collection_readers(
+    sources: Sequence[SourceMapping], reader: WorkSource, now: Callable[[], datetime]
+) -> Iterator[tuple[SourceMapping, WorkSource, str]]:
+    """설정 순서를 지키면서 같은 원본의 마지막 연결까지만 읽기 세션을 보관한다."""
+    remaining = Counter((source.provider, source.origin) for source in sources)
+    shared: dict[tuple[str, str], WorkSource] = {}
+    starts: dict[tuple[str, str], str] = {}
+    for source in sources:
+        key = (source.provider, source.origin)
+        if remaining[key] > 1 and key not in shared and isinstance(reader, SharedOriginReader):
+            shared[key] = reader.for_shared_origin(source)
+        remaining[key] -= 1
+        if key not in starts:
+            starts[key] = now().isoformat()
+        yield source, shared.get(key, reader), starts[key]
+        if not remaining[key]:
+            shared.pop(key, None)
+            del starts[key]
 
 
 class SnapshotStore(Protocol):

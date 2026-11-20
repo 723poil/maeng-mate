@@ -208,6 +208,9 @@ def build_today_query(
         desktop_areas={item.id: item.sort for item in settings.display if item.category is not None}
         if desktop
         else {},
+        desktop_sort_directions={item.id: item.sort_direction for item in settings.display}
+        if desktop
+        else {},
         main_cards={
             item.id: MainListCard(
                 category.key,

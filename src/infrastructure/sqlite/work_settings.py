@@ -241,7 +241,7 @@ class SQLiteWorkSettings:
                 # 파일보다 최근인 화면 저장값을 우선하고 이전 응답의 버전보다 높인다.
                 revision = max(revision, legacy["revision"] + 1)
                 for source, mapping in zip(sources, settings.sources, strict=True):
-                    source["dataSourceId"] = mapping.source_id
+                    source["dataSourceId"] = mapping.origin
                     if mapping.source_id in links:
                         url = page_url(links[mapping.source_id])
                         if url is None:

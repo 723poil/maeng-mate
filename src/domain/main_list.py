@@ -208,8 +208,8 @@ class ListSort:
                 raise ValueError("같은 값이 두 번 들어갔습니다. 하나만 남겨 주세요.")
             seen.add(normalized)
 
-    def apply(self, rows: list[_Row], kind: str) -> None:
-        """빈 값과 직접 지정한 값의 순위를 먼저 구분하고 실제 값을 비교한다."""
+    def sort_key(self, kind: str) -> Callable[[_Row], tuple[bool, int, str | Decimal]]:
+        """카드와 소스에서 같은 타입 변환과 누락값 순서로 비교할 키를 만든다."""
         ranks: dict[str | Decimal, int] = {
             value.strip().casefold(): rank for rank, value in enumerate(self.values)
         }
@@ -226,7 +226,11 @@ class ListSort:
                 return not self.descending, 0, ""
             return self.descending, ranks.get(key, len(ranks)), key
 
-        rows.sort(key=sort_key, reverse=self.descending)
+        return sort_key
+
+    def apply(self, rows: list[_Row], kind: str) -> None:
+        """빈 값과 직접 지정한 값의 순위를 먼저 구분하고 실제 값을 비교한다."""
+        rows.sort(key=self.sort_key(kind), reverse=self.descending)
 
 
 @dataclass(frozen=True)

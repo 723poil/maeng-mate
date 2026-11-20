@@ -30,6 +30,7 @@ class TodayContext:
     source_pages: Mapping[str, str] = field(default_factory=dict)
     page_links_revision: int = 0
     desktop_areas: Mapping[str, str] = field(default_factory=dict)
+    desktop_sort_directions: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     source_categories: Mapping[str, SourceCategory] = field(default_factory=dict, kw_only=True)
     source_names: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     main_cards: Mapping[str, MainListCard] = field(default_factory=dict, kw_only=True)

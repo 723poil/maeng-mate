@@ -45,12 +45,13 @@ class NotionConnection:
             ) as client,
         ):
             await self._request(client, "GET", "/users/me", "user")
-            for source in self._sources:
+            # 같은 표의 표시 설정이 여러 개여도 읽기 권한은 한 번만 확인한다.
+            for origin in dict.fromkeys(source.origin for source in self._sources):
                 await asyncio.sleep(0.4)
                 await self._request(
                     client,
                     "POST",
-                    f"/data_sources/{quote(source.source_id, safe='')}/query",
+                    f"/data_sources/{quote(origin, safe='')}/query",
                     "list",
                     {"page_size": 1},
                 )

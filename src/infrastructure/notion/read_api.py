@@ -1,8 +1,10 @@
 """Notion 고정 경로의 읽기 요청과 커서·하위 표 탐색을 담당한다."""
 
 import asyncio
+import json
 import re
 from collections.abc import AsyncIterator
+from copy import deepcopy
 from urllib.parse import quote
 
 import httpx
@@ -140,3 +142,28 @@ class NotionReadApi:
     def source_pages(self, identifier: str) -> AsyncIterator[object]:
         """데이터 소스의 모든 행을 POST 본문의 커서 순서로 읽는다."""
         return self.items(f"/data_sources/{quote(identifier, safe='')}/query", query_source=True)
+
+
+class SharedNotionReadApi(NotionReadApi):
+    """같은 원본에 대한 수집 한 회에서 동일 경로와 커서의 응답을 재사용한다."""
+
+    def __init__(self, upstream: NotionReadApi) -> None:
+        """원본 HTTP 클라이언트의 속도 제한을 공유하고 이번 수집의 결과만 보관한다."""
+        self._upstream = upstream
+        self._responses: dict[tuple[str, str], dict[str, object]] = {}
+        self._failures: dict[tuple[str, str], tuple[str, float | None]] = {}
+
+    async def request(self, path: str, body: dict[str, object] | None) -> dict[str, object]:
+        """행 소비나 상세 속성 보완이 다른 매핑이 읽을 원본 응답을 바꾸지 않게 한다."""
+        key = (path, json.dumps(body, sort_keys=True))
+        if key in self._failures:
+            code, delay = self._failures[key]
+            raise SourceError(code, retry_after=delay)
+        if key not in self._responses:
+            try:
+                self._responses[key] = await self._upstream.request(path, body)
+            except SourceError as error:
+                # 실패한 요청도 이번 실행에서 반복하지 않고 다음 예약에서 다시 시도한다.
+                self._failures[key] = (error.code, error.retry_after)
+                raise
+        return deepcopy(self._responses[key])

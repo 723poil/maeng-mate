@@ -253,7 +253,7 @@ def move_unassigned_settings(
         return settings.categories
     groups: dict[str, list[tuple[SourceMapping, SourceDisplay, dict[str, object]]]] = {}
     for raw in sources:
-        category_id, source_id = raw.get("categoryId"), raw.get("dataSourceId")
+        category_id, source_id = raw.get("categoryId"), raw.get("sourceId", raw.get("dataSourceId"))
         if not isinstance(category_id, str) or not isinstance(source_id, str):
             continue
         try:

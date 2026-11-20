@@ -13,7 +13,7 @@ from src.application.category_configuration_upgrade import move_unassigned_setti
 from src.application.models import CollectedWork
 from src.application.notion_links import notion_link
 from src.application.periodic import utc_now
-from src.application.ports import WorkSource
+from src.application.ports import SharedOriginReader, WorkSource
 from src.application.work_settings import (
     Settings,
     WorkSettingsDocument,
@@ -87,6 +87,13 @@ class ProviderSources:
     def __init__(self, readers: Mapping[str, WorkSource]) -> None:
         """현재 지원하는 수집 어댑터를 조립부에서 받는다."""
         self._readers = dict(readers)
+
+    def for_shared_origin(self, source: SourceMapping) -> WorkSource:
+        """원본을 공유하는 연결에 해당 프로바이더의 읽기 세션을 전달한다."""
+        reader = self._readers[source.provider]
+        return (
+            reader.for_shared_origin(source) if isinstance(reader, SharedOriginReader) else reader
+        )
 
     async def collect(
         self, source: SourceMapping, observed_at: str
@@ -203,6 +210,7 @@ def mapping_signature(settings: Settings | None) -> object:
             value.key,
             value.color,
             value.sort,
+            value.sort_direction,
             value.channels,
             value.calendar_visible,
             value.notification_types,
@@ -423,13 +431,18 @@ class SourceSettingsService:
             rounds = source.round_title_property is not None
             references = scope_property_types(source) if source.source_id in active_ids else set()
             old = old_active.get(source.source_id)
-            if references and old is not None and (old.round_title_property is not None) == rounds:
+            if (
+                references
+                and old is not None
+                and old.origin == source.origin
+                and (old.round_title_property is not None) == rounds
+            ):
                 # 같은 표·탐색 방식의 기존 참조는 이름·문구·비교값만 바꿔도 다시 조회하지 않는다.
                 references -= scope_property_types(old)
             if not check_mapping and not references:
                 continue
-            profiles = self.inspect(source.provider, source.source_id, rounds=rounds)
-            schema = next((item for item in profiles if item.id == source.source_id), None)
+            profiles = self.inspect(source.provider, source.origin, rounds=rounds)
+            schema = next((item for item in profiles if item.id == source.origin), None)
             if schema is None:
                 raise SourceSettingsError("수집할 데이터 소스를 다시 선택하세요.")
             if check_mapping:
@@ -480,6 +493,7 @@ def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> 
     """새로 검증할 원본 연결이 없으면 값 설정이나 연결 해제는 원격 조회 없이 저장한다."""
     return (
         before is not None
+        and before.origin == after.origin
         and before.provider == after.provider
         and before.kind == after.kind
         and before.round_title_property == after.round_title_property
@@ -528,7 +542,12 @@ def prune_category_links(
                 for key, origin in category_bindings(raw).items()
                 if key in available[group]
             }
-            result.append({**raw, "columnMappings": column_bindings_payload(links)})
+            updated = {**raw, "columnMappings": column_bindings_payload(links)}
+            sort = updated.get("sort")
+            if isinstance(sort, str) and sort.startswith("column:") and sort[7:] not in links:
+                updated.pop("sort")
+                updated.pop("sortDirection", None)
+            result.append(updated)
         else:
             result.append(raw)
     return tuple(result)
@@ -689,6 +708,7 @@ def display_payload(value: SourceDisplay) -> dict[str, object]:
         "name": value.name,
         "color": value.color,
         "sort": value.sort,
+        "sortDirection": value.sort_direction,
         "url": value.url,
         "calendarVisible": value.calendar_visible,
         "flexible": value.flexible,
@@ -734,6 +754,7 @@ def parse_active_display(value: object) -> tuple[SourceDisplay, ...]:
                 calendar_visible=raw.get("calendarVisible", True) is True,
                 category=read_category(raw.get("category")),
                 flexible=raw.get("flexible") is True,
+                sort_direction=nonblank(raw.get("sortDirection", "asc")),
                 events=parse_display_events(raw.get("events", [])),
             )
         )

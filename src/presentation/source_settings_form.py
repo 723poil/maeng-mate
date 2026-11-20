@@ -1,5 +1,6 @@
 """수집 소스를 선택하고 실제 칼럼에 앱 필드를 연결하는 Cocoa 폼이다."""
 
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
@@ -32,7 +33,7 @@ from src.presentation.runtime_settings_controller import SettingsEditor
 
 type SourceEditor = SettingsEditor[CollectionDraft, SourceSettingsState]
 HEADER_HEIGHT = 232
-OPTION_HEIGHT = 150
+OPTION_HEIGHT = 184
 PARENT_OPTION_ROW = 34
 COLLAPSED_OPTIONS = 44
 EVENT_CHOICES = ("other", "meeting", "leave")
@@ -202,16 +203,20 @@ class SourceSettingsForm:
             frame(0, 0, 552, OPTION_HEIGHT - COLLAPSED_OPTIONS)
         )
         self._detail.addSubview_(self._advanced)
-        self._common_options = NSView.alloc().initWithFrame_(frame(0, 34, 552, 72))
+        self._common_options = NSView.alloc().initWithFrame_(frame(0, 34, 552, 106))
         self._advanced.addSubview_(self._common_options)
-        label(self._common_options, "열기 주소", 12, 43, 84)
-        self.url = self._field(102, 40, 436, "선택 사항", parent=self._common_options)
-        label(self._common_options, "항목 정렬", 12, 9, 84)
+        label(self._common_options, "열기 주소", 12, 77, 84)
+        self.url = self._field(102, 74, 436, "선택 사항", parent=self._common_options)
+        label(self._common_options, "항목 정렬", 12, 43, 84)
         self.sort = self._popup(
-            self._common_options, 102, 5, 170, ["정렬 없음", "날짜순", "제목순"], "changed:"
+            self._common_options, 102, 39, 270, ["정렬 없음", "날짜순", "제목순"], "changed:"
+        )
+        self._sort_keys = list(SOURCE_SORTS)
+        self.sort_direction = self._popup(
+            self._common_options, 378, 39, 160, ["오름차순", "내림차순"], "changed:"
         )
         self.rounds = self._check(
-            "부모 항목 안의 하위 표", 284, 6, 254, "structure:", parent=self._common_options
+            "부모 항목 안의 하위 표", 102, 6, 254, "structure:", parent=self._common_options
         )
         self.parent_display = self._check("부모 제목 표시", 102, 39, 168, "changed:")
         self.parent_sort = self._popup(self._advanced, 284, 38, 254, ["부모 정렬 없음"], "changed:")
@@ -303,6 +308,9 @@ class SourceSettingsForm:
     def _fill(self, raw: dict[str, object]) -> None:
         """저장된 건 또는 새 소스의 기본 입력으로 바꾼다."""
         self._original = raw
+        # 저장을 다시 시도해도 같은 초안은 하나의 논리 소스로 식별한다.
+        saved_id = raw.get("sourceId", raw.get("dataSourceId"))
+        self._source_id = saved_id if isinstance(saved_id, str) else str(uuid4())
         saved_classification = raw.get("classification")
         self._classification: dict[str, object] = (
             dict(saved_classification) if isinstance(saved_classification, dict) else {}
@@ -328,11 +336,25 @@ class SourceSettingsForm:
         self.rounds.setState_(int("parentTitleProperty" in raw or "roundTitleProperty" in raw))
         self._parent_orders = []
         sort = raw.get("sort", "default")
-        self.sort.selectItemAtIndex_(
-            SOURCE_SORTS.index(sort) if sort in SOURCE_SORTS and isinstance(sort, str) else 0
-        )
+        self._refresh_sort(sort if isinstance(sort, str) else "default")
+        self.sort_direction.selectItemAtIndex_(int(raw.get("sortDirection") == "desc"))
         self._set_schema_choices()
         self._draw_mapping()
+
+    def _refresh_sort(self, selected: str | None = None) -> None:
+        """선택한 카테고리에 실제 연결한 칼럼만 정렬 기준으로 제공한다."""
+        if selected is None:
+            selected = self._sort_keys[self.sort.indexOfSelectedItem()]
+        category = self.selected_category()
+        config = category.configuration if category else None
+        columns = (
+            [item for item in config.columns if item.id in self._category_links] if config else []
+        )
+        self._sort_keys = [*SOURCE_SORTS, *(f"column:{item.id}" for item in columns)]
+        set_titles(self.sort, ["기본 정렬", "날짜순", "제목순", *(item.name for item in columns)])
+        self.sort.selectItemAtIndex_(
+            self._sort_keys.index(selected) if selected in self._sort_keys else 0
+        )
 
     def _load_categories(self, raw: dict[str, object]) -> None:
         """설정에서 등록한 카테고리 중 하나를 ID로 연결한다."""
@@ -796,6 +818,7 @@ class SourceSettingsForm:
         """메인 폼에는 편집기 대신 선택 상태와 열기 버튼을 둔다."""
         if self._body is not None:
             self.document.setSubviews_([self._header, self._detail])
+        self._refresh_sort()
         height = 82
         body = NSView.alloc().initWithFrame_(frame(16, 0, 552, height))
         self._body = body
@@ -998,7 +1021,7 @@ class SourceSettingsForm:
         extra = PARENT_OPTION_ROW if self._uses_rounds() else 0
         expanded_height = OPTION_HEIGHT + extra
         detail_height = expanded_height if self._options_open else COLLAPSED_OPTIONS
-        self._common_options.setFrame_(frame(0, 34 + extra, 552, 72))
+        self._common_options.setFrame_(frame(0, 34 + extra, 552, 106))
         self._advanced.setFrameSize_((552, expanded_height - COLLAPSED_OPTIONS))
         height = max(self._viewport, body_height + HEADER_HEIGHT + detail_height + 40)
         self.document.setFrameSize_((584, height))
@@ -1117,10 +1140,15 @@ class SourceSettingsForm:
         value.pop("pageUrl", None)
         if url:
             value["pageUrl"] = url
+        # 편집은 기존 논리 ID를 유지하고 같은 원본을 새로 등록하면 다른 ID를 부여한다.
+        value["sourceId"] = self._source_id
+        value.pop("sortDirection", None)
         value.pop("sort", None)
-        sort = SOURCE_SORTS[self.sort.indexOfSelectedItem()]
+        sort = self._sort_keys[self.sort.indexOfSelectedItem()]
         if sort != "default":
             value["sort"] = sort
+            if self.sort_direction.indexOfSelectedItem() == 1:
+                value["sortDirection"] = "desc"
         if self._selected == len(sources):
             sources.append(value)
         else:
@@ -1135,9 +1163,13 @@ class SourceSettingsForm:
             self._generation = self.editor.generation
             sources = state.settings.sources
             self._selected = min(self._selected, len(sources))
+            names = [source_menu_name(raw, i + 1) for i, raw in enumerate(sources)]
+            # 같은 표 이름과 별칭을 사용하는 뷰도 선택 목록에서 구별한다.
+            counts = Counter(names)
             set_titles(
                 self.list,
-                [source_menu_name(raw, i + 1) for i, raw in enumerate(sources)] + ["새 소스"],
+                [f"{name} ({i})" if counts[name] > 1 else name for i, name in enumerate(names, 1)]
+                + ["새 소스"],
             )
             self.list.selectItemAtIndex_(self._selected)
             self._fill(sources[self._selected] if self._selected < len(sources) else {})
@@ -1162,6 +1194,7 @@ class SourceSettingsForm:
             *self._options.values(),
         ):
             control.setEnabled_(enabled)
+        self.sort_direction.setEnabled_(enabled and self.sort.indexOfSelectedItem() > 0)
         self._new.setEnabled_(editable and not self.editor.dirty)
         self._manage.setEnabled_(editable and not self.editor.dirty)
         if not self._categories:

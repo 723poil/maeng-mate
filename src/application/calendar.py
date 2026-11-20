@@ -170,7 +170,7 @@ def project_item(
     else:
         return None
     return CalendarItem(
-        f"{kind}:{item.source_id}:{item.id}",
+        f"{kind}:{mapping.source_id}:{item.id}",
         kind,
         title,
         first,
@@ -246,7 +246,9 @@ class CalendarService:
     ) -> _CalendarProjection:
         """월과 무관한 본인 범위·일정 구간·정렬을 수집 버전당 한 번 계산한다."""
         metadata: list[SourceSnapshot] = []
-        projected: list[CalendarItem] = []
+        occurrences: dict[
+            tuple[str, str, date, date, datetime | None, datetime | None], list[CalendarItem]
+        ] = {}
         by_id = {snapshot.source_id: snapshot for snapshot in snapshots}
         if len(by_id) != len(snapshots):
             raise QueryReadError()
@@ -262,7 +264,21 @@ class CalendarService:
             for raw in snapshot.items:
                 item = project_item(raw, source, self._user, self._policy)
                 if item is not None:
-                    projected.append(item)
+                    # 표시 설정의 종류가 달라도 원본 행과 실제 일정 구간이 같으면 함께 묶는다.
+                    key = (
+                        source.mapping.origin,
+                        raw.id,
+                        item.first,
+                        item.last,
+                        item.start_at,
+                        item.end_at,
+                    )
+                    occurrences.setdefault(key, []).append(item)
+        projected: list[CalendarItem] = []
+        for variants in occurrences.values():
+            # 카테고리 필터를 바꿀 때 원래 색상과 상세를 복원할 수 있도록 모든 후보를 보관한다.
+            variants.sort(key=lambda item: (item.category_key or "", item.key))
+            projected.append(replace(variants[0], alternatives=tuple(variants[1:])))
         projected.sort(
             key=lambda item: (
                 item.first,

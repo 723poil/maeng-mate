@@ -357,6 +357,7 @@ class MainListEditor:
                 if self._source_fields
                 else f"저장 칼럼 · {item.name or '이름 없음'}"
                 for item in self._columns
+                if item.name or not self._source_fields
             },
         }
 
@@ -372,10 +373,13 @@ class MainListEditor:
     ) -> Choice:
         """삭제된 칼럼을 임의로 대체하지 않고 명시적인 재선택을 허용한다."""
         if selected not in names:
-            previous = self._last_names.get(selected) or (
-                selected.partition(":")[2] if self._source_fields else "다시 선택"
-            )
-            names = {selected: f"삭제된 칼럼 · {previous}", **names}
+            previous = self._last_names.get(selected)
+            if self._source_fields and selected in self._kinds():
+                # 조회 전 이름 없는 연결은 그 행에만 표시해 다른 조건에서 잘못 고를 수 없게 한다.
+                title = "원본 속성 이름 미확인"
+            else:
+                title = f"삭제된 칼럼 · {previous or '다시 선택'}"
+            names = {selected: title, **names}
         return choice(view, x, y, width, names, selected, description)
 
     def pick_value(self, sender: NSPopUpButton) -> None:
@@ -508,9 +512,10 @@ class MainListEditor:
         self._capture()
         conditions = self._rules.exclusions if exclude else self._rules.filters
         kinds = self._kinds()
-        if not kinds:
+        names = self._field_names()
+        if not names:
             return
-        field = next(iter(kinds)) if self._alert_scope else "title"
+        field = next(iter(names)) if self._alert_scope else "title"
         operator = (
             "exact"
             if field in self._options
@@ -696,7 +701,7 @@ class MainListEditor:
             111,
             self._actions,
             "addFilter:",
-        ).setEnabled_(bool(self._kinds()))
+        ).setEnabled_(bool(self._field_names()))
         if not self._rules.filters:
             label(
                 view,
@@ -731,7 +736,7 @@ class MainListEditor:
             secondary=True,
         )
         button(view, "+ 조건 추가", 500, top - 39, 111, self._actions, "addExclusion:").setEnabled_(
-            bool(self._kinds())
+            bool(self._field_names())
         )
         self._condition_rows(view, top, exclude=True)
 

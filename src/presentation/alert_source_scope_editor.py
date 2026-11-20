@@ -1,13 +1,13 @@
 """알림 규칙 안에서 공통 저장 칼럼과 연결한 표별 원본 조건을 편집한다."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import unquote
 from weakref import proxy
 
 from AppKit import NSButton, NSView
-from Foundation import NSObject, NSTimer
+from Foundation import NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
 
 from src.application.category_column_types import LEGACY_CATEGORY_TYPES
 from src.application.source_settings import SourceSchema, SourceSettingsClient, SourceSettingsError
@@ -29,6 +29,13 @@ class AlertSource:
     provider: str
     rounds: bool
     columns: frozenset[str]
+    property_names: Mapping[str, str] = field(default_factory=dict, repr=False)
+
+    def saved_property(self, key: str) -> CategoryColumn:
+        """차시 공통 이름 또는 이 표의 역할 연결에 기록한 원본 속성명을 복원한다."""
+        kind, identifier = field_parts(key)
+        name = identifier if self.rounds else self.property_names.get(unquote(identifier), "")
+        return CategoryColumn(key, name, kind)
 
 
 class SourceScopeActions(NSObject):
@@ -172,11 +179,12 @@ class AlertSourceScopeEditor:
             page = NSView.alloc().initWithFrame_(frame(0, 0, 642, height))
             self._view.addSubview_(page)
             self._pages[key] = page
-            # 조회 전에도 이전 값을 볼 수 있도록 저장된 식별자로 먼저 행을 복원한다.
+            # 이름을 모르는 경우에도 칼럼 타입과 원본 키를 유지해 조회 실패로 조건을 잃지 않는다.
+            source = self._sources.get(key)
             known = tuple(
-                CategoryColumn(
-                    field, f"저장된 속성 · {field_parts(field)[1]}", field_parts(field)[0]
-                )
+                source.saved_property(field)
+                if source
+                else CategoryColumn(field, "", field_parts(field)[0])
                 for field in sorted(original.fields)
             )
             self._editors[key] = MainListEditor(
@@ -236,6 +244,7 @@ class AlertSourceScopeEditor:
             self._timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
                 0.12, self._actions, "poll:", None, True
             )
+            NSRunLoop.currentRunLoop().addTimer_forMode_(self._timer, NSRunLoopCommonModes)
 
     def poll(self) -> None:
         """표를 전환하는 동안 끝난 응답도 그 표의 입력에만 반영한다."""

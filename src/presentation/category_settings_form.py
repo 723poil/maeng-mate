@@ -2,6 +2,7 @@
 
 from collections import Counter
 from dataclasses import dataclass, replace
+from urllib.parse import unquote
 from uuid import uuid4
 
 from AppKit import (
@@ -263,6 +264,7 @@ class CategorySettingsForm:
             if raw.get("categoryId") == current.id:
                 mapping = parse_source(raw)
                 bindings = category_bindings(raw)
+                labels = raw.get("columnLabels")
                 sources.append(
                     AlertSource(
                         mapping.source_id,
@@ -270,6 +272,12 @@ class CategorySettingsForm:
                         mapping.provider,
                         mapping.round_title_property is not None,
                         frozenset(bindings),
+                        {
+                            unquote(identifier): name
+                            for role, identifier in mapping.properties.items()
+                            if isinstance(labels, dict)
+                            and isinstance(name := labels.get(role), str)
+                        },
                     )
                 )
                 roles = raw.get("properties")

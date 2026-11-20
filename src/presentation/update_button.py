@@ -55,9 +55,12 @@ class UpdateChecks:
 
     def attach(self, parent: NSView) -> None:
         """설정을 처음 열 때 기존 조회에 수동 확인 버튼을 연결한다."""
+        version_text = f"버전 {self.current}"
+        if self.actions.is_development:
+            version_text += " · 개발용"
         label(
             parent,
-            f"버전 {self.current} · {self.actions.build_label}",
+            version_text,
             20,
             35,
             155,
@@ -123,12 +126,12 @@ class UpdateChecks:
             if manual:
                 self.show(
                     "설치할 새 버전이 없습니다.",
-                    f"현재 실행 중인 개발용 버전 {self.current} · 최신 배포용 버전 {latest}",
+                    f"현재 실행 중인 개발용 버전 {self.current} · 최신 버전 {latest}",
                 )
         else:
             self.show(
-                f"배포용 {latest} 버전이 나왔습니다.",
-                f"현재 개발용 {self.current} 버전을 사용 중입니다. ‘릴리스 열기’를 눌러 배포용 앱을 다운로드하세요.",
+                f"{latest} 버전이 나왔습니다.",
+                f"현재 개발용 {self.current} 버전을 사용 중입니다. ‘릴리스 열기’를 눌러 새 버전을 다운로드하세요.",
                 download=True,
             )
 

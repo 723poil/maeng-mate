@@ -1,14 +1,17 @@
 """수집 소스의 메타데이터 탐색과 JSON 매핑 편집을 분리한다."""
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Protocol
 from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
+from src.application.category_column_types import scope_property_kinds
 from src.application.category_configuration_upgrade import move_unassigned_settings
 from src.application.notion_links import notion_link
+from src.application.periodic import utc_now
 from src.application.ports import WorkSource
 from src.application.work_settings import (
     Settings,
@@ -30,6 +33,7 @@ from src.domain.display_columns import TITLE_COLUMN_TYPES
 from src.domain.models import SourceKind, SourceMapping, WorkItem
 from src.domain.source_alerts import AlertDelivery, is_source_alert_kind
 from src.domain.source_display import SourceCategory, SourceDisplay
+from src.domain.source_scope import field_parts
 
 
 class SourceSettingsError(ValueError):
@@ -79,6 +83,17 @@ class SourceColumn:
     name: str
     kind: str
     options: tuple[str, ...] = ()
+    option_ids: tuple[str, ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        """ID가 있는 경우 각 선택값과 유일하게 일대일로 대응해야 한다."""
+        if self.option_ids and (
+            self.kind not in {"select", "status"}
+            or len(self.options) != len(self.option_ids)
+            or len(set(self.option_ids)) != len(self.option_ids)
+            or any(not value.strip() for value in self.option_ids)
+        ):
+            raise ValueError("원본 선택값의 ID 연결을 확인하세요.")
 
 
 @dataclass(frozen=True)
@@ -116,6 +131,12 @@ class SourceSettingsStore(Protocol):
 
     def read_validated(self) -> tuple[WorkSettingsDocument, Settings] | None:
         """같은 읽기에서 얻은 설정 문서와 검증된 매핑을 반환한다."""
+        ...
+
+    def observed_choices(
+        self, category_id: str, now: datetime, max_age_seconds: int
+    ) -> dict[str, tuple[str, ...]]:
+        """현재 설정과 같은 시점의 정상 스냅샷에서 선택값만 읽는다."""
         ...
 
     def save_document(
@@ -169,6 +190,10 @@ class SourceSettingsClient(Protocol):
 
     def read(self) -> SourceSettingsState:
         """저장 소스를 읽는다."""
+        ...
+
+    def observed_choices(self, category_id: str) -> dict[str, tuple[str, ...]]:
+        """카테고리의 원본 선택·상태 칼럼에서 수집한 규칙 후보를 읽는다."""
         ...
 
     def save(self, value: CollectionDraft) -> SourceSettingsState:
@@ -263,6 +288,20 @@ def validate_columns(mapping: SourceMapping, schema: SourceSchema) -> None:
             raise SourceSettingsError(f"‘{rule.name}’에 사용할 속성을 다시 선택하세요.")
 
 
+def scope_property_types(source: SourceMapping) -> set[tuple[str, tuple[str, ...]]]:
+    """실제로 켜진 규칙의 원본 속성과 필요한 타입을 표별로 모은다."""
+    references: set[tuple[str, tuple[str, ...]]] = set()
+    for rule in source.alert_rules:
+        if not rule.enabled or (scope := rule.scope_for(source.source_id)) is None:
+            continue
+        for condition in (*scope.conditions.filters, *scope.conditions.exclusions):
+            _, identifier = field_parts(condition.field)
+            # 차시는 하위 표의 속성 이름을 쓰며 일반 표만 인코딩한 속성 ID를 복원한다.
+            key = identifier if source.round_title_property is not None else unquote(identifier)
+            references.add((key, scope_property_kinds(condition)))
+    return references
+
+
 class SourceSettingsService:
     """매핑의 DB 저장과 프로바이더 확인 순서를 관리한다."""
 
@@ -271,12 +310,21 @@ class SourceSettingsService:
         store: SourceSettingsStore,
         active: Settings | None,
         catalogs: Mapping[str, SourceCatalog],
+        *,
+        now: Callable[[], datetime] = utc_now,
+        max_age_seconds: int = 1200,
     ) -> None:
         """운영 중인 매핑의 기준값과 현재 지원하는 조회기를 받는다."""
         self._store = store
         self._active = mapping_signature(active)
         self._display = active.display if active else ()
         self._catalogs = dict(catalogs)
+        self._now = now
+        self._max_age_seconds = max_age_seconds
+
+    def observed_choices(self, category_id: str) -> dict[str, tuple[str, ...]]:
+        """일반 설정 응답과 별도로 열린 규칙 편집기의 후보만 조회한다."""
+        return self._store.observed_choices(category_id, self._now(), self._max_age_seconds)
 
     def read(self) -> SourceSettingsState:
         """탭 조회는 외부를 호출하지 않고 설정 JSON만 읽는다."""
@@ -387,19 +435,34 @@ class SourceSettingsService:
             "categories": category_documents(categories),
         }
         parsed = parse_settings(payload)
-        if isinstance(value, CategoryDraft):
-            return self._state(*self._store.save_document(value.revision, payload))
         previous = {source.source_id: source for source in existing.sources}
+        old_active = {source.source_id: source for source in existing.active_sources}
+        active_ids = {source.source_id for source in parsed.active_sources}
         for source in parsed.sources:
-            if same_source_bindings(previous.get(source.source_id), source):
-                continue
-            profiles = self.inspect(
-                source.provider, source.source_id, rounds=source.round_title_property is not None
+            check_mapping = isinstance(value, SourceDraft) and not same_source_bindings(
+                previous.get(source.source_id), source
             )
+            rounds = source.round_title_property is not None
+            references = scope_property_types(source) if source.source_id in active_ids else set()
+            old = old_active.get(source.source_id)
+            if references and old is not None and (old.round_title_property is not None) == rounds:
+                # 같은 표·탐색 방식의 기존 참조는 이름·문구·비교값만 바꿔도 다시 조회하지 않는다.
+                references -= scope_property_types(old)
+            if not check_mapping and not references:
+                continue
+            profiles = self.inspect(source.provider, source.source_id, rounds=rounds)
             schema = next((item for item in profiles if item.id == source.source_id), None)
             if schema is None:
                 raise SourceSettingsError("수집할 데이터 소스를 다시 선택하세요.")
-            validate_columns(source, schema)
+            if check_mapping:
+                validate_columns(source, schema)
+            # 원격 메타데이터는 저장 트랜잭션 전에 읽는다. 저장소가 이후의 버전 경합을 검사한다.
+            if references:
+                types = {c.name if rounds else unquote(c.id): c.kind for c in schema.columns}
+                if any(types.get(key) not in allowed for key, allowed in references):
+                    raise SourceSettingsError(
+                        "알림 조건에 연결할 원본 칼럼과 타입을 다시 선택하세요."
+                    )
         return self._state(*self._store.save_document(value.revision, payload))
 
 
@@ -436,28 +499,15 @@ def preserve_rule_delivery(
 
 
 def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> bool:
-    """표시 이름과 순서만 바꿀 때는 원본 스키마를 다시 조회하지 않는다."""
-    if before is None or replace(
-        before,
-        display_columns=None,
-        alert_rules=(),
-        stored_columns=(),
-        calendar_column=None,
-        calendar_date_override=False,
-        event_alert_triggers=frozenset(),
-        failure_rules=(),
-    ) != replace(
-        after,
-        display_columns=None,
-        alert_rules=(),
-        stored_columns=(),
-        calendar_column=None,
-        calendar_date_override=False,
-        event_alert_triggers=frozenset(),
-        failure_rules=(),
-    ):
-        return False
-    return source_attribute_types(before) == source_attribute_types(after)
+    """새로 검증할 원본 연결이 없으면 값 설정이나 연결 해제는 원격 조회 없이 저장한다."""
+    return (
+        before is not None
+        and before.provider == after.provider
+        and before.kind == after.kind
+        and before.round_title_property == after.round_title_property
+        and after.properties.items() <= before.properties.items()
+        and source_attribute_types(after) <= source_attribute_types(before)
+    )
 
 
 def source_attribute_types(source: SourceMapping) -> set[tuple[str, str]]:
@@ -592,7 +642,13 @@ def schema_payload(schema: SourceSchema) -> dict[str, object]:
         "id": schema.id,
         "name": schema.name,
         "columns": [
-            {"id": item.id, "name": item.name, "kind": item.kind, "options": list(item.options)}
+            {
+                "id": item.id,
+                "name": item.name,
+                "kind": item.kind,
+                "options": list(item.options),
+                **({"optionIds": list(item.option_ids)} if item.option_ids else {}),
+            }
             for item in schema.columns
         ],
         "roundTitles": list(schema.round_titles),
@@ -614,12 +670,16 @@ def parse_schemas(value: object) -> tuple[SourceSchema, ...]:
         for column in columns:
             if not isinstance(column, dict) or not isinstance(column.get("options"), list):
                 raise ValueError
+            ids = column.get("optionIds", [])
+            if not isinstance(ids, list):
+                raise ValueError
             parsed.append(
                 SourceColumn(
                     nonblank(column["id"]),
                     nonblank(column["name"]),
                     nonblank(column["kind"]),
                     tuple(nonblank(item) for item in column["options"]),
+                    tuple(nonblank(item) for item in ids),
                 )
             )
         result.append(

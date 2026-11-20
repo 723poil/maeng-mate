@@ -87,6 +87,7 @@ def prepare_deliveries(
     group: str | None = None,
     titles: Mapping[str, str] | None = None,
     rules: DeliveryRules | None = None,
+    aliases: Mapping[str, str] | None = None,
 ) -> None:
     """한 알림의 대상 채널을 한 번 확정해 이후 채널 추가로 과거 알림을 보내지 않는다."""
     kinds = delivery_kinds(connection, row, qa_scopes, preferences)
@@ -98,6 +99,9 @@ def prepare_deliveries(
         kinds = allowed_types
     if allowed_types is not None:
         kinds = tuple(kind for kind in kinds if kind in allowed_types)
+    if aliases:
+        # 이전 종류의 구독·해제도 같은 표에 연결된 현재 규칙 ID로 관리한다.
+        kinds = tuple(aliases.get(kind, kind) for kind in kinds)
     legacy = connection.execute(
         """SELECT 1 FROM notification_jobs AS previous WHERE logical_key=? AND id<>?
         AND (state IN ('requested','unknown') OR (state='obsolete' AND token IS NOT NULL))

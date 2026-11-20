@@ -1,10 +1,14 @@
 """업무 마감과 회의를 한국 날짜에 맞춰 분류한다."""
 
+from __future__ import annotations
+
 from datetime import date, datetime, time
+from typing import TYPE_CHECKING
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from src.domain.models import Period
+if TYPE_CHECKING:
+    from src.domain.models import Period
 
 SEOUL = ZoneInfo("Asia/Seoul")
 

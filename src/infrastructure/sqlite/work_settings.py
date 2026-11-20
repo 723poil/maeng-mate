@@ -4,10 +4,12 @@ import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import datetime
 
 from src.application.category_upgrade import upgrade_category_preferences
 from src.application.notion_page_links import page_url
 from src.application.preferences import parse_preferences, preferences_payload
+from src.application.today_metadata import source_metadata
 from src.application.work_settings import (
     Settings,
     WorkSettingsDocument,
@@ -24,9 +26,22 @@ from src.domain.preferences import (
 from src.domain.source_display import SOURCE_CHANNELS
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.field_alerts import retire_changed_rules
+from src.infrastructure.sqlite.legacy_delivery import legacy_bindings, retire_legacy_deliveries
 from src.infrastructure.sqlite.preference_document import read_preferences, write_preferences
 from src.infrastructure.sqlite.preferences import revoke_muted_deliveries
 from src.infrastructure.sqlite.rule_delivery import category_rules, channel_messages
+from src.infrastructure.sqlite.work_reader import snapshot_header, source_versions
+
+_OBSERVED_CHOICES_QUERY = """
+SELECT binding.value AS column_id, value.value AS label
+FROM item_snapshots AS item
+JOIN json_each(item.payload, '$.display_values') AS value
+JOIN json_each(?) AS binding ON binding.key = value.key
+WHERE item.source_id=? AND item.mapping_hash=? AND item.availability='present'
+  AND (value.key IN (SELECT value FROM json_each(item.payload, '$.option_fields'))
+       OR value.key IN (SELECT value FROM json_each(?)))
+ORDER BY item.item_id
+"""
 
 
 def read_work_settings_row(connection: sqlite3.Connection) -> tuple[int, str | bytes] | None:
@@ -79,11 +94,16 @@ class SQLiteWorkSettings:
     """시작 설정과 링크 편집이 같은 문서·revision을 사용하게 한다."""
 
     def __init__(
-        self, database: Database, *, notification_groups: Mapping[str, str] | None = None
+        self,
+        database: Database,
+        *,
+        notification_groups: Mapping[str, str] | None = None,
+        notification_user_id: str | None = None,
     ) -> None:
         """DB와 현재 실행 중인 소스의 알림 그룹을 받는다."""
         self._database = database
         self._notification_groups = dict(notification_groups or {})
+        self._notification_user_id = notification_user_id
 
     def read(self) -> WorkSettingsDocument | None:
         """일반 실행은 설정 문서만 읽고 파일을 생성하거나 이전하지 않는다."""
@@ -94,6 +114,61 @@ class SQLiteWorkSettings:
         """편집기는 읽기 트랜잭션에서 검증한 매핑으로 같은 버전의 화면을 구성한다."""
         with self._database.transaction(read_only=True) as connection:
             return _read_validated(connection)
+
+    def observed_choices(
+        self, category_id: str, now: datetime, max_age_seconds: int
+    ) -> dict[str, tuple[str, ...]]:
+        """현재 매핑과 신선도가 일치하는 스냅샷의 실제 선택값만 모은다."""
+        result: dict[str, set[str]] = {}
+        count = 0
+        with self._database.transaction(read_only=True) as connection:
+            stored = _read_validated(connection)
+            if stored is None:
+                return {}
+            settings = stored[1]
+            sources = tuple(
+                source
+                for source, display in zip(settings.sources, settings.display, strict=True)
+                if display.category is not None and display.category.id == category_id
+            )
+            versions = source_versions(connection, sources)
+            for source in sources:
+                version = versions.get(source.source_id)
+                header = snapshot_header(source, version)
+                if version is None or source_metadata(header, now, max_age_seconds)["stale"]:
+                    continue
+                columns = tuple(
+                    column
+                    for column in source.storage_layout
+                    if column.origin is not None and column.kind in {"select", "status"}
+                )
+                if not columns:
+                    continue
+                # 구버전도 상태·분류·승인 역할은 정규화할 때 선택 타입을 검증했다.
+                roles = {source.properties.get(role) for role in ("status", "category", "approval")}
+                trusted = [column.value_key for column in columns if column.property_id in roles]
+                params = (
+                    json.dumps({column.value_key: column.id for column in columns}),
+                    source.source_id,
+                    version["mapping_hash"],
+                    json.dumps(trusted),
+                )
+                for row in connection.execute(_OBSERVED_CHOICES_QUERY, params):
+                    label = row["label"]
+                    if not isinstance(label, str):
+                        raise WorkSettingsError("invalid")
+                    # 긴 표시 미리보기를 전체 선택값으로 오인하지 않고 응답 크기도 제한한다.
+                    if not label.strip() or len(label) > 200:
+                        continue
+                    values = result.setdefault(row["column_id"], set())
+                    if len(values) < 100 and label not in values:
+                        values.add(label)
+                        count += 1
+                        if count >= 1000:
+                            break
+                if count >= 1000:
+                    break
+        return {column: tuple(sorted(values)) for column, values in result.items()}
 
     def initialize(
         self, payload: dict[str, object], *, replace_initial: bool = False
@@ -211,6 +286,11 @@ class SQLiteWorkSettings:
                     }
                 after = _write(connection, revision + 1, payload)
                 retire_changed_rules(connection, before, after)
+                retire_legacy_deliveries(
+                    connection,
+                    legacy_bindings(before, self._notification_user_id),
+                    legacy_bindings(after, self._notification_user_id),
+                )
                 revoke_changed_deliveries(connection, before, after, self._notification_groups)
                 save_event_subscriptions(
                     connection, before, after, event_selections, self._notification_groups

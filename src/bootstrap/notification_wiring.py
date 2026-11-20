@@ -6,6 +6,7 @@ from src.bootstrap.notification_channels import CHANNELS
 from src.domain.work_dates import canonical_identity
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.field_alerts import field_alert_scopes
+from src.infrastructure.sqlite.legacy_delivery import legacy_bindings
 from src.infrastructure.sqlite.notification_keys import (
     failure_rule_scope,
     meeting_scope,
@@ -91,5 +92,6 @@ def build_notifications(
         if settings
         else {},
         qa_scopes=tuple(qa_scopes),
+        legacy_bindings=legacy_bindings(settings, user),
     )
     return store, groups

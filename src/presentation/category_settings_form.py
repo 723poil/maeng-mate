@@ -2,6 +2,7 @@
 
 from collections import Counter
 from dataclasses import dataclass, replace
+from urllib.parse import unquote
 from uuid import uuid4
 
 from AppKit import (
@@ -19,10 +20,16 @@ from AppKit import (
 )
 from Foundation import NSObject
 
-from src.application.source_settings import CategoryDraft
-from src.application.work_settings import category_bindings, category_documents, parse_categories
+from src.application.source_settings import CategoryDraft, SourceSettingsClient
+from src.application.work_settings import (
+    category_bindings,
+    category_documents,
+    parse_categories,
+    parse_source,
+)
 from src.domain.category_configuration import CategoryConfiguration
 from src.domain.source_display import SourceCategory
+from src.presentation.alert_source_scope_editor import AlertSource
 from src.presentation.category_configuration_sheet import CategoryConfigurationSheet
 from src.presentation.native_views import button, card, frame, label, place_label
 from src.presentation.preferences_controller import PreferencesController
@@ -127,9 +134,10 @@ class CategorySettingsForm:
         viewport: float,
         editor: SourceEditor,
         preferences: PreferencesController | None = None,
+        client: SourceSettingsClient | None = None,
     ) -> None:
         """카테고리 명령은 공유 설정의 버전으로 저장한다."""
-        self.editor = editor
+        self.editor, self._client = editor, client
         self._preferences = preferences
         self._page, self._viewport = page, viewport
         self._generation = -1
@@ -251,8 +259,27 @@ class CategorySettingsForm:
 
         state = self.editor.state
         people: set[str] = set()
+        sources: list[AlertSource] = []
         for raw in state.settings.sources if state else ():
             if raw.get("categoryId") == current.id:
+                mapping = parse_source(raw)
+                bindings = category_bindings(raw)
+                labels = raw.get("columnLabels")
+                sources.append(
+                    AlertSource(
+                        mapping.source_id,
+                        str(raw.get("name") or f"소스 {len(sources) + 1}"),
+                        mapping.provider,
+                        mapping.round_title_property is not None,
+                        frozenset(bindings),
+                        {
+                            unquote(identifier): name
+                            for role, identifier in mapping.properties.items()
+                            if isinstance(labels, dict)
+                            and isinstance(name := labels.get(role), str)
+                        },
+                    )
+                )
                 roles = raw.get("properties")
                 person_properties = (
                     {
@@ -265,11 +292,19 @@ class CategorySettingsForm:
                 )
                 people.update(
                     key
-                    for key, binding in category_bindings(raw).items()
+                    for key, binding in bindings.items()
                     if binding.kind == "people" or binding.property_id in person_properties
                 )
+        preferences = self._preferences.value if self._preferences else None
         self._sheet = CategoryConfigurationSheet(
-            parent, current, apply, closed, people_columns=frozenset(people)
+            parent,
+            current,
+            apply,
+            closed,
+            people_columns=frozenset(people),
+            sources=tuple(sources),
+            client=self._client,
+            global_channels=preferences.channels if preferences is not None else (),
         )
         self._sheet.show()
 

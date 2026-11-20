@@ -37,6 +37,7 @@ _OPERATORS = {
     "text": ("eq", "exact", "ne", "contains", "not_contains", *_PRESENCE),
     "number": _ORDERED,
     "date": (*_ORDERED, "today", *RELATIVE_DAY_OPERATORS),
+    "period": (*_ORDERED, "today", *RELATIVE_DAY_OPERATORS, "not_ended"),
     "time": _ORDERED,
     "boolean": ("eq", "ne", *_PRESENCE),
 }
@@ -106,6 +107,7 @@ class ListFilter:
     field: str
     operator: str
     value: str = ""
+    option_id: str | None = None
 
     def validate(self, kind: str) -> None:
         """선택한 연산자가 요구하는 종류와 형식의 입력값인지 확인한다."""
@@ -113,7 +115,15 @@ class ListFilter:
             raise ValueError("비교할 값을 텍스트로 입력하세요.")
         if self.operator not in operators_for(kind):
             raise ValueError("칼럼과 조건을 다시 선택하세요.")
-        if self.operator in (*_PRESENCE, "today"):
+        if self.option_id is not None and (
+            kind != "text"
+            or self.operator not in {"eq", "exact", "ne"}
+            or not self.option_id.strip()
+            or self.option_id != self.option_id.strip()
+            or any(ord(char) < 32 for char in self.option_id)
+        ):
+            raise ValueError("선택값 ID는 원본 선택 칼럼의 일치·불일치 조건에서 사용하세요.")
+        if self.operator in (*_PRESENCE, "today", "not_ended"):
             if self.value:
                 raise ValueError("이 조건은 입력값을 비워 두세요.")
             return
@@ -122,6 +132,8 @@ class ListFilter:
             if not days.isascii() or not days.isdecimal() or not days.strip("0"):
                 raise ValueError("기간은 1일 이상으로 입력하세요.")
             return
+        if kind == "period":
+            kind = "date"
         expected = _read_value(self.value, kind, date_only=True)
         if kind == "date" and (expected is None or self.value != expected):
             raise ValueError("날짜는 YYYY-MM-DD 형식으로 입력하세요.")
@@ -246,18 +258,19 @@ class MainListRules:
 
     def includes(self, values: Mapping[str, str], kinds: Mapping[str, str], day: date) -> bool:
         """제외 조건 중 하나라도 맞으면 숨기고 나머지 행에 포함 조건을 적용한다."""
-        if any(
-            condition.matches(values.get(condition.field, ""), kinds[condition.field], day)
-            for condition in self.exclusions
-        ):
-            return False
-        if not self.filters:
-            return True
-        matches = (
-            condition.matches(values.get(condition.field, ""), kinds[condition.field], day)
-            for condition in self.filters
+        return self.accepts(
+            lambda condition: condition.matches(
+                values.get(condition.field, ""), kinds[condition.field], day
+            )
         )
-        return all(matches) if self.match == "all" else any(matches)
+
+    def accepts(self, matches: Callable[[ListFilter], bool]) -> bool:
+        """같은 포함·제외 결합식을 저장값과 원본 속성 비교에 함께 쓴다."""
+        if any(matches(condition) for condition in self.exclusions):
+            return False
+        return not self.filters or (all if self.match == "all" else any)(
+            matches(condition) for condition in self.filters
+        )
 
     def order(
         self,

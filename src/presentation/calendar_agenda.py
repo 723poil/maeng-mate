@@ -121,7 +121,11 @@ class CalendarAgenda:
             )
             label(
                 view,
-                (KIND_LABELS[item.kind] + " · " if item.display_fields is None else "")
+                (
+                    (item.category or KIND_LABELS[item.kind]) + " · "
+                    if item.display_fields is None
+                    else ""
+                )
                 + item_time(item, day or item.first),
                 16,
                 top - 20,
@@ -137,7 +141,10 @@ class CalendarAgenda:
             title.setFont_(NSFont.systemFontOfSize_(13))
             title.setMaximumNumberOfLines_(2)
             title.setFrame_(frame(16, top - 60, width - 46, 36))
-            title.setToolTip_(item.title + ("\n" + item.status if item.status else ""))
+            title.setToolTip_(
+                item.title
+                + ("\n" + item.status if item.display_fields is None and item.status else "")
+            )
             view.addSubview_(title)
             if item.display_fields:
                 lines = tuple(f"{name} {value or '—'}" for name, value in item.display_fields)

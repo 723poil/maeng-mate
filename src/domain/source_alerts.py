@@ -8,21 +8,48 @@ from decimal import Decimal, InvalidOperation
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from src.domain.main_list import MainListRules
+from src.domain.source_scope import SourceScope
+
 MAX_SOURCE_ALERT_RULES = 24
 COLLECTION_STATE = "$collection"
 UNBOUND_COLUMN = "$unbound"
+_ITEM_BODY = "{항목 제목}"
+CHANGE_BODY = "{항목 제목 · 변경 내용}"
+MEETING_BODY = "{시작 시각 · 회의 제목}"
+_FAILURE_BODY = "{수집 오류 안내}"
+
+
+def alert_body_token(column_id: str, previous_kind: str | None) -> str:
+    """발송할 때 항목별로 채워지는 본문의 구성을 편집란에 표시한다."""
+    if column_id == COLLECTION_STATE or previous_kind == "sync_error":
+        return _FAILURE_BODY
+    if previous_kind == "meeting":
+        return MEETING_BODY
+    if previous_kind and previous_kind.startswith(("task_", "qa_")):
+        return CHANGE_BODY
+    return _ITEM_BODY
 
 
 @dataclass(frozen=True)
 class AlertDelivery:
-    """규칙에 직접 입력한 본문과 발송할 채널이다."""
+    """규칙별 본문과 채널이다. 각각 None이면 항목의 본문과 상위 채널을 따른다."""
 
-    message: str
-    channels: tuple[str, ...]
+    message: str | None
+    channels: tuple[str, ...] | None
+    body_token: str | None = None
 
     def __post_init__(self) -> None:
-        """채널이 있는 규칙은 발신 앱이 표시할 수 있는 문구를 가져야 한다."""
-        if self.channels and not self.message.strip():
+        """직접 지정한 본문은 발신 앱이 한 줄로 표시할 수 있어야 한다."""
+        if self.body_token is not None and (
+            self.body_token not in (_ITEM_BODY, CHANGE_BODY, MEETING_BODY, _FAILURE_BODY)
+            or self.message is None
+            or self.body_token not in self.message
+        ):
+            raise ValueError("알림 문구의 본문 표시를 확인하세요.")
+        if self.message is None:
+            return
+        if self.channels != () and not self.message.strip():
             raise ValueError("선택한 채널에 보낼 알림 문구를 입력하세요.")
         if len(self.message) > 300 or any(ord(char) < 32 for char in self.message):
             raise ValueError("알림 문구를 한 줄로 300자 이내로 입력하세요.")
@@ -90,6 +117,19 @@ class SourceAlertRule:
     item_filter: Literal["meeting", "upcoming"] | None = None
     # 이미 예약된 이전 형식의 발송 이력에만 연결한다. 새 규칙 판정에는 사용하지 않는다.
     previous_kind: str | None = None
+
+    scope: MainListRules | None = None
+    # 수집 소스마다 같은 카테고리 칼럼이 다른 원본 키를 가리킬 수 있다.
+    scope_bindings: tuple[tuple[str, str, str], ...] = ()
+
+    # None은 공통 조건만 사용하고, 빈 목록은 연결된 원본 표가 없는 상태다.
+    source_scopes: tuple[SourceScope, ...] | None = None
+
+    def scope_for(self, source_id: str) -> SourceScope | None:
+        """원본 ID가 일치하는 표의 조건만 돌려준다."""
+        return next(
+            (scope for scope in self.source_scopes or () if scope.source_id == source_id), None
+        )
 
     @property
     def comparison_kind(self) -> str:

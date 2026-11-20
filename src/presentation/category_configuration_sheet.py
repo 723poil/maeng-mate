@@ -26,7 +26,7 @@ from AppKit import (
 )
 from Foundation import NSObject
 
-from src.application.source_settings import SourceSettingsError
+from src.application.source_settings import SourceSettingsClient, SourceSettingsError
 from src.application.work_settings import (
     category_configuration_payload,
     parse_category_configuration,
@@ -38,7 +38,9 @@ from src.domain.category_configuration import (
     CategoryConfiguration,
 )
 from src.domain.display_columns import display_line
+from src.domain.source_alerts import COLLECTION_STATE, SourceAlertRule
 from src.domain.source_display import SOURCE_COLORS, SourceCategory
+from src.presentation.alert_source_scope_editor import AlertSource
 from src.presentation.category_sheet_controls import field, popup, set_entries
 from src.presentation.column_alert_editor import ColumnAlertEditor
 from src.presentation.column_setup_sheet import TYPE_LABELS, scroll
@@ -118,6 +120,9 @@ class CategoryConfigurationSheet:
         closed: Callable[[], None],
         *,
         people_columns: frozenset[str] = frozenset(),
+        sources: tuple[AlertSource, ...] = (),
+        client: SourceSettingsClient | None = None,
+        global_channels: tuple[str, ...] = (),
     ) -> None:
         """설정 변경을 외부 저장 전까지 이 시트에 보관한다."""
         self.parent = parent
@@ -129,6 +134,12 @@ class CategoryConfigurationSheet:
         self._dates: tuple[str, ...] = ()
         self._alert_rules = tuple(item.rule for item in self._original.alerts)
         self._people_columns = people_columns
+        self._sources, self._client, self._global_channels = sources, client, global_channels
+        self._outer_sources = {
+            entry.rule.id: entry.sources
+            for entry in self._original.alerts
+            if entry.sources is not None
+        }
         self._alert_editor: ColumnAlertEditor | None = None
         self._display_help = display_help_popover()
         self._tab = 0
@@ -378,16 +389,45 @@ class CategoryConfigurationSheet:
         """소스와 무관하게 공유 칼럼에서 규칙의 조건을 선택한다."""
         self._alert_body.setSubviews_([])
         columns = tuple(item for item in self._columns if item.name)
-        editor = ColumnAlertEditor(
+        self._alert_editor = ColumnAlertEditor(
             self._alert_body,
             columns,
             self._alert_rules,
-            False,
             self.clear_status,
             people_columns=self._people_columns,
+            sources=self._sources,
+            client=self._client,
+            category_id=self._category.id,
+            channels=self.rule_channels,
+            outer_sources=self._outer_sources,
         )
-        editor.set_scope_description("기준 데이터와 조건을 선택하세요.")
-        self._alert_editor = editor
+
+    def rule_channels(self, rule: SourceAlertRule | None) -> tuple[str, ...]:
+        """지금 선택한 카테고리·소스별 전달 설정에서 허용하는 전체 채널을 표시한다."""
+        chosen = CHANNEL_OPTIONS[self.channels.indexOfSelectedItem()]
+        overrides = {item.source_id: item.channels for item in self._original.inherited}
+        if chosen != self._original.channels:
+            overrides.clear()
+        allowed_sources = (
+            {item.source_id for item in rule.source_scopes}
+            if rule and rule.source_scopes is not None
+            else self._outer_sources.get(rule.id)
+            if rule
+            else None
+        )
+        enabled: set[str] = set()
+        for source in self._sources:
+            if allowed_sources is not None and source.id not in allowed_sources:
+                continue
+            if rule and rule.column_id != COLLECTION_STATE and rule.column_id not in source.columns:
+                continue
+            if rule and rule.scope and not rule.scope.fields <= source.columns:
+                continue
+            channels = overrides.get(source.id)
+            if channels is None:
+                channels = chosen
+            enabled.update(self._global_channels if channels is None else channels)
+        return tuple(channel for channel in self._global_channels if channel in enabled)
 
     def clear_status(self) -> None:
         """다른 입력을 시작하면 이전 오류를 지운다."""
@@ -461,7 +501,6 @@ class CategoryConfigurationSheet:
             column.id for column in self._columns if column.id in common
         ):
             overrides = tuple(replace(item, column_order=None) for item in overrides)
-        old_scopes = {entry.rule.id: entry.sources for entry in self._original.alerts}
         # 다른 탭에서 칼럼을 지우거나 종류를 바꿔도 참조 중인 조건을 직접 고칠 수 있다.
         self._main_editor.update_columns(tuple(self._columns))
         try:
@@ -475,7 +514,9 @@ class CategoryConfigurationSheet:
             COLOR_OPTIONS[self.color.indexOfSelectedItem()],
             self._calendar_date,
             channels,
-            tuple(CategoryAlert(rule, old_scopes.get(rule.id)) for rule in self._alert_rules),
+            tuple(
+                CategoryAlert(rule, self._outer_sources.get(rule.id)) for rule in self._alert_rules
+            ),
             overrides,
             (),
             main_list=main_list,

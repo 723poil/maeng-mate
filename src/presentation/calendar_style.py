@@ -81,9 +81,14 @@ def item_time(item: CalendarItem, day: date) -> str:
 
 
 def item_summary(item: CalendarItem, day: date) -> str:
-    """작은 달력과 툴팁에도 업무 상태·기한을 함께 전달한다."""
-    state = " · " + item.status if item.kind in {"task", "qa"} and item.status else ""
-    return item_time(item, day) + state + "  " + item.title
+    """날짜 칸의 도움말에 원본 일정 분류와 업무 상태·기한을 표시한다."""
+    state = (
+        " · " + item.status
+        if item.display_fields is None and item.kind in {"task", "qa"} and item.status
+        else ""
+    )
+    category = f"{item.category} · " if item.category and item.display_fields is None else ""
+    return category + item_time(item, day) + state + "  " + item.title
 
 
 def attendance_symbol(item: CalendarAttendance) -> tuple[str, NSColor]:

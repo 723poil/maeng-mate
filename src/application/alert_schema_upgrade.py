@@ -23,6 +23,7 @@ from src.domain.source_alerts import (
     SourceAlertRule,
 )
 from src.domain.source_display import SourceCategory
+from src.domain.source_scope import SourceScope, calendar_conditions
 
 # 이전 형식의 역할은 이전 때만 해석한다. 새 문서의 발송 조건에는 실제 저장 칼럼 ID를 쓴다.
 _OLD_FIELDS = {
@@ -124,7 +125,14 @@ def upgrade_alert_schema(
 ) -> dict[str, object] | None:
     """이미 저장된 규칙만 변환하고 빈 목록과 이미 변환된 문서는 유지한다."""
     settings = parse_settings(payload)
-    if not any(cat.configuration and cat.configuration.event_alerts for cat in settings.categories):
+    if not any(
+        cat.configuration
+        and (
+            cat.configuration.event_alerts
+            or any(a.rule.item_filter for a in cat.configuration.alerts)
+        )
+        for cat in settings.categories
+    ):
         return None
     members_by_category: dict[str, list[tuple[SourceMapping, dict[str, object]]]] = {}
     for source, style, raw in zip(
@@ -135,11 +143,32 @@ def upgrade_alert_schema(
     categories = []
     for category in settings.categories:
         config = category.configuration
-        if config is not None and config.event_alerts:
+        if config is not None:
             members = members_by_category.get(category.id, [])
             alerts = list(config.alerts)
-            for event in config.event_alerts:
+            for event in config.event_alerts or ():
                 alerts.extend(convert_event(category, config, event, members, preferences))
+            for index, alert in enumerate(alerts):
+                key = alert.rule.item_filter
+                if key is None:
+                    continue
+                # 유형값·날짜 속성은 연결된 표마다 다르다. 원본이 없는 규칙은 발송하지 않는다.
+                scopes = tuple(
+                    SourceScope(source.source_id, conditions)
+                    for source, _ in members
+                    if (alert.sources is None or source.source_id in alert.sources)
+                    and (conditions := calendar_conditions(source, key)) is not None
+                )
+                alerts[index] = replace(
+                    alert,
+                    sources=None,
+                    rule=replace(
+                        alert.rule,
+                        item_filter=None,
+                        source_scopes=scopes,
+                        enabled=alert.rule.enabled and bool(scopes),
+                    ),
+                )
             category = replace(
                 category, configuration=replace(config, alerts=tuple(alerts), event_alerts=())
             )

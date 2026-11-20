@@ -84,6 +84,11 @@ def entries(
                 # 조회일 밖의 일정도 포함하는 카드에서는 어느 날의 일정인지 보여 준다.
                 if reference_day and start_day and start_day != reference_day:
                     detail = f"{start_day} · {detail}"
+            # 기본 행은 원본 분류명을 표시하고, 직접 고른 표시는 선택한 칼럼만 쓴다.
+            if display_fields is None and raw.get("category") is not None:
+                category = text(raw["category"])
+                if category:
+                    detail = f"{category} · {detail}"
         else:
             status = raw.get("status")
             detail = (

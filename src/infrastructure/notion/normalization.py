@@ -5,10 +5,14 @@ from datetime import UTC, date, datetime
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
+from src.application.category_column_types import scope_property_kinds
 from src.domain.display_columns import DISPLAY_VALUE_LIMIT, TITLE_COLUMN_TYPES
 from src.domain.event_classification import classify_event
+from src.domain.main_list import ListFilter
 from src.domain.models import CalendarEvent, Leave, Period, SourceMapping, Task, WorkItem
+from src.domain.notification_timing import calendar_alert_expiry
 from src.domain.source_alerts import SourceAlertRule, alert_value_key
+from src.domain.source_scope import SourceScope, field_parts
 from src.domain.work_dates import SEOUL, canonical_identity
 from src.infrastructure.notion.errors import SourceError
 from src.infrastructure.notion.values import array, record, text
@@ -33,11 +37,6 @@ class PageProperties:
         if prop is None:
             raise SourceError("mapping_invalid")
         return prop
-
-
-def property_by_id(properties: dict[str, object], identifier: str) -> dict[str, object]:
-    """단일 속성 조회에도 행 색인과 같은 ID 비교·중복 검사를 사용한다."""
-    return PageProperties(properties).by_id(identifier)
 
 
 def instant(value: str, zone_name: str | None = None) -> str:
@@ -211,6 +210,43 @@ def clock_text(period: Period | None) -> str:
     )
 
 
+def matches_source_scope(
+    scope: SourceScope, props: PageProperties, observed: datetime, basis: datetime
+) -> bool:
+    """표시명이나 내부 분류 대신 현재 행의 원본 속성 전체 값을 비교한다."""
+
+    def matches(condition: ListFilter) -> bool:
+        """종일 범위와 정밀 시각의 종료 여부는 원본 종료값과 관측 시각으로 확인한다."""
+        kind, identifier = field_parts(condition.field)
+        prop = props.by_id(identifier)
+        origin_kind = text(prop.get("type"))
+        value_kind = "date" if kind == "period" else kind
+        if origin_kind not in scope_property_kinds(condition):
+            raise SourceError("mapping_invalid")
+        if condition.option_id is not None:
+            # 표시 이름이 바뀌거나 같은 이름이 재사용돼도 선택한 원본 옵션만 일치한다.
+            if origin_kind not in prop:
+                raise SourceError("mapping_invalid")
+            selection = prop[origin_kind]
+            if selection is None:
+                return False
+            actual = text(record(selection).get("id"))
+            if not actual.strip():
+                raise SourceError("mapping_invalid")
+            return (
+                actual != condition.option_id
+                if condition.operator == "ne"
+                else actual == condition.option_id
+            )
+        if condition.operator == "not_ended":
+            return calendar_alert_expiry(column_period(prop, origin_kind), observed) is not None
+        return condition.matches(
+            column_text(prop, origin_kind), value_kind, basis.astimezone(SEOUL).date()
+        )
+
+    return scope.conditions.accepts(matches)
+
+
 def normalize_page(
     raw: object,
     source: SourceMapping,
@@ -261,7 +297,8 @@ def normalize_page(
     alerts = {}
     due_at = {}
     for rule in source.alert_rules:
-        if not rule.enabled:
+        scope = rule.scope_for(source.source_id)
+        if not rule.enabled or (rule.source_scopes is not None and scope is None):
             continue
         prop = props.by_id(rule.column_id)
         if rule.member is not None:
@@ -283,6 +320,13 @@ def normalize_page(
             alerts[rule.id] = alert_value_key(
                 alert_comparison(prop, rule, values[rule.column_id]), rule.comparison_kind
             )
+
+        # 미대상 행에서 비교값 자체를 없애면 저장·발송 경로 모두 새 예약을 차단한다.
+        if scope is not None and rule.id in alerts:
+            observed = datetime.fromisoformat(base["observed_at"])
+            if not matches_source_scope(scope, props, observed, due_at.get(rule.id, observed)):
+                del alerts[rule.id]
+                due_at.pop(rule.id, None)
 
     if source.kind == "leave":
         period = read_period(get("period"))

@@ -6,12 +6,15 @@ from urllib.parse import quote, unquote
 
 import httpx
 
+from src.application.category_column_types import scope_property_kinds
 from src.application.source_settings import SourceSchema
 from src.domain.display_columns import DisplayColumn
+from src.domain.main_list import ListFilter
 from src.domain.models import SourceMapping, Task, WorkItem
+from src.domain.source_scope import SourceScope, field_parts
 from src.infrastructure.notion.catalog import inspect_columns
 from src.infrastructure.notion.errors import SourceError
-from src.infrastructure.notion.normalization import PageProperties, normalize_page, property_by_id
+from src.infrastructure.notion.normalization import PageProperties, column_text, normalize_page
 from src.infrastructure.notion.read_api import NotionReadApi
 from src.infrastructure.notion.values import array, record, text
 
@@ -29,6 +32,29 @@ def needs_property_fetch(prop: dict[str, object], kind: str) -> bool:
     return any(
         record(part).get("type") not in (None, "text") or "mention" in record(part)
         for part in values
+    )
+
+
+def resolve_child_scope(
+    scope: SourceScope, child_id: str, properties: dict[str, object]
+) -> SourceScope:
+    """여러 차시에서 공유하는 속성 이름을 현재 하위 표의 실제 ID에 연결한다."""
+
+    def resolve(condition: ListFilter) -> ListFilter:
+        """같은 이름의 속성이라도 차시별로 다른 ID를 사용한다."""
+        kind, name = field_parts(condition.field)
+        identifier = text(record(properties.get(name)).get("id"))
+        return replace(condition, field=f"{kind}:{identifier}")
+
+    rules = scope.conditions
+    return replace(
+        scope,
+        source_id=child_id,
+        conditions=replace(
+            rules,
+            filters=tuple(map(resolve, rules.filters)),
+            exclusions=tuple(map(resolve, rules.exclusions)),
+        ),
     )
 
 
@@ -85,6 +111,15 @@ class NotionSource:
     ) -> None:
         """담당자·제목·표시 칼럼 중 페이지네이션이 필요한 값만 추가 조회한다."""
         selected = source.collected_columns()
+        # 알림 전용 속성도 노션의 원본 타입과 페이지네이션 규칙으로 빠짐없이 읽는다.
+        for rule in source.alert_rules:
+            if rule.enabled and (scope := rule.scope_for(source.source_id)) is not None:
+                for condition in (*scope.conditions.filters, *scope.conditions.exclusions):
+                    _, scope_property = field_parts(condition.field)
+                    kind = text(properties.by_id(scope_property).get("type"))
+                    if kind not in scope_property_kinds(condition):
+                        raise SourceError("mapping_invalid")
+                    selected.setdefault(scope_property, kind)
         for role in ("title", "assignees", "participants", "people"):
             property_id = source.properties.get(role)
             if property_id is not None and property_id not in selected:
@@ -117,20 +152,33 @@ class NotionSource:
         """모든 차시의 항목을 읽은 뒤 한 부모 소스의 완전한 결과로 반환한다."""
         if source.kind != "task" or source.round_title_property is None:
             raise SourceError("mapping_invalid")
-        schema = await self._api.request(f"/data_sources/{quote(source.source_id, safe='')}", None)
+        schema = await self._api.data_schema(source.source_id)
         round_property = record(record(schema.get("properties")).get(source.round_title_property))
+        if round_property.get("type") != "title":
+            raise SourceError("mapping_invalid")
         round_property_id = text(round_property.get("id"))
+        parent = SourceMapping("task", source.source_id, {"title": round_property_id})
         result: list[WorkItem] = []
         seen: set[str] = set()
+        seen_rounds: set[str] = set()
+        seen_children: set[str] = set()
         async for raw in self._api.source_pages(source.source_id):
             page = record(raw)
-            title = property_by_id(record(page.get("properties")), round_property_id)
-            if title.get("type") != "title":
-                raise SourceError("mapping_invalid")
-            round_name = "".join(
-                text(record(part).get("plain_text")) for part in array(title.get("title"))
-            )
-            async for child_id in self._api.child_source_ids(text(page.get("id"))):
+            page_id = text(page.get("id"))
+            if page.get("object") != "page":
+                raise SourceError("invalid_response")
+            if page_id in seen_rounds:
+                raise SourceError("pagination_invalid")
+            seen_rounds.add(page_id)
+            # 자식 행에 붙일 차시 제목도 참조·페이지네이션을 끝낸 값만 확정한다.
+            parent_props = PageProperties(record(page.get("properties")))
+            await self._fill_columns(page_id, parent, parent_props)
+            round_name = column_text(parent_props.by_id(round_property_id), "title")
+            async for child_id in self._api.child_source_ids(page_id):
+                # 빈 표라도 둘 이상의 차시에 귀속된 원천으로 부모 스냅샷을 교체할 수 없다.
+                if child_id in seen_children:
+                    raise SourceError("pagination_invalid")
+                seen_children.add(child_id)
                 child_schema = await self._api.data_schema(child_id)
                 properties = record(child_schema.get("properties"))
                 mapping = {
@@ -143,7 +191,17 @@ class NotionSource:
                 )
                 rules = tuple(rule for rule in source.alert_rules if rule.enabled)
                 resolved_rules = tuple(
-                    replace(rule, column_id=text(record(properties.get(rule.column_id)).get("id")))
+                    replace(
+                        rule,
+                        column_id=text(record(properties.get(rule.column_id)).get("id")),
+                        source_scopes=tuple(
+                            resolve_child_scope(sc, child_id, properties)
+                            for sc in rule.source_scopes
+                            if sc.source_id == source.source_id
+                        )
+                        if rule.source_scopes is not None
+                        else None,
+                    )
                     for rule in rules
                 )
                 names = {

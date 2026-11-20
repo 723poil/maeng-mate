@@ -55,7 +55,15 @@ class UpdateChecks:
 
     def attach(self, parent: NSView) -> None:
         """설정을 처음 열 때 기존 조회에 수동 확인 버튼을 연결한다."""
-        label(parent, f"버전 {self.current}", 20, 35, 120, size=12, secondary=True)
+        label(
+            parent,
+            f"버전 {self.current} · {self.actions.build_label}",
+            20,
+            35,
+            155,
+            size=12,
+            secondary=True,
+        )
         self.button = button(parent, "업데이트 확인…", 14, 7, 120, self.target, "checkUpdate:")
 
     def start(self) -> None:
@@ -115,12 +123,12 @@ class UpdateChecks:
             if manual:
                 self.show(
                     "설치할 새 버전이 없습니다.",
-                    f"설치 버전 {self.current} · 최신 공개 버전 {latest}",
+                    f"현재 실행 중인 개발용 버전 {self.current} · 최신 배포용 버전 {latest}",
                 )
         else:
             self.show(
-                f"새 버전 {latest}을 사용할 수 있습니다.",
-                f"현재 버전은 {self.current}입니다. 릴리스에서 배포용 앱을 받을 수 있습니다.",
+                f"배포용 {latest} 버전이 나왔습니다.",
+                f"현재 개발용 {self.current} 버전을 사용 중입니다. ‘릴리스 열기’를 눌러 배포용 앱을 다운로드하세요.",
                 download=True,
             )
 
@@ -140,6 +148,8 @@ class UpdateChecks:
             choice = alert.addButtonWithTitle_(title)
             choice.setTarget_(self.target)
             choice.setAction_(action)
+        # 비모달 창은 직접 배치해야 본문과 실제 버튼에 맞게 기본 뷰가 정리된다.
+        alert.layout()
         alert.window().center()
         alert.window().makeKeyAndOrderFront_(None)
 

@@ -1,7 +1,6 @@
 """macOS 메뉴바의 최소 환경과 로컬 클라이언트를 조립한다."""
 
 import os
-import plistlib
 import signal
 import subprocess
 import sys
@@ -20,12 +19,12 @@ from src.application.notifications import NotificationRunner
 from src.application.runtime_settings_service import RestartOperation
 from src.bootstrap.app_settings import application_environment
 from src.bootstrap.backup_commands import export_backup, launch_restore, preview_backup
+from src.bootstrap.build_profile import RELEASE, current_profile
 from src.bootstrap.environment import ConfigError, McpEnvironment, local_api_settings
 from src.bootstrap.executable import (
     bundle_contents,
     executable_command,
     execution_environment,
-    packaged,
 )
 from src.bootstrap.instance import (
     application_directory,
@@ -96,17 +95,14 @@ def open_release() -> None:
 
 def app_update_actions() -> AppUpdates:
     """공개키를 내장한 배포 빌드에서만 자체 설치를 제공한다."""
-    if packaged():
+    if current_profile() == RELEASE:
         from src.infrastructure.sparkle_updates import SparkleUpdates
 
         contents = bundle_contents()
-        with (contents / "Info.plist").open("rb") as stream:
-            info = plistlib.load(stream)
-        if info.get("SUPublicEDKey"):
-            updater = SparkleUpdates(
-                contents / "Frameworks/Sparkle.framework", stop_update_resident, request_panel
-            )
-            return AppUpdates(latest_version, open_release, updater)
+        updater = SparkleUpdates(
+            contents / "Frameworks/Sparkle.framework", stop_update_resident, request_panel
+        )
+        return AppUpdates(latest_version, open_release, updater)
     return AppUpdates(latest_version, open_release, None)
 
 
@@ -125,7 +121,10 @@ def run_menubar(env: Mapping[str, str]) -> None:
         environment.api_token,
         channels=tuple(channel.key for channel in CHANNELS),
     )
-    notification_app = MacNotificationApp(application_directory() / "NotificationAgent.app")
+    notification_app = MacNotificationApp(
+        application_directory() / "NotificationAgent.app",
+        f"{current_profile().identifier}.notifications",
+    )
     notification_queue = LocalNotificationQueue(environment.api_url, environment.api_token)
     notifications = NotificationWorker(
         NotificationRunner(

@@ -1,17 +1,19 @@
 # 실행 코드와 공개 스킬 리소스만 포함하며 로컬 설정·DB·로그를 수집하지 않는다.
 import os
 from pathlib import Path
+from src.bootstrap.build_profile import RELEASE, DEVELOPMENT
 from PyInstaller.utils.hooks import collect_submodules
 
 root = Path(SPECPATH).parent
 assets = root / 'build/distribution-assets'
+profile = RELEASE if os.environ.get('SPARKLE_PUBLIC_ED_KEY') else DEVELOPMENT
 a = Analysis(
     [str(root / 'src/bootstrap/packaged_entry.py')],
     pathex=[str(root)],
     binaries=[],
     datas=[
         (str(root / 'src/assets/app-icon.svg'), 'src/assets'),
-        (str(root / 'src/presentation/assets/MenuMark.svg'), 'src/presentation/assets'),
+        (str(root / 'src/presentation/assets'), 'src/presentation/assets'),
         (str(root / 'src/infrastructure/skill_resources'), 'src/infrastructure/skill_resources'),
         (str(assets / 'build-info.json'), '.'),
     ],
@@ -27,7 +29,7 @@ exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='MaengMate', debug=Fal
           argv_emulation=False, target_arch=None, codesign_identity=None)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='MaengMate')
 app = BUNDLE(coll, name='Maeng Mate.app', icon=str(assets / 'MaengMate.icns'),
-    bundle_identifier='local.maeng-mate', version=os.environ['MAENG_MATE_BUILD_VERSION'],
+    bundle_identifier=profile.identifier, version=os.environ['MAENG_MATE_BUILD_VERSION'],
     info_plist={'CFBundleName': 'Maeng Mate', 'CFBundleDisplayName': 'Maeng Mate',
                 'CFBundleVersion': os.environ['MAENG_MATE_BUILD_VERSION'],
                 **({'SUPublicEDKey': os.environ['SPARKLE_PUBLIC_ED_KEY'],

@@ -4,6 +4,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from src.bootstrap.build_profile import current_profile
 from src.infrastructure.sqlite.paths import validate_database_path
 
 
@@ -16,7 +17,7 @@ class AppEnvironment:
     """시작 경계에서 검증한 앱 설정이다."""
 
     token: str = field(repr=False)
-    port: int = 43127
+    port: int = field(default_factory=lambda: current_profile().port)
     notion_token: str | None = field(default=None, repr=False)
     notion_user_id: str | None = field(default=None, repr=False)
     database: str | None = field(default=None, repr=False)
@@ -89,7 +90,7 @@ def app_environment(env: Mapping[str, str]) -> AppEnvironment:
 def local_api_settings(env: Mapping[str, str]) -> tuple[int, str]:
     """서버와 MCP가 같은 두 값만 검증해 사용한다."""
     token = api_token(required(env, "LOCAL_API_TOKEN"), "LOCAL_API_TOKEN")
-    raw_port = optional(env, "LOCAL_API_PORT") or "43127"
+    raw_port = optional(env, "LOCAL_API_PORT") or str(current_profile().port)
     if not re.fullmatch(r"[0-9]+", raw_port) or not 1 <= int(raw_port) <= 65535:
         raise ConfigError("설정을 확인하세요: LOCAL_API_PORT")
     return int(raw_port), token

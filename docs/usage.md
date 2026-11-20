@@ -16,8 +16,8 @@ uv run maeng-mate api   # 조회 API만 실행
 uv run maeng-mate sync  # Notion 한 번 수집
 ```
 
-- API: `127.0.0.1:43127`, `GET /v1/status`, `GET /v1/today?date=YYYY-MM-DD`, Bearer 인증.
-- DB: `~/Library/Application Support/MaengMate/data/maeng-mate.sqlite3`.
+- 개발용 API는 `127.0.0.1:43128`, 배포용 API는 `127.0.0.1:43127`을 기본으로 사용한다. `GET /v1/status`와 `GET /v1/today?date=YYYY-MM-DD` 조회에는 Bearer 인증이 필요하다.
+- DB는 실행본의 지원 폴더 아래 `data/maeng-mate.sqlite3`에 저장한다. 개발용 지원 폴더는 `~/Library/Application Support/MaengMateDev/`, 배포용은 `~/Library/Application Support/MaengMate/`다.
 - 수집: `연동 → Notion`에서 토큰을 등록한다. `수집 소스`에서 원본 표 주소나 데이터 소스 ID로 칼럼을 조회하고 연결한다. 매핑은 SQLite `work_settings`의 JSON에 저장한다.
 - 개인 조회: Notion 설정의 사용자 ID와 업무·회의 소스가 필요하다. task 소스의 `completedStatuses`에 완료 상태 이름을 넣는다.
 - 일정 분류: meeting 소스의 `properties.category`, `properties.cancelled`, `eventTypes`로 연결한다.
@@ -58,7 +58,7 @@ uv run --extra menubar maeng-mate menubar
 
 목록은 하나의 표에서 읽을 수 있다. 회차마다 별도의 하위 표를 사용하는 경우에는 수집 소스에서 차시별 수집을 선택한다. 완료로 취급할 상태와 오늘 목록에 표시할 기간은 소스별로 설정한다.
 
-근무 규칙은 **설정 → 근무 규칙**에서 조합한다. 요일·실근무·출근 범위·휴게·휴가 차감을 바꿀 수 있다. 추가 휴게는 `+`로 필요한 만큼 추가한다. 저장한 파일은 `~/Library/Application Support/MaengMate/work-rules.json`이다. 저장하면 오늘 입력한 출근에도 즉시 적용돼 퇴근 예정과 남은 알림 시각이 바뀐다. 이미 입력한 실제 퇴근과 지난 날짜의 기록은 유지한다. 기록 API는 인증된 `GET /v1/day`·`PUT /v1/day`다. 메뉴바 종료는 API·수집 종료와 별개다.
+근무 규칙은 **설정 → 근무 규칙**에서 조합한다. 요일·실근무·출근 범위·휴게·휴가 차감을 바꿀 수 있다. 추가 휴게는 `+`로 필요한 만큼 추가한다. 저장한 파일은 실행본 지원 폴더의 `work-rules.json`이다. 저장하면 오늘 입력한 출근에도 즉시 적용돼 퇴근 예정과 남은 알림 시각이 바뀐다. 이미 입력한 실제 퇴근과 지난 날짜의 기록은 유지한다. 기록 API는 인증된 `GET /v1/day`·`PUT /v1/day`다. 메뉴바 종료는 API·수집 종료와 별개다.
 
 새로고침·수집·주기 저장 중에는 회전 표시와 진행 문구를 보여주고 기존 목록을 유지한다. 새로고침 버튼은 저장된 자료를 다시 읽는다.
 
@@ -90,13 +90,13 @@ Notion 토큰은 `연동 → Notion`에서 확인 후 저장·연결 확인·삭
 
 `연동 → Slack`에서 본인 멤버 ID와 봇·앱 토큰을 등록한다. ID는 SQLite, 토큰은 Keychain에 각각 저장한다. `연결 확인`은 저장된 봇 토큰의 인증만 검사한다. 봇 인증과 멤버 ID 저장을 마치면 `테스트 알림`으로 본인에게 DM 한 건을 보낸다. 봇에 `chat:write` 권한이 필요하다. 자동 DM은 `알림 → 전달 채널 → Slack DM`을 켜면 사용한다. 앱 토큰은 보관만 하며 Socket Mode는 아직 연결하지 않는다.
 
-내부 API 인증은 Keychain, 시작 위치·포트는 `Application Support/MaengMate/bootstrap.json`, 일반·계정 설정과 수집 주기는 SQLite에 둔다. 소스 매핑·페이지 링크·QA 규칙은 SQLite의 `work_settings` JSON 문서에 저장한다. 링크 입력은 해당 소스의 `pageUrl`만 수정한다. `config` 폴더는 사용하지 않는다.
+내부 API 인증은 Keychain, 시작 위치·포트는 실행본 지원 폴더의 `bootstrap.json`, 일반·계정 설정과 수집 주기는 SQLite에 둔다. 소스 매핑·페이지 링크·QA 규칙은 SQLite의 `work_settings` JSON 문서에 저장한다. 링크 입력은 해당 소스의 `pageUrl`만 수정한다. `config` 폴더는 사용하지 않는다.
 
 ### 데이터 백업과 전체 복원
 
 **설정 → 데이터 백업 → 백업하기…**에서 저장 위치와 새 파일 이름을 선택한다. `.maengbackup` 파일 하나에 출퇴근 기록, 수집한 업무 데이터, 앱 설정과 근무 규칙이 담긴다. 파일을 다른 Mac으로 옮기는 경우 Notion·Slack 인증과 MCP 접근 권한은 그 Mac에서 설정한다.
 
-**백업 불러오기…**에서 파일을 고르고 생성 시각을 확인한 뒤 **전체 복원**을 누르면 해당 시점의 데이터로 교체하고 앱을 다시 시작한다. 복원 직전 데이터는 `~/Library/Application Support/MaengMate/backups/`의 `pre-restore-*.maengbackup`으로 보관한다. 이 파일도 같은 버튼으로 불러올 수 있다.
+**백업 불러오기…**에서 파일을 고르고 생성 시각을 확인한 뒤 **전체 복원**을 누르면 해당 시점의 데이터로 교체하고 앱을 다시 시작한다. 복원 직전 데이터는 실행본 지원 폴더의 `backups/`의 `pre-restore-*.maengbackup`으로 보관한다. 이 파일도 같은 버튼으로 불러올 수 있다.
 
 ## 로그인 자동 실행
 
@@ -114,11 +114,11 @@ uv run maeng-mate service status
 
 설치할 때 Python 알림용 `NotificationAgent.app`도 준비한다. 이 앱은 별도 네트워크·DB 접근 없이 알림 요청만 처리한다. 로그인하면 서버·메뉴바를 시작하고 비정상 종료는 자동 복구한다. 메뉴바에서 직접 종료하면 다음 로그인이나 `service start`까지 꺼진 상태를 유지한다.
 
-실행본·활성 DB·설정은 `~/Library/Application Support/MaengMate/`에 둔다. 기존 DB는 보존하고 시작 경로는 `bootstrap.json`에 저장한다. Git 소스나 실행 환경을 변경한 뒤에는 `service install`을 다시 실행한다. 토큰은 등록 파일에 넣지 않는다.
+개발용 실행본·활성 DB·설정은 `~/Library/Application Support/MaengMateDev/`에 둔다. 배포용은 기존 `MaengMate/` 폴더와 키체인 항목을 계속 사용한다. 소스에서 실행하는 서비스 명령은 개발용만 관리하며, 기존 공유 설치의 기록이나 연동 자격 정보를 새 개발용으로 복사하지 않는다. 기존 DB는 보존하고 시작 경로는 `bootstrap.json`에 저장한다. Git 소스나 실행 환경을 변경한 뒤에는 `service install`을 다시 실행한다. 토큰은 등록 파일에 넣지 않는다.
 
 ## MCP
 
-앱과 함께 `http://127.0.0.1:43127/mcp/`에서 실행한다. `연동 → MCP`에서 사용 여부·주소·최근 사용을 확인하고 이름·기간별 접근 토큰을 발급한다. 만료일 없이 발급하려면 ‘만료 없음’을 선택한다. 폐기는 즉시 적용된다. 새로 발급한 토큰은 설정 창에서 ‘토큰 복사’로 복사한다. 창을 닫거나 다른 토큰을 발급하거나 해당 토큰을 폐기하면 다시 복사할 수 없다. DB에는 토큰 원문 대신 해시를 저장한다.
+기본 MCP 주소는 배포용 `http://127.0.0.1:43127/mcp/`, 개발용 `http://127.0.0.1:43128/mcp/`다. `연동 → MCP`에서 사용 여부·주소·최근 사용을 확인하고 이름·기간별 접근 토큰을 발급한다. 만료일 없이 발급하려면 ‘만료 없음’을 선택한다. 폐기는 즉시 적용된다. 새로 발급한 토큰은 설정 창에서 ‘토큰 복사’로 복사한다. 창을 닫거나 다른 토큰을 발급하거나 해당 토큰을 폐기하면 다시 복사할 수 없다. DB에는 토큰 원문 대신 해시를 저장한다.
 
 `연동 → MCP`에서 앱에 동봉된 스킬 버전과 Codex·Claude Code에 설치된 버전을 확인한다. `업데이트 가능` 또는 `버전 미기록`인 대상은 선택한 뒤 `설치 / 업데이트`를 누르면 동봉 버전으로 갱신된다. 두 앱에 함께 설치하려면 `둘 다`를 선택한다. 사용자 수정본은 보존하며 MCP 연결은 별도로 등록한다.
 

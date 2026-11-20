@@ -23,9 +23,10 @@ LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/Launc
 class MacNotificationApp:
     """번들 갱신과 알림 발송이 겹치지 않도록 같은 잠금을 사용한다."""
 
-    def __init__(self, bundle: Path) -> None:
+    def __init__(self, bundle: Path, identifier: str) -> None:
         """고정된 앱 경로를 주입하고 시작 시 OS 권한을 요청하지 않는다."""
         self._bundle = bundle
+        self._identifier = identifier
         self._lock = threading.RLock()
         self._active: NotificationIdentity | None = None
         self._revision = -1
@@ -64,10 +65,7 @@ class MacNotificationApp:
                 json.dumps(identity_payload(identity), sort_keys=True).encode()
             ).hexdigest()
             raw: object = plistlib.loads(previous_plist)
-            if (
-                not isinstance(raw, dict)
-                or raw.get("CFBundleIdentifier") != "local.maeng-mate.notifications"
-            ):
+            if not isinstance(raw, dict) or raw.get("CFBundleIdentifier") != self._identifier:
                 raise ValueError("알림 앱의 식별자를 확인하세요.")
             current: dict[str, object] = {
                 key: value for key, value in raw.items() if isinstance(key, str)

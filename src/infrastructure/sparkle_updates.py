@@ -4,7 +4,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, cast
 
-from AppKit import NSAlert, NSApplication
+import objc
+from AppKit import (
+    NSAlert,
+    NSApplication,
+    NSApplicationActivationPolicyAccessory,
+    NSApplicationActivationPolicyRegular,
+)
 from Foundation import NSBundle, NSObject
 
 
@@ -12,9 +18,9 @@ class StandardController(Protocol):
     """동봉 프레임워크에서 동적으로 불러오는 Sparkle 컨트롤러의 공개 계약이다."""
 
     def initWithUpdaterDelegate_userDriverDelegate_(
-        self, delegate: NSObject, driver: None
+        self, delegate: NSObject, driver: NSObject
     ) -> "StandardController":
-        """메인 앱 번들의 수동 업데이트 컨트롤러를 초기화한다."""
+        """메인 앱 번들의 자동·수동 업데이트 컨트롤러를 초기화한다."""
         ...
 
     def checkForUpdates_(self, sender: object | None) -> None:
@@ -44,10 +50,34 @@ class UpdateDelegate(NSObject):
     pending: Callable[[], bool]
     stop_resident: Callable[[], None]
 
+    @objc.typedSelector(b"Z@:")
+    def supportsGentleScheduledUpdateReminders(self) -> bool:
+        """자동 확인 창을 Dock에서도 찾을 수 있게 한다."""
+        return True
+
+    @objc.typedSelector(b"v@:Z@@")
+    def standardUserDriverWillHandleShowingUpdate_forUpdate_state_(
+        self, showing: bool, item: object, state: object
+    ) -> None:
+        """다른 앱 뒤에 열린 설치 확인 창도 Dock에서 선택할 수 있게 한다."""
+        if showing:
+            NSApplication.sharedApplication().setActivationPolicy_(
+                NSApplicationActivationPolicyRegular
+            )
+
+    @objc.typedSelector(b"v@:")
+    def standardUserDriverWillFinishUpdateSession(self) -> None:
+        """설치 또는 보류 선택을 마치면 다시 메뉴바 전용 앱으로 돌아간다."""
+        NSApplication.sharedApplication().setActivationPolicy_(
+            NSApplicationActivationPolicyAccessory
+        )
+
+    @objc.typedSelector(b"v@:@@")
     def updater_willInstallUpdate_(self, updater: object, item: object) -> None:
         """조회·다운로드가 끝나 실제 설치가 결정된 시점만 표시한다."""
         self.installing = True
 
+    @objc.typedSelector(b"v@:@@")
     def updater_didAbortWithError_(self, updater: object, error: object) -> None:
         """취소·실패 뒤 일반 메뉴바 종료가 서버를 중지하지 않게 한다."""
         self.installing = False
@@ -78,22 +108,28 @@ class SparkleUpdates:
     """메뉴바가 실행되는 동안 약한 참조인 업데이트 델리게이트를 보관한다."""
 
     def __init__(self, framework: Path, stop_resident: Callable[[], None]) -> None:
-        """설정에서 처음 확인할 때까지 프레임워크의 초기화를 미룬다."""
+        """메인 루프가 시작할 때 연결할 프레임워크와 종료 동작을 보관한다."""
         self.framework = framework
         self.stop_resident = stop_resident
         self.controller: StandardController | None = None
         self.delegate: UpdateDelegate | None = None
 
+    def start(self, pending: Callable[[], bool]) -> None:
+        """메뉴바 수명 동안 한 컨트롤러가 Sparkle 예약 조회와 설치 확인을 담당한다."""
+        if self.controller is not None:
+            return
+        instance = load_controller(self.framework)
+        self.delegate = UpdateDelegate.alloc().init()
+        self.delegate.pending = pending
+        self.delegate.installing = False
+        self.delegate.stop_resident = self.stop_resident
+        self.controller = instance.initWithUpdaterDelegate_userDriverDelegate_(
+            self.delegate, self.delegate
+        )
+        NSApplication.sharedApplication().setDelegate_(self.delegate)
+
     def check(self, pending: Callable[[], bool]) -> None:
-        """컨트롤러를 재사용해 중복 설치를 피하고 사용자가 요청한 확인 창을 연다."""
-        if self.controller is None:
-            instance = load_controller(self.framework)
-            self.delegate = UpdateDelegate.alloc().init()
-            self.delegate.pending = pending
-            self.delegate.installing = False
-            self.delegate.stop_resident = self.stop_resident
-            self.controller = instance.initWithUpdaterDelegate_userDriverDelegate_(
-                self.delegate, None
-            )
-            NSApplication.sharedApplication().setDelegate_(self.delegate)
-        self.controller.checkForUpdates_(None)
+        """설정에서 누르면 예약 조회와 같은 컨트롤러의 확인 창을 연다."""
+        self.start(pending)
+        if self.controller is not None:
+            self.controller.checkForUpdates_(None)

@@ -19,7 +19,6 @@ from AppKit import (
 )
 from Foundation import NSNotification, NSObject
 
-from src.application.app_updates import AppUpdates
 from src.application.credentials import CredentialError, validated_secret
 from src.application.data_backup import DataBackupActions
 from src.application.notifications import NotificationChannel
@@ -48,7 +47,7 @@ from src.presentation.slack_settings_controller import SlackSettingsController
 from src.presentation.slack_settings_view import SlackSettingsView
 from src.presentation.source_sections import source_sections
 from src.presentation.source_settings_form import SourceEditor, SourceSettingsForm
-from src.presentation.update_button import UpdateButton
+from src.presentation.update_button import UpdateChecks
 from src.presentation.work_rules_form import WorkRulesEditor, WorkRulesForm
 
 
@@ -187,7 +186,7 @@ class PreferencesWindow:
         source_editor: SourceEditor | None = None,
         source_client: SourceSettingsClient | None = None,
         data_backup: DataBackupActions | None = None,
-        app_updates: AppUpdates | None = None,
+        app_updates: UpdateChecks | None = None,
     ) -> None:
         """설정 작업자와 설치된 채널만 주입받는다."""
         self._render_state: object = None
@@ -226,10 +225,9 @@ class PreferencesWindow:
         self._glass = glass_container(content, 760, height)
         self._window.setContentView_(self._glass)
         label(content, "설정", 82, height - 44, 60, size=17, bold=True)
-        self._update_button = (
-            UpdateButton(content, app_updates, self._update_pending) if app_updates else None
-        )
-        if not self._update_button:
+        if app_updates:
+            app_updates.attach(content)
+        else:
             label(content, f"버전 {version('maeng-mate')}", 20, 22, 120, size=12, secondary=True)
         self._page_title = label(
             content, SettingsPage.SCREEN.title, 188, height - 44, 450, size=17, bold=True
@@ -613,7 +611,7 @@ class PreferencesWindow:
             or (self._mcp_view and self._mcp_view.is_editing)
         )
 
-    def _update_pending(self) -> bool:
+    def update_pending(self) -> bool:
         """복원이나 편집 도중에 업데이트 설치가 앱을 종료하지 않게 한다."""
         return self._backup_edits_pending() or bool(self._backup_view and self._backup_view.busy)
 
@@ -662,8 +660,6 @@ class PreferencesWindow:
 
     def dispose(self) -> None:
         """앱 종료에서만 작업자 수명을 마친다."""
-        if self._update_button:
-            self._update_button.close()
         if self._backup_view is not None:
             self._backup_view.close()
         if self._source_form is not None:
@@ -673,8 +669,6 @@ class PreferencesWindow:
     def tick(self) -> None:
         """닫힌 창에서는 완료된 작업만 회수하고 화면은 다시 열 때 갱신한다."""
         visible = self._window.isVisible()
-        if self._update_button and visible:
-            self._update_button.tick()
         if self._backup_view is not None:
             self._backup_view.tick(visible=visible and self._selected_page == SettingsPage.BACKUP)
         if visible:

@@ -104,7 +104,7 @@ def app_update_actions() -> AppUpdates:
             updater = SparkleUpdates(
                 contents / "Frameworks/Sparkle.framework", stop_update_resident
             )
-            return AppUpdates(latest_version, open_release, updater.check)
+            return AppUpdates(latest_version, open_release, updater)
     return AppUpdates(latest_version, open_release, None)
 
 

@@ -83,6 +83,7 @@ from src.presentation.runtime_settings_controller import RuntimeSettingsControll
 from src.presentation.slack_settings_controller import SlackSettingsController
 from src.presentation.source_sections import group_board_url, source_sections
 from src.presentation.source_settings_form import SourceEditor
+from src.presentation.update_button import UpdateChecks
 from src.presentation.work_records_controller import WorkRecordsController
 from src.presentation.work_records_window import WorkRecordsWindow
 from src.presentation.work_rules_form import WorkRulesEditor
@@ -210,7 +211,7 @@ class MenuBarApp:
         today: Callable[[], str] = local_day,
     ) -> None:
         """로컬 연결과 순수 예상시간 계산 유스케이스를 주입받는다."""
-        self._app_updates = app_updates
+        self._app_updates = UpdateChecks(app_updates, self._update_pending) if app_updates else None
         self._data_backup = data_backup
         self._notification_channels = notification_channels
         self._open_url = open_url
@@ -586,6 +587,8 @@ class MenuBarApp:
             0.2, self._callbacks, "tick:", None, True
         )
         try:
+            if self._app_updates:
+                self._app_updates.start()
             self._application.run()
         finally:
             self.close()
@@ -737,6 +740,8 @@ class MenuBarApp:
             self._identity_controller.tick(
                 saved.notification_identity if saved else None, saved.revision if saved else 0
             )
+        if self._app_updates:
+            self._app_updates.tick()
         if self._settings_window is not None:
             self._settings_window.tick()
         if self._preferences_controller.confirmed is None:
@@ -1221,10 +1226,20 @@ class MenuBarApp:
             )
         self._settings_window.show()
 
+    def _update_pending(self) -> bool:
+        """설정 창을 열기 전에도 메뉴바와 기록 창의 편집·저장을 보호한다."""
+        if self._settings_window is not None:
+            return self._settings_window.update_pending()
+        return self._pending_work_edits()
+
     def _pending_work_edits(self) -> bool:
         """근무 카드나 기록 창에서 저장할 내용이 남았는지 확인한다."""
         records = self._records_controller
-        return self._dirty or bool(records and (records.dirty or records.saving))
+        return (
+            self._dirty
+            or (self._controller.busy and self._controller.operation == "save")
+            or bool(records and (records.dirty or records.saving))
+        )
 
     def _slack_member_saved(self) -> None:
         """Notion 미저장 초안은 유지하고 깨끗한 설정 버전만 갱신한다."""
@@ -1250,6 +1265,8 @@ class MenuBarApp:
             self._records_controller.close()
         if self._settings_window is not None:
             self._settings_window.dispose()
+        if self._app_updates:
+            self._app_updates.close()
         self._preferences_controller.close()
         if self._identity_controller is not None:
             self._identity_controller.close()

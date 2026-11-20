@@ -607,19 +607,24 @@ class SourceSettingsForm:
             if role.key in selected or any(column.kind in role.types for column in schema.columns)
         )
         # 업무의 상태는 원문을 수집한다. 옵션별 지정은 일정 분류와 휴가 승인에만 필요하다.
-        rule_property = selected.get("category") or selected.get("approval")
-        options = next(
+        rule_role = next((role for role in roles if role.key in {"category", "approval"}), None)
+        rule_column = next(
             (
-                col.options
+                col
                 for col in schema.columns
-                if rule_property is not None and self._same_value(col, rule_property)
+                if rule_role
+                and col.kind in rule_role.types
+                and self._same_value(col, selected.get(rule_role.key, ""))
             ),
-            (),
+            None,
         )
-        height = 48 + 32 * (len(roles) + bool(schema.round_titles) + len(options))
+        height = 48 + 32 * (len(roles) + bool(schema.round_titles))
+        if rule_column and rule_column.options:
+            # 소제목과 다음 상위 행 사이의 여백은 하위 설정이 있을 때만 확보한다.
+            height += 32 + 32 * len(rule_column.options)
         card(body, 0, 0, 628, height)
         label(body, "원본 칼럼 선택", 12, height - 32, 360, bold=True)
-        y = height - 63
+        y: float = height - 63
         if schema.round_titles:
             label(body, "차시 제목", 12, y + 4, 108)
             self._round_title = self._popup(
@@ -633,23 +638,34 @@ class SourceSettingsForm:
         for role in roles:
             self._draw_role(body, role, schema, selected, y)
             y -= 32
-        for name in options:
+            if role == rule_role and rule_column and rule_column.options:
+                y = self._draw_rule_options(body, y, rule_column, kind)
+        body.setFrameSize_((628, height))
+        self._update_sheet()
+
+    def _draw_rule_options(
+        self, body: NSView, y: float, column: SourceColumn, kind: SourceKind
+    ) -> float:
+        """선택한 칼럼 바로 아래에 그 칼럼의 옵션별 설정을 들여쓴다."""
+        operation = "값 분류" if kind == "meeting" else "승인으로 처리할 값"
+        heading = f"‘{column.name}’ 칼럼의 {operation}"
+        label(body, heading, 36, y + 6, 570, bold=True, secondary=True).setToolTip_(heading)
+        y -= 24
+        for name in column.options:
             if kind == "meeting":
-                label(body, name, 12, y + 4, 338)
-                control = self._popup(body, 365, y, 173, ["기타", "회의", "휴가"], "rules:")
+                label(body, name, 36, y + 4, 362).setToolTip_(name)
+                control = self._popup(body, 410, y, 196, ["기타", "회의", "휴가"], "rules:")
                 control.selectItemAtIndex_(self._choices.get(name, 0))
                 self._options[name] = control
             else:
-                check = NSButton.checkboxWithTitle_target_action_(
-                    f"승인 · {name}", self._actions, "changed:"
-                )
-                check.setFrame_(frame(12, y, 526, 26))
+                check = NSButton.checkboxWithTitle_target_action_(name, self._actions, "changed:")
+                check.setFrame_(frame(36, y, 570, 26))
+                check.setToolTip_(name)
                 check.setState_(self._choices.get(name, 0))
                 body.addSubview_(check)
                 self._options[name] = check
             y -= 32
-        body.setFrameSize_((628, height))
-        self._update_sheet()
+        return y - 8
 
     def _summary(self, offset: float = 0.0) -> None:
         """메인 폼에는 편집기 대신 선택 상태와 열기 버튼을 둔다."""

@@ -3,7 +3,6 @@
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
-from pathlib import Path
 
 from AppKit import (
     NSAlert,
@@ -51,7 +50,7 @@ class DataBackupView:
         self._pending_edits = pending_edits
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="data-backup")
         self._export: Future[None] | None = None
-        self._preview: tuple[Path, Future[BackupPreview]] | None = None
+        self._preview: tuple[str, Future[BackupPreview]] | None = None
         self._restore: RestartOperation | None = None
         self._choosing = False
         self.message = ""
@@ -106,7 +105,7 @@ class DataBackupView:
                 return
             url = panel.URL()
             if url is not None:
-                self._export = self._executor.submit(self._actions.export, Path(url.path()))
+                self._export = self._executor.submit(self._actions.export, str(url.path()))
                 self.message = "백업 파일을 저장하는 중…"
         finally:
             self._choosing = False
@@ -127,14 +126,14 @@ class DataBackupView:
                 return
             url = panel.URL()
             if url is not None:
-                path = Path(url.path())
+                path = str(url.path())
                 self._preview = path, self._executor.submit(self._actions.preview, path)
                 self.message = "백업 파일을 확인하는 중…"
         finally:
             self._choosing = False
             self._update_buttons()
 
-    def _confirm_restore(self, path: Path, preview: BackupPreview) -> None:
+    def _confirm_restore(self, path: str, preview: BackupPreview) -> None:
         """백업 시각과 변경 범위를 알린 뒤 명시적으로 확인한 파일만 전달한다."""
         if self._pending_edits():
             self.message = "진행 중인 작업과 편집을 마친 뒤 다시 불러오세요."

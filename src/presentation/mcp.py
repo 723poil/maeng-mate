@@ -34,12 +34,14 @@ def create_server(reader: McpQueryReader) -> FastMCP:
             raise ToolError("로컬 업무 앱 조회에 실패했습니다.") from None
 
     @server.tool(annotations=read_only)
-    async def get_my_today(date: str | None = None) -> dict[str, object]:
-        """본인의 업무·QA·해당일 회의·휴가·기타 일정을 읽는다. 취소 건은 제외한다. 날짜 생략 시 서울의 오늘이며 휴가 approvalState는 승인 판단을 뜻하지 않는다. stale·warnings·completionState를 확인하고 과거 상태 복원으로 해석하지 않는다."""
+    async def get_my_today(
+        date: str | None = None, event_classification: str | None = None
+    ) -> dict[str, object]:
+        """본인의 업무·QA를 모든 원본 상태로 읽고, 해당일 회의·휴가·기타 일정은 취소 건을 제외한다. event_classification을 지정하면 해당 사용자 분류의 일정만 반환한다. 날짜 생략 시 서울의 오늘이다. 휴가는 approvalState와 유형을 구별한다. 현재 저장된 자료의 stale·warnings·truncated를 확인한다."""
         try:
             if date is not None:
                 parse_day(date)
-            return await reader.read_today(date)
+            return await reader.read_today(date, event_classification)
         except InvalidDateError:
             raise ToolError("날짜는 유효한 YYYY-MM-DD 형식이어야 합니다.") from None
         except StatusReadError:
@@ -58,6 +60,16 @@ def create_server(reader: McpQueryReader) -> FastMCP:
             ) from None
 
     @server.tool(annotations=read_only)
+    async def list_my_task_statuses() -> dict[str, object]:
+        """본인이 조회할 수 있는 목록 소스별 sourceId·name, 사용자 카테고리 categoryId·categoryName과 원본 statuses를 읽는다. statusOptionsBasis는 스키마(schema), 본인 행에서 관찰한 값(observed), 자료 없음(unavailable)을 구별한다. tracksStatus와 hasUnspecifiedStatus, 수집 상태도 확인한다. 상태 검색 전에 소스별로 사용할 이름을 고른다."""
+        try:
+            return await reader.read_task_statuses()
+        except StatusReadError:
+            raise ToolError(
+                "업무 상태 목록을 조회할 수 없습니다. 로컬 앱 연결과 수집 상태를 확인하세요."
+            ) from None
+
+    @server.tool(annotations=read_only)
     async def search_my_tasks(
         query: str | None = None,
         status: str | None = None,
@@ -66,13 +78,21 @@ def create_server(reader: McpQueryReader) -> FastMCP:
         section: str = "all",
         limit: int = 50,
         offset: int = 0,
+        source_id: str | None = None,
+        statuses: list[str] | None = None,
+        include_unset: bool = False,
+        category_id: str | None = None,
     ) -> dict[str, object]:
-        """현재 본인 업무·QA를 제목 부분검색·상태·마감 범위로 찾는다. 조건은 AND이며 날짜는 서울 YYYY-MM-DD 양끝 포함, 이번 주는 월~일로 지정한다. 상태는 원문 또는 진행중·시작전·리뷰·보류·완료를 쓸 수 있다. section은 tasks·qa·all이다. 결과 수 제한 전에 검색하며 nextOffset이 있으면 이어 읽는다. 기존 표시 규칙과 stale·warnings·completionState를 확인하고 빈 결과를 미수집과 혼동하지 않는다."""
+        """본인의 목록 항목을 사용자 카테고리·제목·소스·상태·마감 범위로 찾는다. 기본은 모든 상태다. 상태 요청은 list_my_task_statuses로 이름을 확인하고 source_id와 원본 statuses를 함께 지정한다. statuses 중 하나라도 정확히 일치하면 포함하며 status는 한 이름용이다. include_unset은 미지정 행을 포함하고 단독 사용 시 미지정만 찾는다. 카테고리 검색에는 목록에서 확인한 categoryId를 category_id로 전달한다. section은 기존 호출용이다. 날짜는 서울 YYYY-MM-DD 양끝 포함이다. nextOffset으로 이어 읽고 stale·warnings를 확인한다."""
         try:
             search = TaskSearch.parse(
                 {
                     "query": query,
                     "status": status,
+                    "source_id": source_id,
+                    "category_id": category_id,
+                    "statuses": statuses,
+                    "include_unset": include_unset,
                     "due_from": due_from,
                     "due_to": due_to,
                     "section": section,

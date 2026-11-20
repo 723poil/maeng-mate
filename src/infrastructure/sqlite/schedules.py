@@ -15,13 +15,14 @@ from src.infrastructure.sqlite.serialization import collection_fingerprint
 
 # 실행 시각은 예약과 실행권으로 결정하고, 상태 집계에서만 최신 실행 이력을 연결한다.
 SCHEDULE_TIMES = """
-    SELECT schedule.source_id, schedule.next_run_at, state.lease_until
+    SELECT schedule.source_id, schedule.next_run_at, state.lease_until,
+           schedule.retry_pending, schedule.retry_count
     FROM sync_schedules AS schedule
     JOIN work_source_state AS state ON state.source_id=schedule.source_id
 """
 
 SCHEDULE_STATUS = """
-    SELECT schedule.interval_seconds, schedule.next_run_at, schedule.retry_count,
+    SELECT schedule.source_id, schedule.interval_seconds, schedule.next_run_at, schedule.retry_count,
            schedule.retry_pending, schedule.error_code, state.lease_until, run.status
     FROM sync_schedules AS schedule
     JOIN work_source_state AS state ON state.source_id=schedule.source_id
@@ -113,7 +114,7 @@ class SQLiteSchedules:
         """실행권이 비고 기한이 된 소스만 설정 순서로 돌려준다."""
         rows = await self._rows(SCHEDULE_TIMES, sources)
         now = self._clock()
-        due_at = {row["source_id"]: effective_due(row) for row in rows}
+        due_at = collection_due_times(rows, sources)
         # 초기 설정에서 등록한 예약이 사라졌다면 유휴 상태로 처리할 수 없다.
         try:
             due = tuple(source for source in sources if due_at[source.source_id] <= now)
@@ -125,7 +126,7 @@ class SQLiteSchedules:
     async def read_status(self, sources: Sequence[SourceMapping]) -> dict[str, object]:
         """인증 응답에 필요한 집계만 제공하고 식별자와 원문은 제외한다."""
         rows = await self._rows(SCHEDULE_STATUS, sources)
-        due = min((effective_due(row) for row in rows), default=None)
+        due = min(collection_due_times(rows, sources).values(), default=None)
         return {
             "retryingSources": sum(row["retry_pending"] == 1 for row in rows),
             "maxRetryAttempt": max(
@@ -161,6 +162,31 @@ def failure_reason(value: object) -> str:
         and value in SOURCE_ERROR_CODES | {"source_failed", "storage_failed"}
         else "unknown"
     )
+
+
+def collection_due_times(
+    rows: Sequence[dict[str, object]], sources: Sequence[SourceMapping]
+) -> dict[str, float]:
+    """동일 원본과 재시도 단계의 연결이 한 번에 실행되도록 예약 시각을 맞춘다."""
+    due_at: dict[str, float] = {}
+    by_id = {source.source_id: source for source in sources}
+    groups: dict[tuple[object, ...], float] = {}
+    memberships: dict[str, tuple[object, ...]] = {}
+    for row in rows:
+        identifier = row["source_id"]
+        if not isinstance(identifier, str):
+            raise SnapshotError("storage_failed")
+        due_at[identifier] = effective_due(row)
+        source = by_id[identifier]
+        # 즉시 재수집할 새 매핑과 실행 중인 소스는 다른 연결의 예약을 미루지 않는다.
+        if row["next_run_at"] == 0 or effective_due(row) != row["next_run_at"]:
+            continue
+        # 같은 재시도 단계만 묶고 가장 늦은 시각을 지켜 서버의 대기 지시도 보존한다.
+        key = (source.provider, source.origin, row["retry_pending"], row["retry_count"])
+        memberships[identifier] = key
+        groups[key] = max(groups.get(key, 0), due_at[identifier])
+    due_at.update({identifier: groups[key] for identifier, key in memberships.items()})
+    return due_at
 
 
 def effective_due(row: dict[str, object]) -> float:

@@ -18,20 +18,26 @@ from src.infrastructure.sqlite.notification_keys import meeting_scope, notificat
 
 
 def meetings_with_jobs(
-    connection: sqlite3.Connection, source_id: str, user: str, items: Sequence[WorkItem]
+    connection: sqlite3.Connection,
+    source_id: str,
+    user: str,
+    items: Sequence[WorkItem],
+    origin: str | None = None,
 ) -> Iterator[tuple[CalendarEvent, str, list[sqlite3.Row]]]:
     """이번 수집에 포함된 본인 예약을 묶어서 조회하고 원래 회의 순서로 넘긴다."""
     meetings = (item for item in items if isinstance(item, CalendarEvent))
     for batch in batched(meetings, 128):
-        keys = [notification_key(f"meeting:{source_id}:{item.id}:{user}") for item in batch]
+        keys = [
+            notification_key(f"meeting:{origin or source_id}:{item.id}:{user}") for item in batch
+        ]
         placeholders = ",".join("?" for _ in keys)
         # 묶음마다 전체 대기 큐를 순회하지 않도록 현재 회의 키의 인덱스로 찾는다.
         rows = connection.execute(
             f"""SELECT id,logical_key,state,body,notion_url,meeting_start_at,meeting_mapping_hash
                 FROM notification_jobs INDEXED BY notification_logical_idx
                 WHERE logical_key IN ({placeholders})
-                AND kind='meeting' AND state IN ('pending','delivering') ORDER BY logical_key,rowid""",
-            keys,
+                AND meeting_source_id=? AND kind='meeting' AND state IN ('pending','delivering') ORDER BY logical_key,rowid""",
+            (*keys, source_id),
         )
         grouped: dict[str, list[sqlite3.Row]] = {}
         for row in rows:
@@ -55,7 +61,9 @@ def enqueue_meeting_reminders(
     scope = meeting_scope(run.source_id, user, run.mapping_hash)
     now = datetime.fromisoformat(completed_at)
     current: set[str] = set()
-    for item, logical, jobs in meetings_with_jobs(connection, run.source_id, user, items):
+    for item, logical, jobs in meetings_with_jobs(
+        connection, run.source_id, user, items, run.source.origin if run.source else None
+    ):
         current.add(item.id)
         timing = policy.schedule(item, user, now)
         start = timing.start.timestamp() if timing is not None else None
@@ -78,7 +86,7 @@ def enqueue_meeting_reminders(
         if existing is not None and body == existing["body"] and url == existing["notion_url"]:
             continue
         # 새 예약이나 대기 중 본문을 확정하기 전에는 채널별 전달 완료 여부를 다시 검사한다.
-        if logical_completed(connection, logical):
+        if logical_completed(connection, logical, scope):
             continue
         if existing is not None:
             connection.execute(

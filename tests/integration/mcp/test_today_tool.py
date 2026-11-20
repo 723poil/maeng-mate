@@ -25,9 +25,13 @@ class Reader:
         """실제 근무 데이터 없이 근무 조회 호출을 확인한다."""
         return {"recorded": False}
 
+    async def read_task_statuses(self) -> dict[str, object]:
+        """소스별 선택지를 상태 도구에 그대로 전달하는지 확인한다."""
+        return {"sources": [{"sourceId": "fixture", "statuses": ["검토 중"]}]}
+
     async def search_tasks(self, search: TaskSearch) -> dict[str, object]:
-        """검증한 조회 조건의 페이지 정보만 테스트에 돌려준다."""
-        return {"tasks": [], "limit": search.limit, "offset": search.offset}
+        """검증한 조건을 HTTP 어댑터에 전달할 때처럼 직렬화한다."""
+        return search.payload()
 
 
 async def test_today_tool_lists_and_calls_read_only_port() -> None:
@@ -36,7 +40,11 @@ async def test_today_tool_lists_and_calls_read_only_port() -> None:
     server = create_server(reader)
     assert "python" in str(await server.call_tool("get_my_system_status", {}))
     assert "recorded" in str(await server.call_tool("get_my_workday", {}))
-    assert "37" in str(await server.call_tool("search_my_tasks", {"limit": 37}))
+    _, catalog = await server.call_tool("list_my_task_statuses", {})
+    assert catalog["sources"] == [{"sourceId": "fixture", "statuses": ["검토 중"]}]
+    filters = {"source_id": "fixture", "statuses": ["검토 중"], "include_unset": True, "limit": 37}
+    _, search = await server.call_tool("search_my_tasks", filters)
+    assert all(search[key] == value for key, value in filters.items())
     result = await server.call_tool("get_my_today", {"date": "2026-11-13"})
     assert "2026-11-13" in str(result)
     result = await server.call_tool("get_my_today", {})

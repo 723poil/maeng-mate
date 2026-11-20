@@ -10,6 +10,20 @@ SOURCE = SourceMapping(
 OBSERVED = "2026-11-13T00:00:00+00:00"
 
 
+def task_schema() -> dict[str, object]:
+    """행에서 사용한 상태와 아직 사용하지 않은 원본 선택값을 제공한다."""
+    return {
+        "object": "data_source",
+        "properties": {
+            "Status": {
+                "id": "s",
+                "type": "status",
+                "status": {"options": [{"name": "진행 중"}, {"name": "미사용"}]},
+            }
+        },
+    }
+
+
 def page() -> dict[str, object]:
     """개인 자료 없는 Notion 응답을 구성한다."""
     return {

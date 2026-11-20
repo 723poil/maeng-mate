@@ -11,6 +11,7 @@ import httpx
 
 from src.bootstrap import instance
 from src.bootstrap.cli import main
+from tests.fixtures.notion import task_schema
 
 
 async def respond(request: httpx.Request) -> httpx.Response:
@@ -18,6 +19,8 @@ async def respond(request: httpx.Request) -> httpx.Response:
     assert request.url.host == "api.notion.com"
     if os.environ.get("FAKE_SLOW_SOURCE") == "1":
         await asyncio.sleep(3600)
+    if request.method == "GET" and request.url.path.startswith("/v1/data_sources/"):
+        return httpx.Response(200, json=task_schema())
     return httpx.Response(
         200, json={"object": "list", "results": [], "has_more": False, "next_cursor": None}
     )

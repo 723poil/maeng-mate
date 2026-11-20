@@ -1,5 +1,6 @@
 """두 달력 화면이 공유하는 인증된 월별 읽기 HTTP 어댑터다."""
 
+from dataclasses import replace
 from datetime import date
 
 import httpx
@@ -20,7 +21,7 @@ from src.infrastructure.api_decoding import (
     boolean,
     instant,
     json_object,
-    parse_display_fields,
+    parse_menu_display_fields,
     text,
 )
 from src.infrastructure.local_http import local_client, response_json
@@ -53,7 +54,9 @@ def parse_calendar(value: object) -> CalendarMonth:
         raise ValueError
     items: list[CalendarItem] = []
     keys: set[str] = set()
-    for event in events:
+
+    def parse_item(event: object) -> CalendarItem:
+        """각 표시 후보의 고유 키와 월 구간을 검증한다."""
         item = json_object(event)
         identifier = text(item["key"])
         start = date.fromisoformat(text(item["first"]))
@@ -74,30 +77,60 @@ def parse_calendar(value: object) -> CalendarMonth:
             not isinstance(category_key, str) or not category_key.startswith("category:")
         ):
             raise ValueError
-        items.append(
-            CalendarItem(
-                identifier,
-                _kind(item["kind"]),
-                text(item["title"]),
-                start,
-                end,
-                instant(item["startAt"]),
-                instant(item["endAt"]),
-                boolean(item["allDay"]),
-                text(url) if url else None,
-                text(item["status"]) if item["status"] is not None else None,
-                date.fromisoformat(text(item["startDate"]))
-                if item.get("startDate") is not None
-                else None,
-                date.fromisoformat(text(item["dueDate"]))
-                if item.get("dueDate") is not None
-                else None,
-                color=color,
-                category_key=category_key,
-                category=text(item["category"]) if item.get("category") is not None else None,
-                display_fields=parse_display_fields(item.get("displayFields")),
-            )
+        fields, badge_indices = parse_menu_display_fields(item.get("displayFields"))
+        return CalendarItem(
+            identifier,
+            _kind(item["kind"]),
+            text(item["title"]),
+            start,
+            end,
+            instant(item["startAt"]),
+            instant(item["endAt"]),
+            boolean(item["allDay"]),
+            text(url) if url else None,
+            text(item["status"]) if item["status"] is not None else None,
+            date.fromisoformat(text(item["startDate"]))
+            if item.get("startDate") is not None
+            else None,
+            date.fromisoformat(text(item["dueDate"])) if item.get("dueDate") is not None else None,
+            color=color,
+            category_key=category_key,
+            category=text(item["category"]) if item.get("category") is not None else None,
+            display_fields=fields,
+            badge_field_indices=badge_indices,
         )
+
+    for event in events:
+        primary = parse_item(event)
+        base = json_object(event)
+        compact = "variantOverrides" in base
+        variants = base.get("variantOverrides" if compact else "alternatives", [])
+        if not isinstance(variants, list):
+            raise ValueError
+        if compact:
+            # 각 후보의 고유 키는 항상 명시하고 누락한 표시 속성만 기본 행에서 상속한다.
+            if "alternatives" in base:
+                raise ValueError
+            inherited = {key: val for key, val in base.items() if key != "variantOverrides"}
+            expanded = []
+            for variant in variants:
+                override = json_object(variant)
+                if "key" not in override or override.keys() - (
+                    inherited.keys() | {"category", "displayFields"}
+                ):
+                    raise ValueError
+                expanded.append(inherited | override)
+            variants = expanded
+        alternatives = tuple(parse_item(variant) for variant in variants)
+        for variant in alternatives:
+            if (variant.first, variant.last, variant.start_at, variant.end_at) != (
+                primary.first,
+                primary.last,
+                primary.start_at,
+                primary.end_at,
+            ):
+                raise ValueError
+        items.append(replace(primary, alternatives=alternatives))
     attendance: list[CalendarAttendance] = []
     days: set[date] = set()
     for record in records:

@@ -141,6 +141,12 @@ def decode_item(value: object, source: SourceMapping) -> WorkItem:
                 assignee_ids=identities(payload["assignee_ids"]),
                 status=nullable_string(payload, "status"),
                 due=period(payload["due"]),
+                parent_label=nullable_string(payload, "parent_label")
+                if "parent_label" in payload
+                else None,
+                parent_order=nullable_string(payload, "parent_order")
+                if "parent_order" in payload
+                else None,
                 qa_round=string(payload["qa_round"])
                 if payload.get("qa_round") is not None
                 else None,

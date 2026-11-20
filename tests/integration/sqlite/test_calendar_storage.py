@@ -149,11 +149,14 @@ async def test_calendar_navigation_reuses_projection_and_refreshes_current_data(
         run, [replace(event(), period=Period("date", "2026-12-20", None))], STAMP
     )
     assert not (await calendar.month("2026-11")).items
-    assert (await calendar.month("2026-12")).items[0].first == date(2026, 12, 20)
+    december = await calendar.month("2026-12")
+    assert december.items[0].first == date(2026, 12, 20)
     run = await store.begin_run(mapping, STAMP)
+    running = await calendar.month("2026-12")
+    assert not running.stale and running.items[0] is december.items[0]
     await store.fail_run(run, "source_failed")
     failed = await calendar.month("2026-12")
-    assert failed.stale and len(failed.items) == 1
+    assert failed.stale and failed.items[0] is december.items[0]
 
 
 async def test_calendar_keeps_small_details_after_large_rows_are_truncated(db: Database) -> None:

@@ -10,9 +10,10 @@ from uuid import UUID
 
 from src.application.category_column_types import scope_property_kinds
 from src.application.category_configuration_upgrade import move_unassigned_settings
+from src.application.models import CollectedWork
 from src.application.notion_links import notion_link
 from src.application.periodic import utc_now
-from src.application.ports import WorkSource
+from src.application.ports import SharedOriginReader, WorkSource
 from src.application.work_settings import (
     Settings,
     WorkSettingsDocument,
@@ -29,50 +30,15 @@ from src.application.work_settings import (
     source_documents,
 )
 from src.domain.category_event_alerts import EVENT_ALERT_TRIGGERS, EventAlertSelection
-from src.domain.display_columns import TITLE_COLUMN_TYPES
-from src.domain.models import SourceKind, SourceMapping, WorkItem
+from src.domain.models import SourceMapping, WorkItem
 from src.domain.source_alerts import AlertDelivery, is_source_alert_kind
 from src.domain.source_display import SourceCategory, SourceDisplay
+from src.domain.source_roles import ROLE_TEMPLATES, STATUS
 from src.domain.source_scope import field_parts
 
 
 class SourceSettingsError(ValueError):
     """연결·입력 오류를 원본 응답과 분리한다."""
-
-
-@dataclass(frozen=True)
-class ColumnRole:
-    """내부 필드가 받을 수 있는 원천 칼럼 타입이다."""
-
-    key: str
-    title: str
-    types: tuple[str, ...]
-    required: bool = True
-
-
-TITLE = ColumnRole("title", "항목 제목", TITLE_COLUMN_TYPES)
-STATUS = ("status", "select")
-PERIOD = ColumnRole("period", "일정 시작·종료", ("date",))
-ROLES: dict[SourceKind, tuple[ColumnRole, ...]] = {
-    "task": (
-        TITLE,
-        ColumnRole("assignees", "내 항목만 보기", ("people",)),
-        ColumnRole("status", "상태로 사용", STATUS),
-        ColumnRole("dueDate", "마감일로 사용", ("date",), False),
-    ),
-    "meeting": (
-        TITLE,
-        ColumnRole("participants", "내 일정만 보기", ("people",)),
-        PERIOD,
-        ColumnRole("category", "일정 유형", STATUS, False),
-        ColumnRole("cancelled", "취소 여부", ("checkbox",), False),
-    ),
-    "leave": (
-        ColumnRole("people", "휴가 대상자", ("people",)),
-        PERIOD,
-        ColumnRole("approval", "승인 상태", STATUS),
-    ),
-}
 
 
 @dataclass(frozen=True)
@@ -104,6 +70,7 @@ class SourceSchema:
     name: str
     columns: tuple[SourceColumn, ...]
     round_titles: tuple[str, ...] = ()
+    parent_numbers: tuple[str, ...] = ()
 
 
 class SourceCatalog(Protocol):
@@ -121,7 +88,16 @@ class ProviderSources:
         """현재 지원하는 수집 어댑터를 조립부에서 받는다."""
         self._readers = dict(readers)
 
-    async def collect(self, source: SourceMapping, observed_at: str) -> list[WorkItem]:
+    def for_shared_origin(self, source: SourceMapping) -> WorkSource:
+        """원본을 공유하는 연결에 해당 프로바이더의 읽기 세션을 전달한다."""
+        reader = self._readers[source.provider]
+        return (
+            reader.for_shared_origin(source) if isinstance(reader, SharedOriginReader) else reader
+        )
+
+    async def collect(
+        self, source: SourceMapping, observed_at: str
+    ) -> CollectedWork | list[WorkItem]:
         """설정에 지정된 어댑터에 정규화를 위임한다."""
         return await self._readers[source.provider].collect(source, observed_at)
 
@@ -234,6 +210,7 @@ def mapping_signature(settings: Settings | None) -> object:
             value.key,
             value.color,
             value.sort,
+            value.sort_direction,
             value.channels,
             value.calendar_visible,
             value.notification_types,
@@ -260,9 +237,14 @@ def validate_columns(mapping: SourceMapping, schema: SourceSchema) -> None:
     """실제 스키마에 맞는 타입과 차시 속성만 저장한다."""
     rounds = mapping.round_title_property is not None
     if rounds and mapping.round_title_property not in schema.round_titles:
-        raise SourceSettingsError("차시의 제목으로 쓸 칼럼을 다시 선택하세요.")
+        raise SourceSettingsError("부모 제목 칼럼을 다시 선택하세요.")
+    if (
+        mapping.parent_number_property
+        and mapping.parent_number_property not in schema.parent_numbers
+    ):
+        raise SourceSettingsError("부모 표의 숫자 칼럼을 다시 선택하세요.")
     columns = {column.name if rounds else unquote(column.id): column for column in schema.columns}
-    for role in ROLES[mapping.kind]:
+    for role in ROLE_TEMPLATES[mapping.kind]:
         value = mapping.properties.get(role.key)
         if value is None and not role.required:
             continue
@@ -278,7 +260,11 @@ def validate_columns(mapping: SourceMapping, schema: SourceSchema) -> None:
     for display_column in mapping.storage_layout:
         property_id = display_column.property_id
         column = columns.get(property_id if rounds else unquote(property_id))
-        if column is None or column.kind != display_column.kind:
+        if column is None or (
+            column.kind not in STATUS
+            if display_column.kind == "status_or_select"
+            else column.kind != display_column.kind
+        ):
             raise SourceSettingsError(
                 f"'{display_column.label}'에 연결된 원본 칼럼을 다시 선택하세요."
             )
@@ -445,13 +431,18 @@ class SourceSettingsService:
             rounds = source.round_title_property is not None
             references = scope_property_types(source) if source.source_id in active_ids else set()
             old = old_active.get(source.source_id)
-            if references and old is not None and (old.round_title_property is not None) == rounds:
+            if (
+                references
+                and old is not None
+                and old.origin == source.origin
+                and (old.round_title_property is not None) == rounds
+            ):
                 # 같은 표·탐색 방식의 기존 참조는 이름·문구·비교값만 바꿔도 다시 조회하지 않는다.
                 references -= scope_property_types(old)
             if not check_mapping and not references:
                 continue
-            profiles = self.inspect(source.provider, source.source_id, rounds=rounds)
-            schema = next((item for item in profiles if item.id == source.source_id), None)
+            profiles = self.inspect(source.provider, source.origin, rounds=rounds)
+            schema = next((item for item in profiles if item.id == source.origin), None)
             if schema is None:
                 raise SourceSettingsError("수집할 데이터 소스를 다시 선택하세요.")
             if check_mapping:
@@ -502,9 +493,14 @@ def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> 
     """새로 검증할 원본 연결이 없으면 값 설정이나 연결 해제는 원격 조회 없이 저장한다."""
     return (
         before is not None
+        and before.origin == after.origin
         and before.provider == after.provider
         and before.kind == after.kind
         and before.round_title_property == after.round_title_property
+        and (
+            after.parent_number_property is None
+            or before.parent_number_property == after.parent_number_property
+        )
         and after.properties.items() <= before.properties.items()
         and source_attribute_types(after) <= source_attribute_types(before)
     )
@@ -546,7 +542,12 @@ def prune_category_links(
                 for key, origin in category_bindings(raw).items()
                 if key in available[group]
             }
-            result.append({**raw, "columnMappings": column_bindings_payload(links)})
+            updated = {**raw, "columnMappings": column_bindings_payload(links)}
+            sort = updated.get("sort")
+            if isinstance(sort, str) and sort.startswith("column:") and sort[7:] not in links:
+                updated.pop("sort")
+                updated.pop("sortDirection", None)
+            result.append(updated)
         else:
             result.append(raw)
     return tuple(result)
@@ -652,6 +653,7 @@ def schema_payload(schema: SourceSchema) -> dict[str, object]:
             for item in schema.columns
         ],
         "roundTitles": list(schema.round_titles),
+        "parentNumbers": list(schema.parent_numbers),
     }
 
 
@@ -665,6 +667,9 @@ def parse_schemas(value: object) -> tuple[SourceSchema, ...]:
             raise ValueError
         columns, rounds = schema.get("columns"), schema.get("roundTitles")
         if not isinstance(columns, list) or not isinstance(rounds, list):
+            raise ValueError
+        numbers = schema.get("parentNumbers", [])
+        if not isinstance(numbers, list):
             raise ValueError
         parsed = []
         for column in columns:
@@ -688,6 +693,7 @@ def parse_schemas(value: object) -> tuple[SourceSchema, ...]:
                 nonblank(schema["name"]),
                 tuple(parsed),
                 tuple(nonblank(name) for name in rounds),
+                tuple(nonblank(name) for name in numbers),
             )
         )
     return tuple(result)
@@ -702,6 +708,7 @@ def display_payload(value: SourceDisplay) -> dict[str, object]:
         "name": value.name,
         "color": value.color,
         "sort": value.sort,
+        "sortDirection": value.sort_direction,
         "url": value.url,
         "calendarVisible": value.calendar_visible,
         "flexible": value.flexible,
@@ -747,6 +754,7 @@ def parse_active_display(value: object) -> tuple[SourceDisplay, ...]:
                 calendar_visible=raw.get("calendarVisible", True) is True,
                 category=read_category(raw.get("category")),
                 flexible=raw.get("flexible") is True,
+                sort_direction=nonblank(raw.get("sortDirection", "asc")),
                 events=parse_display_events(raw.get("events", [])),
             )
         )

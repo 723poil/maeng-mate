@@ -5,7 +5,12 @@ from contextlib import closing
 from pathlib import Path
 
 from src.infrastructure.sqlite.runtime_settings import read_settings
-from src.infrastructure.sqlite.schema import INDEXES, SCHEMA_VERSION, TABLES
+from src.infrastructure.sqlite.schema import (
+    INDEXES,
+    SCHEMA_VERSION,
+    SOURCE_STATUS_OPTIONS_TABLE,
+    TABLES,
+)
 from src.infrastructure.sqlite.work_settings import read_document
 
 _DEVICE_TABLES = ("mcp_preferences", "mcp_access_tokens")
@@ -62,7 +67,7 @@ def build_portable_database(snapshot: Path, target: Path) -> None:
     validate_portable_database(target)
 
 
-def validate_portable_database(path: Path) -> None:
+def validate_portable_database(path: Path) -> int:
     """허용된 스키마와 버전·제약·설정·기기 권한 부재를 읽기 전용 연결에서 검사한다."""
     with (
         closing(sqlite3.connect(":memory:")) as reference,
@@ -72,12 +77,18 @@ def validate_portable_database(path: Path) -> None:
         _create_schema(reference)
         # 원본 DDL을 실행하지 않고 표준 사본과 대조한 뒤에만 업무 테이블에 접근한다.
         expected = reference.execute(_SCHEMA_QUERY).fetchall()
-        if source.execute(_SCHEMA_QUERY).fetchmany(len(expected) + 1) != expected:
-            raise ValueError("현재 앱에서 불러올 수 없는 DB 스키마입니다.")
+        actual = source.execute(_SCHEMA_QUERY).fetchmany(len(expected) + 1)
+        version = SCHEMA_VERSION
+        if actual != expected:
+            # v17의 전체 DDL도 이름·정의까지 대조한다. 알 수 없는 테이블이나 트리거는 거부한다.
+            reference.execute("DROP TABLE source_status_options")
+            if actual != reference.execute(_SCHEMA_QUERY).fetchall():
+                raise ValueError("현재 앱에서 불러올 수 없는 DB 스키마입니다.")
+            version = 17
         versions = source.execute("SELECT version FROM schema_versions ORDER BY version").fetchmany(
             SCHEMA_VERSION + 1
         )
-        if versions != [(version,) for version in range(1, SCHEMA_VERSION + 1)]:
+        if versions != [(number,) for number in range(1, version + 1)]:
             raise ValueError("현재 앱에서 불러올 수 없는 DB 버전입니다.")
         if (
             source.execute("PRAGMA integrity_check(1)").fetchone() != ("ok",)
@@ -92,6 +103,17 @@ def validate_portable_database(path: Path) -> None:
         if read_document(source) is None:
             raise ValueError("서버를 시작하는 데 필요한 업무 설정이 백업에 없습니다.")
         read_settings(source)
+        return version
+
+
+def prepare_portable_restore(path: Path) -> None:
+    """검증한 v17 복원 후보에만 비어 있는 상태 스키마 저장소를 추가한다."""
+    if validate_portable_database(path) == 17:
+        with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True)) as connection:
+            connection.execute("BEGIN")
+            connection.execute(SOURCE_STATUS_OPTIONS_TABLE)
+            connection.execute("INSERT INTO schema_versions(version) VALUES(18)")
+            connection.commit()
 
 
 def preserve_device_access(current: Path, staged: Path) -> None:

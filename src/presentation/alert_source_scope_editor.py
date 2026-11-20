@@ -12,6 +12,7 @@ from Foundation import NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
 from src.application.category_column_types import LEGACY_CATEGORY_TYPES
 from src.application.source_settings import SourceSchema, SourceSettingsClient, SourceSettingsError
 from src.domain.category_configuration import CategoryColumn
+from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.domain.main_list import MainListRules
 from src.domain.source_scope import SourceScope, field_parts
 from src.domain.work_dates import canonical_identity
@@ -30,6 +31,7 @@ class AlertSource:
     rounds: bool
     columns: frozenset[str]
     property_names: Mapping[str, str] = field(default_factory=dict, repr=False)
+    origin_id: str | None = None
 
     def saved_property(self, key: str) -> CategoryColumn:
         """차시 공통 이름 또는 이 표의 역할 연결에 기록한 원본 속성명을 복원한다."""
@@ -116,6 +118,11 @@ class AlertSourceScopeEditor:
         self._retry = button(view, "속성 조회", 533, height - 64, 108, self._actions, "refresh:")
         self._common_page = NSView.alloc().initWithFrame_(frame(0, 0, 642, height - 36))
         view.addSubview_(self._common_page)
+        if any(EVENT_CLASSIFICATION in source.columns for source in sources):
+            columns = (
+                *columns,
+                CategoryColumn(EVENT_CLASSIFICATION, "일정 분류 (수집 소스)", "text"),
+            )
         self.common = MainListEditor(self._common_page, columns, common, changed, alert_scope=True)
         label(self._common_page, "공통 저장 칼럼 조건", 0, height - 67, 390, bold=True)
         self._observed_note = label(self._common_page, "", 150, height - 67, 317, secondary=True)
@@ -233,7 +240,7 @@ class AlertSourceScopeEditor:
         else:
             self._notes[key] = "원본 속성을 불러오는 중…"
             self._pending[key] = self._pool.submit(
-                self._client.inspect, source.provider, source.id, rounds=source.rounds
+                self._client.inspect, source.provider, source.origin_id or key, rounds=source.rounds
             )
             self._start_polling()
         self._show_note(key)
@@ -270,7 +277,8 @@ class AlertSourceScopeEditor:
                     (
                         item
                         for item in schemas
-                        if canonical_identity(item.id) == canonical_identity(key)
+                        if canonical_identity(item.id)
+                        == canonical_identity(self._sources[key].origin_id or key)
                     ),
                     None,
                 )
@@ -317,7 +325,11 @@ class AlertSourceScopeEditor:
                 )
         self._editors[key].update_columns(tuple(columns), options)
         self._notes[key] = (
-            ("차시별 하위 표의 공통 속성" if source.rounds else "연결한 표의 원본 속성")
+            (
+                "부모 항목 안에 있는 하위 표의 공통 속성"
+                if source.rounds
+                else "연결한 표의 원본 속성"
+            )
             if columns
             else "조건에 사용할 수 있는 원본 속성이 없습니다."
         )

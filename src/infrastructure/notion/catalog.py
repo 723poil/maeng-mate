@@ -97,7 +97,7 @@ async def inspect_columns(
     else:
         item = await _catalog_item(api, schema, rounds=rounds)
         if item is None:
-            raise SourceSettingsError("선택한 차시에서 열 수 있는 하위 표를 찾지 못했습니다.")
+            raise SourceSettingsError("부모 항목에서 열 수 있는 하위 표를 찾지 못했습니다.")
         return (item,)
 
     databases = []
@@ -147,7 +147,13 @@ async def _catalog_item(
     child_columns = await _round_columns(api, identifier)
     if child_columns is None:
         return None
-    return SourceSchema(identifier, title or "차시별 목록", child_columns, round_titles)
+    return SourceSchema(
+        identifier,
+        title or "하위 표 목록",
+        child_columns,
+        round_titles,
+        tuple(c.name for c in columns if c.kind == "number"),
+    )
 
 
 def merge_round_column(previous: SourceColumn, current: SourceColumn) -> SourceColumn:

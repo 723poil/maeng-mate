@@ -48,20 +48,22 @@ def delivery_kinds(
     return (kind,) if isinstance(kind, str) else ()
 
 
-def logical_completed(connection: sqlite3.Connection, logical_key: str) -> bool:
+def logical_completed(
+    connection: sqlite3.Connection, logical_key: str, source_key: str | None = None
+) -> bool:
     """기존 대상 채널이 모두 요청·불명확 상태일 때만 논리 알림을 끝난 것으로 본다."""
     legacy = connection.execute(
-        """SELECT 1 FROM notification_jobs AS previous WHERE logical_key=?
+        """SELECT 1 FROM notification_jobs AS previous WHERE logical_key=? AND (? IS NULL OR previous.source_key=?)
         AND (state IN ('requested','unknown') OR (state='obsolete' AND token IS NOT NULL))
         AND NOT EXISTS(SELECT 1 FROM notification_deliveries d WHERE d.job_id=previous.id)""",
-        (logical_key,),
+        (logical_key, source_key, source_key),
     ).fetchone()
     if legacy is not None:
         return True
     channels = connection.execute(
         """SELECT DISTINCT delivery.channel FROM notification_deliveries AS delivery
-        JOIN notification_jobs AS job ON job.id=delivery.job_id WHERE job.logical_key=?""",
-        (logical_key,),
+        JOIN notification_jobs AS job ON job.id=delivery.job_id WHERE job.logical_key=? AND (? IS NULL OR job.source_key=?)""",
+        (logical_key, source_key, source_key),
     ).fetchall()
     if not channels:
         return False

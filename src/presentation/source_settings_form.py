@@ -1,17 +1,18 @@
 """수집 소스를 선택하고 실제 칼럼에 앱 필드를 연결하는 Cocoa 폼이다."""
 
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from urllib.parse import unquote
+from uuid import uuid4
 
 from AppKit import NSButton, NSMenuItem, NSPopUpButton, NSScrollView, NSTextField, NSView
 from Foundation import NSObject
 
 from src.application.notion_page_links import PageLinksError, page_url
 from src.application.source_settings import (
-    ROLES,
     CollectionDraft,
-    ColumnRole,
     SourceColumn,
     SourceDraft,
     SourceSchema,
@@ -21,8 +22,10 @@ from src.application.source_settings import (
 )
 from src.application.work_settings import category_bindings, column_bindings_payload
 from src.domain.category_configuration import ColumnBinding
+from src.domain.display_columns import DISPLAY_COLUMN_TYPES
 from src.domain.models import SourceKind
 from src.domain.source_display import SOURCE_SORTS, SourceCategory
+from src.domain.source_roles import ROLE_TEMPLATES, ColumnRole, roles_payload, source_roles
 from src.domain.work_dates import canonical_identity
 from src.presentation.column_setup_sheet import ColumnSetupSheet
 from src.presentation.native_views import button, card, frame, label
@@ -30,7 +33,8 @@ from src.presentation.runtime_settings_controller import SettingsEditor
 
 type SourceEditor = SettingsEditor[CollectionDraft, SourceSettingsState]
 HEADER_HEIGHT = 232
-OPTION_HEIGHT = 155
+OPTION_HEIGHT = 184
+PARENT_OPTION_ROW = 34
 COLLAPSED_OPTIONS = 44
 EVENT_CHOICES = ("other", "meeting", "leave")
 COLLECTION_MODES: tuple[SourceKind, ...] = ("task", "meeting", "leave")
@@ -108,6 +112,10 @@ class SourceFormActions(NSObject):
         """상태나 유형 칼럼이 바뀌면 선택값을 다시 구성한다."""
         self.owner.change_columns()
 
+    def addRole_(self, sender: object) -> None:
+        """선택한 원본 타입의 사용자 역할을 추가한다."""
+        self.owner.add_role()
+
     def rules_(self, sender: object) -> None:
         """기존 데이터 분류의 원본 쪽 매핑을 편집한다."""
         self.owner.mark_edited()
@@ -147,6 +155,8 @@ class SourceSettingsForm:
         self._body_height = 0.0
         self._mapping: dict[str, tuple[NSPopUpButton, tuple[SourceColumn, ...]]] = {}
         self._options: dict[str, NSButton | NSPopUpButton] = {}
+        self._role_names: dict[str, NSTextField] = {}
+        self._roles = ROLE_TEMPLATES["task"]
         self._choices: dict[str, int] = {}
         self._body: NSView | None = None
         self._role_body: NSView | None = None
@@ -193,13 +203,32 @@ class SourceSettingsForm:
             frame(0, 0, 552, OPTION_HEIGHT - COLLAPSED_OPTIONS)
         )
         self._detail.addSubview_(self._advanced)
-        label(self._advanced, "열기 주소", 12, 76, 84)
-        self.url = self._field(102, 73, 436, "선택 사항", parent=self._advanced)
-        label(self._advanced, "항목 정렬", 12, 41, 88, secondary=True)
+        self._common_options = NSView.alloc().initWithFrame_(frame(0, 34, 552, 106))
+        self._advanced.addSubview_(self._common_options)
+        label(self._common_options, "열기 주소", 12, 77, 84)
+        self.url = self._field(102, 74, 436, "선택 사항", parent=self._common_options)
+        label(self._common_options, "항목 정렬", 12, 43, 84)
         self.sort = self._popup(
-            self._advanced, 102, 37, 170, ["정렬 없음", "날짜순", "제목순"], "changed:"
+            self._common_options, 102, 39, 270, ["정렬 없음", "날짜순", "제목순"], "changed:"
         )
-        self.rounds = self._check("차시별 하위 표", 310, 36, 215, "structure:")
+        self._sort_keys = list(SOURCE_SORTS)
+        self.sort_direction = self._popup(
+            self._common_options, 378, 39, 160, ["오름차순", "내림차순"], "changed:"
+        )
+        self.rounds = self._check(
+            "부모 항목 안의 하위 표", 102, 6, 254, "structure:", parent=self._common_options
+        )
+        self.parent_display = self._check("부모 제목 표시", 102, 39, 168, "changed:")
+        self.parent_sort = self._popup(self._advanced, 284, 38, 254, ["부모 정렬 없음"], "changed:")
+        self._parent_hint = label(
+            self._advanced,
+            "카드 정렬을 지정했다면 ‘부모 정렬값’을 추가하세요.",
+            12,
+            8,
+            400,
+            secondary=True,
+        )
+        self._parent_orders: list[tuple[str, str | None]] = []
         self._remove = button(self._advanced, "소스 제거", 425, 5, 113, self._actions, "remove:")
         self._round_title: NSPopUpButton | None = None
         self._fill({})
@@ -279,6 +308,13 @@ class SourceSettingsForm:
     def _fill(self, raw: dict[str, object]) -> None:
         """저장된 건 또는 새 소스의 기본 입력으로 바꾼다."""
         self._original = raw
+        # 저장을 다시 시도해도 같은 초안은 하나의 논리 소스로 식별한다.
+        saved_id = raw.get("sourceId", raw.get("dataSourceId"))
+        self._source_id = saved_id if isinstance(saved_id, str) else str(uuid4())
+        saved_classification = raw.get("classification")
+        self._classification: dict[str, object] = (
+            dict(saved_classification) if isinstance(saved_classification, dict) else {}
+        )
         self.error = None
         self._profiles = ()
         self._schema = None
@@ -296,13 +332,29 @@ class SourceSettingsForm:
             titles.append("휴가 승인 조회")
         set_titles(self.mode, titles)
         self.mode.selectItemAtIndex_(1 if mode == "meeting" else 2 if mode == "leave" else 0)
-        self.rounds.setState_(int("roundTitleProperty" in raw))
+        self._roles = source_roles(self._mode(), raw.get("columnRoles"))
+        self.rounds.setState_(int("parentTitleProperty" in raw or "roundTitleProperty" in raw))
+        self._parent_orders = []
         sort = raw.get("sort", "default")
-        self.sort.selectItemAtIndex_(
-            SOURCE_SORTS.index(sort) if sort in SOURCE_SORTS and isinstance(sort, str) else 0
-        )
+        self._refresh_sort(sort if isinstance(sort, str) else "default")
+        self.sort_direction.selectItemAtIndex_(int(raw.get("sortDirection") == "desc"))
         self._set_schema_choices()
         self._draw_mapping()
+
+    def _refresh_sort(self, selected: str | None = None) -> None:
+        """선택한 카테고리에 실제 연결한 칼럼만 정렬 기준으로 제공한다."""
+        if selected is None:
+            selected = self._sort_keys[self.sort.indexOfSelectedItem()]
+        category = self.selected_category()
+        config = category.configuration if category else None
+        columns = (
+            [item for item in config.columns if item.id in self._category_links] if config else []
+        )
+        self._sort_keys = [*SOURCE_SORTS, *(f"column:{item.id}" for item in columns)]
+        set_titles(self.sort, ["기본 정렬", "날짜순", "제목순", *(item.name for item in columns)])
+        self.sort.selectItemAtIndex_(
+            self._sort_keys.index(selected) if selected in self._sort_keys else 0
+        )
 
     def _load_categories(self, raw: dict[str, object]) -> None:
         """설정에서 등록한 카테고리 중 하나를 ID로 연결한다."""
@@ -397,6 +449,7 @@ class SourceSettingsForm:
 
     def change_mode(self) -> None:
         """조회한 표는 유지하고 새 수집 방식에 맞는 연결만 그린다."""
+        self._roles = ROLE_TEMPLATES[self._mode()]
         supports_rounds = self._mode() == "task"
         self.rounds.setHidden_(not supports_rounds)
         if not supports_rounds and self.rounds.state() == 1:
@@ -447,6 +500,8 @@ class SourceSettingsForm:
             return
         self._lookup_reference = self._pending_reference
         prior_id = self._schema.id if self._schema else self._original.get("dataSourceId")
+        # 조회 결과로 표 목록을 교체하기 전에 현재 폼이 저장된 표를 편집 중인지 확인한다.
+        first_saved_lookup = self._schema is None and self._uses_saved_layout()
         self._profiles = profiles
         self._set_schema_choices()
         match = next(
@@ -459,9 +514,9 @@ class SourceSettingsForm:
             0,
         )
         self.schemas.selectItemAtIndex_(1 if len(profiles) == 1 else match)
-        self.choose_schema()
+        self.choose_schema(first_saved_lookup=first_saved_lookup)
 
-    def choose_schema(self) -> None:
+    def choose_schema(self, *, first_saved_lookup: bool = False) -> None:
         """선택 표와 기존에 연결된 필드를 대조한다."""
         index = self.schemas.indexOfSelectedItem() - 1
         schema = self._profiles[index] if 0 <= index < len(self._profiles) else None
@@ -478,6 +533,18 @@ class SourceSettingsForm:
         self._schema = schema
         self.error = None
         if not same_table:
+            saved_roles = (
+                self._original.get("columnRoles")
+                if self._uses_saved_layout() and self._original.get("kind") == self._mode()
+                else None
+            )
+            self._roles = source_roles(self._mode(), saved_roles)
+            saved_classification = (
+                self._original.get("classification") if self._uses_saved_layout() else None
+            )
+            self._classification = (
+                dict(saved_classification) if isinstance(saved_classification, dict) else {}
+            )
             category = self.selected_category()
             self._category_links = (
                 category_bindings(self._original)
@@ -497,11 +564,11 @@ class SourceSettingsForm:
                 self.url.setStringValue_(reference)
         if same_table:
             self._choices = options
-            self._draw(roles)
+            self._draw(roles, preserve_scroll=True)
             if self._round_title is not None and previous_round is not None:
                 self._round_title.selectItemAtIndex_(previous_round)
         else:
-            self._draw_mapping()
+            self._draw_mapping(preserve_parent=first_saved_lookup and self._uses_saved_layout())
         if self._schema is not None and self._open_after_inspect:
             self._open_after_inspect = False
             self.open_column_setup()
@@ -514,7 +581,7 @@ class SourceSettingsForm:
         """저장한 표와 차시 모드가 같을 때만 이전 속성 연결을 복원한다."""
         original = self._original.get("dataSourceId")
         if not isinstance(original, str) or self._uses_rounds() != (
-            "roundTitleProperty" in self._original
+            "parentTitleProperty" in self._original or "roundTitleProperty" in self._original
         ):
             return False
         # 아직 조회하지 않은 기존 표는 그대로 편집할 수 있고, 조회 후에는 선택이 필요하다.
@@ -549,7 +616,7 @@ class SourceSettingsForm:
         return result
 
     def _default_choices(self) -> dict[str, int]:
-        """이미 저장된 상태와 일정 분류를 같은 이름으로 복원한다."""
+        """이미 저장된 일정 분류와 휴가 승인 값을 같은 이름으로 복원한다."""
         kind = self._mode()
         if kind == "meeting":
             rules = self._original.get("eventTypes", {})
@@ -559,10 +626,15 @@ class SourceSettingsForm:
                     for name, value in rules.items()
                     if value in EVENT_CHOICES
                 }
-        values = self._original.get("approvedValues" if kind == "leave" else "completedStatuses")
-        return {str(name): 1 for name in values} if isinstance(values, list) else {}
+        if kind in ("task", "leave"):
+            values = self._original.get(
+                "approvedValues" if kind == "leave" else "completedStatuses"
+            )
+            if isinstance(values, list):
+                return {str(name): 1 for name in values}
+        return {}
 
-    def _draw_mapping(self) -> None:
+    def _draw_mapping(self, *, preserve_parent: bool = False) -> None:
         """기존 매핑에 맞는 칼럼이나 조회 안내를 표시한다."""
         restore = self._uses_saved_layout() and self._mode() == self._original.get("kind")
         raw = self._original.get("properties") if restore else None
@@ -575,9 +647,58 @@ class SourceSettingsForm:
             ):
                 selected["title"] = self._column_value(title)
         self._choices = self._default_choices() if restore else {}
-        self._draw(selected)
+        self._draw(selected, preserve_parent=preserve_parent)
 
-    def _draw(self, selected: dict[str, str], *, preserve_scroll: bool = False) -> None:
+    def _sync_parent_controls(self, preserve: bool) -> None:
+        """부모 표의 숫자 칼럼을 표시하고 누락된 현재 연결도 보존한다."""
+        nested = self._uses_rounds()
+        self.parent_display.setHidden_(not nested)
+        self.parent_sort.setHidden_(not nested)
+        self._parent_hint.setHidden_(not nested)
+        if not nested:
+            return
+        saved = self._original if self._uses_saved_layout() else {}
+        number = saved.get("parentNumberProperty")
+        legacy = "roundTitleProperty" in saved
+        order = saved.get("parentOrder", "legacy" if legacy else "none")
+        selected = (str(order), number if isinstance(number, str) else None)
+        if preserve and self._parent_orders:
+            selected = self._parent_orders[self.parent_sort.indexOfSelectedItem()]
+        else:
+            self.parent_display.setState_(int(saved.get("parentLabel", legacy) is True))
+        numbers = (
+            self._schema.parent_numbers
+            if self._schema
+            else ((number,) if isinstance(number, str) else ())
+        )
+        titles = ["부모 정렬 없음", "제목에서 ‘차’ 앞 숫자 읽기"]
+        self._parent_orders = [("none", None), ("suffix", None)]
+        if order == "legacy":
+            titles.append("제목의 첫 숫자 (기존 설정)")
+            self._parent_orders.append(("legacy", None))
+        for name in numbers:
+            titles.append(f"숫자 칼럼 · {name}")
+            self._parent_orders.append(("column", name))
+        # 숫자 칼럼이 개명되거나 타입이 바뀌어도 다른 설정을 저장할 때 연결을 잃지 않는다.
+        if (
+            selected[0] == "column"
+            and selected[1] is not None
+            and selected not in self._parent_orders
+        ):
+            titles.append(f"누락된 숫자 칼럼 · {selected[1]}")
+            self._parent_orders.append(selected)
+        set_titles(self.parent_sort, titles)
+        self.parent_sort.selectItemAtIndex_(
+            self._parent_orders.index(selected) if selected in self._parent_orders else 0
+        )
+
+    def _draw(
+        self,
+        selected: dict[str, str],
+        *,
+        preserve_scroll: bool = False,
+        preserve_parent: bool = False,
+    ) -> None:
         """칼럼 종류와 상태 행 수에 맞춰 카드 높이를 계산한다."""
         offset = 0.0
         if preserve_scroll:
@@ -587,9 +708,11 @@ class SourceSettingsForm:
         if self._body is not None:
             self._body.setHidden_(True)
             self.document.setSubviews_([self._header, self._detail])
+        self._role_names.clear()
         self._mapping.clear()
         self._options.clear()
         self._round_title = None
+        self._sync_parent_controls(preserve_scroll or preserve_parent)
         self._summary(offset)
         schema = self._schema
         if schema is None:
@@ -600,25 +723,45 @@ class SourceSettingsForm:
         kind = self._mode()
         roles = tuple(
             role
-            for role in ROLES[kind]
+            for role in self._roles
             if role.key in selected or any(column.kind in role.types for column in schema.columns)
         )
-        rule_key = {"task": "status", "leave": "approval", "meeting": "category"}[kind]
-        options_column = next(
-            (col for col in schema.columns if self._same_value(col, selected.get(rule_key, ""))),
+        # 완료·일정·승인 판정은 자유롭게 정하는 표시 이름과 별도로 원본 값에 적용한다.
+        rule_role = next(
+            (role for role in roles if role.key in {"status", "approval", "category"}),
             None,
         )
-        options = options_column.options if options_column else ()
-        height = 48 + 32 * (len(roles) + bool(schema.round_titles) + len(options))
+        rule_column = next(
+            (
+                col
+                for col in schema.columns
+                if rule_role
+                and col.kind in rule_role.types
+                and self._same_value(col, selected.get(rule_role.key, ""))
+            ),
+            None,
+        )
+        self._rule_property = selected.get(rule_role.key) if rule_role else None
+        options = (
+            tuple(dict.fromkeys((*rule_column.options, *self._choices))) if rule_column else ()
+        )
+        height = 84 + 32 * (len(roles) + bool(schema.round_titles))
+        if options:
+            # 소제목과 다음 상위 행 사이의 여백은 하위 설정이 있을 때만 확보한다.
+            height += 32 + 32 * len(options)
         card(body, 0, 0, 628, height)
         label(body, "원본 칼럼 선택", 12, height - 32, 360, bold=True)
-        y = height - 63
+        y: float = height - 63
         if schema.round_titles:
-            label(body, "차시 제목", 12, y + 4, 108)
+            label(body, "부모 제목", 12, y + 4, 108)
             self._round_title = self._popup(
                 body, 160, y, 446, list(schema.round_titles), "changed:"
             )
-            saved = self._original.get("roundTitleProperty") if self._uses_saved_layout() else None
+            saved = (
+                self._original.get("parentTitleProperty", self._original.get("roundTitleProperty"))
+                if self._uses_saved_layout()
+                else None
+            )
             self._round_title.selectItemAtIndex_(
                 schema.round_titles.index(str(saved)) if saved in schema.round_titles else 0
             )
@@ -626,29 +769,56 @@ class SourceSettingsForm:
         for role in roles:
             self._draw_role(body, role, schema, selected, y)
             y -= 32
+            if role == rule_role and rule_column and options:
+                y = self._draw_rule_options(body, y, rule_column, kind, options)
+        self._role_types = tuple(
+            dict.fromkeys(col.kind for col in schema.columns if col.kind in DISPLAY_COLUMN_TYPES)
+        )
+        self._new_role_type = self._popup(body, 160, 6, 225, list(self._role_types), "changed:")
+        button(body, "역할 추가", 400, 6, 206, self._actions, "addRole:").setEnabled_(
+            bool(self._role_types)
+        )
+        body.setFrameSize_((628, height))
+        self._update_sheet()
+
+    def _draw_rule_options(
+        self,
+        body: NSView,
+        y: float,
+        column: SourceColumn,
+        kind: SourceKind,
+        options: tuple[str, ...],
+    ) -> float:
+        """선택한 칼럼 바로 아래에 그 칼럼의 옵션별 설정을 들여쓴다."""
+        operation = {
+            "task": "완료로 처리할 값",
+            "meeting": "알림·조회용 일정 유형",
+            "leave": "승인으로 처리할 값",
+        }[kind]
+        heading = f"‘{column.name}’ 칼럼의 {operation}"
+        label(body, heading, 36, y + 6, 570, bold=True, secondary=True).setToolTip_(heading)
+        y -= 24
         for name in options:
             if kind == "meeting":
-                label(body, name, 12, y + 4, 338)
-                control = self._popup(body, 365, y, 173, ["기타", "회의", "휴가"], "rules:")
+                label(body, name, 36, y + 4, 362).setToolTip_(name)
+                control = self._popup(body, 410, y, 196, ["기타", "회의", "휴가"], "rules:")
                 control.selectItemAtIndex_(self._choices.get(name, 0))
                 self._options[name] = control
             else:
-                prefix = "완료" if kind == "task" else "승인"
-                check = NSButton.checkboxWithTitle_target_action_(
-                    f"{prefix} · {name}", self._actions, "changed:"
-                )
-                check.setFrame_(frame(12, y, 526, 26))
+                check = NSButton.checkboxWithTitle_target_action_(name, self._actions, "changed:")
+                check.setFrame_(frame(36, y, 570, 26))
+                check.setToolTip_(name)
                 check.setState_(self._choices.get(name, 0))
                 body.addSubview_(check)
                 self._options[name] = check
             y -= 32
-        body.setFrameSize_((628, height))
-        self._update_sheet()
+        return y - 8
 
     def _summary(self, offset: float = 0.0) -> None:
         """메인 폼에는 편집기 대신 선택 상태와 열기 버튼을 둔다."""
         if self._body is not None:
             self.document.setSubviews_([self._header, self._detail])
+        self._refresh_sort()
         height = 82
         body = NSView.alloc().initWithFrame_(frame(16, 0, 552, height))
         self._body = body
@@ -691,6 +861,7 @@ class SourceSettingsForm:
         window = self.document.window()
         if window is None:
             return
+        previous_definitions = self._roles
         previous_roles = self._selected_columns()
         previous_options = self._selected_options()
         previous_round = (
@@ -703,6 +874,7 @@ class SourceSettingsForm:
             if applied:
                 self.mark_edited()
             else:
+                self._roles = previous_definitions
                 self._choices = previous_options
                 self._draw(previous_roles, preserve_scroll=True)
                 if self._round_title is not None and previous_round is not None:
@@ -731,6 +903,7 @@ class SourceSettingsForm:
             self._apply_columns,
             closed,
             rounds=self._uses_rounds(),
+            classification=self._classification,
         )
         self._update_sheet()
         self.render()
@@ -744,13 +917,18 @@ class SourceSettingsForm:
             return str(error)
         if self._mode() == "leave" and 1 not in self._selected_options().values():
             return "승인된 휴가에 쓰는 상태를 하나 이상 선택하세요."
+        if self._column_panel is not None:
+            self._classification = self._column_panel.classification.draft()
         self._category_links = selected
         return None
 
     def _validate_roles(self, values: dict[str, str]) -> None:
         """켜 둔 동작에 필요한 칼럼만 요구한다."""
+        self._read_role_names()
+        if any(not 0 < len(role.title) <= 80 for role in self._roles):
+            raise SourceSettingsError("역할 이름은 1~80자로 입력하세요.")
         optional = {"assignees", "participants", "status"}
-        for role in ROLES[self._mode()]:
+        for role in self._roles:
             if role.required and role.key not in optional and role.key not in values:
                 raise SourceSettingsError(f"'{role.title}'에 사용할 원본 칼럼을 선택하세요.")
 
@@ -771,7 +949,9 @@ class SourceSettingsForm:
         columns = tuple(col for col in schema.columns if col.kind in role.types)
         required = role.required and role.key not in {"assignees", "participants", "status"}
         person = role.key in {"assignees", "participants"}
-        label(body, role.title + (" *" if required else ""), 12, y + 4, 144)
+        name = self._field(12, y, 144, "역할 이름", parent=body)
+        name.setStringValue_(role.title)
+        self._role_names[role.key] = name
         popup = self._popup(
             body,
             160,
@@ -795,12 +975,30 @@ class SourceSettingsForm:
         )
         self._mapping[role.key] = popup, columns
 
+    def _read_role_names(self) -> None:
+        """다시 그리기 전에 편집한 이름을 역할 ID에 보존한다."""
+        self._roles = tuple(
+            replace(role, title=self._role_names[role.key].stringValue().strip())
+            if role.key in self._role_names
+            else role
+            for role in self._roles
+        )
+
+    def add_role(self) -> None:
+        """새 역할의 ID는 표시 이름이나 원본 연결을 변경해도 유지한다."""
+        self._read_role_names()
+        kind = self._role_types[self._new_role_type.indexOfSelectedItem()]
+        self._roles += (ColumnRole(str(uuid4()), "새 역할", (kind,), False),)
+        self.change_columns()
+
     def change_columns(self) -> None:
         """바뀐 역할에 따라 연결된 상태 옵션만 다시 계산한다."""
         self.mark_edited()
+        self._read_role_names()
         round_index = self._round_title.indexOfSelectedItem() if self._round_title else None
         selected = self._selected_columns()
-        self._choices = self._selected_options()
+        key = {"task": "status", "meeting": "category", "leave": "approval"}[self._mode()]
+        self._choices = self._selected_options() if selected.get(key) == self._rule_property else {}
         self._draw(selected, preserve_scroll=True)
         if self._round_title is not None and round_index is not None:
             self._round_title.selectItemAtIndex_(round_index)
@@ -819,7 +1017,12 @@ class SourceSettingsForm:
     def _layout(self, body_height: float, offset: float = 0.0) -> None:
         """편집 가능한 전체 높이를 스크롤 페이지에 반영한다."""
         self._body_height = body_height
-        detail_height = OPTION_HEIGHT if self._options_open else COLLAPSED_OPTIONS
+        # 부모 옵션은 구조 선택 바로 아래 한 행만 차지하고, 숨기면 공통 행을 당긴다.
+        extra = PARENT_OPTION_ROW if self._uses_rounds() else 0
+        expanded_height = OPTION_HEIGHT + extra
+        detail_height = expanded_height if self._options_open else COLLAPSED_OPTIONS
+        self._common_options.setFrame_(frame(0, 34 + extra, 552, 106))
+        self._advanced.setFrameSize_((552, expanded_height - COLLAPSED_OPTIONS))
         height = max(self._viewport, body_height + HEADER_HEIGHT + detail_height + 40)
         self.document.setFrameSize_((584, height))
         self._header.setFrame_(frame(16, height - HEADER_HEIGHT - 8, 552, HEADER_HEIGHT))
@@ -864,16 +1067,15 @@ class SourceSettingsForm:
                 "kind": kind,
                 "dataSourceId": schema.id,
                 "properties": values,
+                "columnRoles": roles_payload(self._roles),
                 "columnLabels": {
                     key: column.name[:250]
                     for key in values
                     if (column := self._chosen(key)) is not None
                 },
             }
-            if section == "qa":
-                value["section"] = section
             if self._round_title is not None:
-                value["roundTitleProperty"] = schema.round_titles[
+                value["parentTitleProperty"] = schema.round_titles[
                     self._round_title.indexOfSelectedItem()
                 ]
             # 새 표에는 이전 표의 완료·일정 분류나 레거시 필수 역할을 넘기지 않는다.
@@ -881,25 +1083,46 @@ class SourceSettingsForm:
             stays_legacy = (
                 old.get("kind") == kind
                 and old.get("flexible") is not True
-                and all(role.key in values for role in ROLES[kind] if role.required)
+                and all(role.key in values for role in self._roles if role.required)
                 and (self._round_title is None or section == "qa")
             )
             if not stays_legacy:
                 value["flexible"] = True
-                if kind == "meeting":
-                    if old.get("defaultEventType") in ("meeting", "leave", "other"):
-                        value["defaultEventType"] = old["defaultEventType"]
+            if kind == "meeting":
+                # 기존 표의 기본 유형을 보존하고 새 표는 명시적으로 연결한 값만 회의로 본다.
+                value["defaultEventType"] = old.get(
+                    "defaultEventType", "meeting" if old.get("kind") == "meeting" else "other"
+                )
             choices = self._selected_options()
             if kind == "meeting" and "category" in values:
                 value["eventTypes"] = {
                     name: EVENT_CHOICES[index] for name, index in choices.items() if index
                 }
-            if kind in {"task", "leave"}:
+            if kind == "leave":
                 selected = [name for name, index in choices.items() if index == 1]
-                if kind == "leave" and not selected:
+                if not selected:
                     raise SourceSettingsError("승인된 휴가에 쓰는 상태를 하나 이상 선택하세요.")
-                if kind == "leave" or selected or "completedStatuses" in old:
-                    value["approvedValues" if kind == "leave" else "completedStatuses"] = selected
+                value["approvedValues"] = selected
+            if kind == "task" and "status" in values:
+                completed = [name for name, index in choices.items() if index]
+                if completed or "completedStatuses" in old:
+                    value["completedStatuses"] = completed
+        if section == "qa":
+            value["section"] = section
+        else:
+            value.pop("section", None)
+        if self._uses_rounds():
+            if "roundTitleProperty" in value:
+                value["parentTitleProperty"] = value.pop("roundTitleProperty")
+            mode, number = self._parent_orders[self.parent_sort.indexOfSelectedItem()]
+            value["parentOrder"] = mode
+            value["parentLabel"] = bool(self.parent_display.state())
+            value.pop("parentNumberProperty", None)
+            if number is not None:
+                value["parentNumberProperty"] = number
+        value.pop("classification", None)
+        if self._classification:
+            value["classification"] = dict(self._classification)
         value.pop("columnMappings", None)
         if self._category_links:
             value["columnMappings"] = column_bindings_payload(self._category_links)
@@ -917,10 +1140,15 @@ class SourceSettingsForm:
         value.pop("pageUrl", None)
         if url:
             value["pageUrl"] = url
+        # 편집은 기존 논리 ID를 유지하고 같은 원본을 새로 등록하면 다른 ID를 부여한다.
+        value["sourceId"] = self._source_id
+        value.pop("sortDirection", None)
         value.pop("sort", None)
-        sort = SOURCE_SORTS[self.sort.indexOfSelectedItem()]
+        sort = self._sort_keys[self.sort.indexOfSelectedItem()]
         if sort != "default":
             value["sort"] = sort
+            if self.sort_direction.indexOfSelectedItem() == 1:
+                value["sortDirection"] = "desc"
         if self._selected == len(sources):
             sources.append(value)
         else:
@@ -935,9 +1163,13 @@ class SourceSettingsForm:
             self._generation = self.editor.generation
             sources = state.settings.sources
             self._selected = min(self._selected, len(sources))
+            names = [source_menu_name(raw, i + 1) for i, raw in enumerate(sources)]
+            # 같은 표 이름과 별칭을 사용하는 뷰도 선택 목록에서 구별한다.
+            counts = Counter(names)
             set_titles(
                 self.list,
-                [source_menu_name(raw, i + 1) for i, raw in enumerate(sources)] + ["새 소스"],
+                [f"{name} ({i})" if counts[name] > 1 else name for i, name in enumerate(names, 1)]
+                + ["새 소스"],
             )
             self.list.selectItemAtIndex_(self._selected)
             self._fill(sources[self._selected] if self._selected < len(sources) else {})
@@ -956,10 +1188,13 @@ class SourceSettingsForm:
             self.url,
             self.mode,
             self.rounds,
+            self.parent_display,
+            self.parent_sort,
             self.sort,
             *self._options.values(),
         ):
             control.setEnabled_(enabled)
+        self.sort_direction.setEnabled_(enabled and self.sort.indexOfSelectedItem() > 0)
         self._new.setEnabled_(editable and not self.editor.dirty)
         self._manage.setEnabled_(editable and not self.editor.dirty)
         if not self._categories:

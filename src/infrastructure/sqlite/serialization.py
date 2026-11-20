@@ -30,12 +30,41 @@ def source_fingerprint(source: SourceMapping) -> str:
     # 기본 설정을 생략해야 이전 스냅샷과 같은 소스로 인식한다.
     if source.provider != "notion":
         payload["provider"] = source.provider
+    if source.origin != source.source_id:
+        payload["origin"] = source.origin
+    if column := source.classification_column:
+        # 단일 칼럼의 고유 값 매핑은 이전과 같은 의미이므로 정상 스냅샷을 재사용한다.
+        values = dict(source.classification_values)
+        for rule in source.classification_rules:
+            condition = rule.conditions[0]
+            if (
+                len(rule.conditions) != 1
+                or condition.property_id != column.property_id
+                or condition.value in values
+                or condition.kind not in (column.kind, "status_or_select")
+            ):
+                payload["classificationRules"] = [asdict(r) for r in source.classification_rules]
+                break
+            values[condition.value] = rule.result
+        payload["classification"] = (
+            column.value_key,
+            column.kind,
+            values,
+            *((source.classification_default,) if source.classification_default else ()),
+        )
     if source.event_types:
         payload["event_types"] = dict(source.event_types)
     if source.section != "tasks":
         payload["section"] = source.section
     if source.round_title_property is not None:
         payload["round_title_property"] = source.round_title_property
+        # 기존 소스의 매핑 해시는 유지해 이전 스냅샷도 읽을 수 있다.
+        if (source.parent_label, source.parent_order) != (True, "legacy"):
+            payload["parentMetadata"] = (
+                source.parent_label,
+                source.parent_order,
+                source.parent_number_property,
+            )
     if source.flexible:
         payload["flexible"] = True
     if source.default_event_type != "meeting":
@@ -153,6 +182,10 @@ def snapshot_payload(item: WorkItem) -> dict[str, object]:
             key: period.payload() for key, period in item.calendar_periods.items()
         }
     if isinstance(item, Task):
+        if item.parent_label is not None and item.qa_round is None:
+            payload["parent_label"] = item.parent_label
+        if item.parent_order is not None:
+            payload["parent_order"] = item.parent_order
         payload.update(
             title=item.title,
             assignee_ids=item.assignee_ids,

@@ -154,6 +154,23 @@ class EntryList:
             title = " ".join(
                 (item.title if item.status is not None else f"{item.detail}  {item.title}").split()
             )
+        # 부모 제목은 표시 칼럼과 독립적으로 선택하며 긴 값은 도움말에도 남긴다.
+        tooltip = [item.title]
+        if item.parent_label:
+            # 배지와 기한 뒤에 남은 폭의 일부만 써서 업무 제목을 읽을 공간을 남긴다.
+            available = max(0.0, self._width - title_x - 12)
+            parent_width = min(120.0, available / 3)
+            parent = label(
+                view, item.parent_label, title_x, 5.5, parent_width, size=11, secondary=True
+            )
+            parent.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
+            parent_width = min(parent_width, parent.fittingSize()[0] + 2)
+            place_label(parent, title_x, 5.5, parent_width, 18)
+            parent.setToolTip_(item.parent_label)
+            title_x += parent_width + 6
+            tooltip.append(item.parent_label)
+        if fields:
+            tooltip.extend(f"{name}  {value or '—'}" for name, value in fields)
         row = button(
             view,
             title,
@@ -168,11 +185,7 @@ class EntryList:
         row.setAlignment_(0)
         row.cell().setRepresentedObject_(item.url)
         row.setEnabled_(item.url is not None)
-        row.setToolTip_(
-            "\n".join((item.title, *(f"{name}  {value or '—'}" for name, value in fields)))
-            if fields
-            else item.title
-        )
+        row.setToolTip_("\n".join(tooltip))
 
     def _custom_title(
         self, view: NSView, item: MenuEntry, fields: tuple[tuple[str, str], ...]

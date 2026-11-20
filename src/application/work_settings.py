@@ -22,8 +22,9 @@ from src.domain.category_event_alerts import (
 )
 from src.domain.daily_work import WorkRules, parse_rules
 from src.domain.display_columns import DISPLAY_COLUMN_TYPES, MAX_DISPLAY_COLUMNS, DisplayColumn
+from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.domain.main_list import FIELD_KINDS, ListFilter, ListSort, MainListRules
-from src.domain.models import EventType, SourceMapping
+from src.domain.models import ClassificationCondition, ClassificationRule, EventType, SourceMapping
 from src.domain.source_alerts import (
     COLLECTION_STATE,
     MAX_SOURCE_ALERT_RULES,
@@ -40,6 +41,7 @@ from src.domain.source_display import (
     SourceDisplay,
     source_notifications,
 )
+from src.domain.source_roles import ROLE_TEMPLATES, source_roles
 from src.domain.source_scope import SourceScope, calendar_conditions
 from src.domain.task_display import QATaskDisplayPolicy
 from src.domain.work_dates import canonical_identity
@@ -70,9 +72,14 @@ class Settings:
     categories: tuple[SourceCategory, ...] = ()
 
     @property
+    def source_categories(self) -> dict[str, SourceCategory]:
+        """소스별 현재 카테고리를 이름 변경과 독립된 ID로 연결한다."""
+        return {item.id: item.category for item in self.display if item.category is not None}
+
+    @property
     def active_sources(self) -> tuple[SourceMapping, ...]:
         """등록 카테고리에 연결된 소스만 수집과 조회에 사용한다."""
-        active = {item.id for item in self.display if item.category is not None}
+        active = self.source_categories
         return tuple(source for source in self.sources if source.source_id in active)
 
 
@@ -85,6 +92,7 @@ def parse_settings(value: object) -> Settings:
             "sources",
             "categories",
             "categoryAssignmentVersion",
+            "classificationVersion",
             "mainListRulesVersion",
             "retention",
             "workRules",
@@ -97,6 +105,8 @@ def parse_settings(value: object) -> Settings:
             value.get("version") != 1
             or value.get("timezone") != "Asia/Seoul"
             or value.get("categoryAssignmentVersion") not in (None, 1)
+            or type(value.get("classificationVersion", 1)) is not int
+            or value.get("classificationVersion", 1) not in (1, 2, 3, 4)
             or type(rules_version) is not int
             or rules_version != 1
         ):
@@ -173,6 +183,33 @@ def parse_settings(value: object) -> Settings:
         raise WorkSettingsError("invalid") from None
 
 
+def parse_classification_rules(raw: object, provider: str) -> tuple[ClassificationRule, ...]:
+    """앞선 규칙부터 적용하도록 입력 순서를 보존하고 빈 규칙을 거부한다."""
+    if not isinstance(raw, list):
+        raise ValueError
+    rules = []
+    for row in raw:
+        if not isinstance(row, dict) or set(row) != {"match", "conditions", "result"}:
+            raise ValueError
+        mode = nonblank(row["match"])
+        items = row["conditions"]
+        if mode not in ("all", "any") or not isinstance(items, list) or not items:
+            raise ValueError
+        conditions = []
+        for item in items:
+            if not isinstance(item, dict) or set(item) != {"property", "kind", "value"}:
+                raise ValueError
+            kind = nonblank(item["kind"])
+            if kind != "status_or_select" and not accepts_column_type(provider, "text", kind):
+                raise ValueError
+            value = item["value"]
+            if not isinstance(value, str):
+                raise ValueError
+            conditions.append(ClassificationCondition(nonblank(item["property"]), kind, value))
+        rules.append(ClassificationRule(mode, tuple(conditions), nonblank(row["result"])))
+    return tuple(rules)
+
+
 def parse_source(item: dict[str, object]) -> SourceMapping:
     """소스 종류별 필수 매핑을 검증하고 UUID 표기를 통일한다."""
     kind = item.get("kind")
@@ -193,7 +230,7 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
     if event_default not in ("meeting", "other", "leave"):
         raise ValueError
     if "defaultEventType" in item:
-        if not flexible or kind != "meeting":
+        if kind != "meeting":
             raise ValueError
         allowed.add("defaultEventType")
     if "name" in item:
@@ -215,34 +252,51 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         allowed.add("section")
     if section not in {"tasks", "qa"} or (section == "qa" and kind != "task"):
         raise ValueError
-    if "roundTitleProperty" in item:
-        allowed.add("roundTitleProperty")
-        if kind != "task" or (section != "qa" and not flexible):
+    legacy = "roundTitleProperty" in item
+    parent_key = "roundTitleProperty" if legacy else "parentTitleProperty"
+    nested = parent_key in item
+    # 이전 하위 표는 기존 제목 표시와 첫 숫자 정렬을 그대로 복원한다.
+    parent_label = item.get("parentLabel", legacy)
+    parent_order = item.get("parentOrder", "legacy" if legacy else "none")
+    number_property = item.get("parentNumberProperty")
+    if type(parent_label) is not bool or parent_order not in ("none", "legacy", "suffix", "column"):
+        raise ValueError
+    if (parent_order == "column") != ("parentNumberProperty" in item):
+        raise ValueError
+    if nested:
+        allowed.update(
+            key for key in ("parentLabel", "parentOrder", "parentNumberProperty") if key in item
+        )
+    if nested:
+        allowed.add(parent_key)
+        if kind != "task":
             raise ValueError
     allowed.update(
         key
         for key in (
             "color",
             "sort",
+            "sortDirection",
+            "sourceId",
             "notificationChannels",
             "notificationTypes",
             "calendarVisible",
             "category",
             "categoryId",
+            "columnRoles",
             "columnLabels",
             "displayColumns",
             "alertRules",
             "columnMappings",
+            "classification",
         )
         if key in item
     )
     if set(item) != allowed:
         raise ValueError
-    source_id = nonblank(item["dataSourceId"])
-    try:
-        source_id = str(UUID(source_id))
-    except ValueError:
-        pass  # 가상 자료와 호환하되 실제 UUID는 정규 표기로 중복 검사한다.
+    origin_id = canonical_identity(nonblank(item["dataSourceId"]))
+    # 이전 문서는 원본 ID가 곧 논리 ID다. 새 연결만 별도 키를 갖는다.
+    source_id = canonical_identity(nonblank(item.get("sourceId", origin_id)))
     raw = item["properties"]
     if not isinstance(raw, dict):
         raise ValueError
@@ -255,21 +309,18 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
             raise ValueError
         if any(len(nonblank(value)) > 250 for value in labels.values()):
             raise ValueError
-    required_keys = {
-        "task": {"title", "assignees", "status"},
-        "meeting": {"title", "participants", "period"},
-        "leave": {"people", "period", "approval"},
-    }[kind]
-    optional_keys = (
-        {"dueDate"} if kind == "task" else {"category", "cancelled"} if kind == "meeting" else set()
-    )
+    roles = source_roles(kind, item.get("columnRoles"))
+    required_keys = {role.key for role in roles if role.required}
     if flexible and kind in {"task", "meeting"}:
-        # 표를 읽는 데 필요한 역할만 필수로 둔다.
-        optional_roles = {"assignees", "status"} if kind == "task" else {"participants"}
-        optional_keys |= optional_roles
-        required_keys -= optional_roles
-    if not required_keys <= properties.keys() or properties.keys() - required_keys - optional_keys:
+        required_keys -= {"assignees", "status", "participants"}
+    if not required_keys <= properties.keys() or properties.keys() - {role.key for role in roles}:
         raise ValueError
+    builtin = {role.key for role in ROLE_TEMPLATES[kind]}
+    custom_columns = tuple(
+        DisplayColumn(role.key, role.title, role.types[0], properties[role.key])
+        for role in roles
+        if role.key not in builtin and role.key in properties
+    )
     approved: tuple[str, ...] = ()
     if kind == "leave":
         values = item["approvedValues"]
@@ -282,6 +333,43 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
             raise ValueError
         if "eventTypes" in item:
             event_types = read_event_types(item["eventTypes"])
+    classification = item.get("classification")
+    column = None
+    classes: dict[str, str] = {}
+    fallback = None
+    rules: tuple[ClassificationRule, ...] = ()
+    if "classification" in item:
+        if not isinstance(classification, dict) or set(classification) - {
+            "default",
+            "storageId",
+        } not in ({"property", "kind", "name", "values"}, {"property", "kind", "name", "rules"}):
+            raise ValueError
+        prop = nonblank(classification["property"])
+        origin_kind = nonblank(classification["kind"])
+        if origin_kind != "status_or_select" and not accepts_column_type(
+            provider, "text", origin_kind
+        ):
+            raise ValueError
+        storage_id = (
+            nonblank(classification["storageId"]) if "storageId" in classification else prop
+        )
+        column = DisplayColumn(
+            storage_id,
+            nonblank(classification["name"]),
+            origin_kind,
+            prop if "storageId" in classification else None,
+        )
+        rules = parse_classification_rules(classification.get("rules", []), provider)
+        pairs = classification.get("values", {})
+        if not isinstance(pairs, dict):
+            raise ValueError
+        for key, result in pairs.items():
+            name = nonblank(key)
+            if name in classes:
+                raise ValueError
+            classes[name] = nonblank(result)
+        if "default" in classification:
+            fallback = nonblank(classification["default"])
     return SourceMapping(
         kind,
         source_id,
@@ -289,7 +377,7 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         approved,
         event_types,
         "qa" if section == "qa" else "tasks",
-        nonblank(item["roundTitleProperty"]) if "roundTitleProperty" in item else None,
+        nonblank(item[parent_key]) if nested else None,
         provider,
         flexible,
         "other" if event_default == "other" else "leave" if event_default == "leave" else "meeting",
@@ -297,6 +385,15 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         if "displayColumns" in item
         else None,
         parse_alert_rules(item["alertRules"]) if "alertRules" in item else (),
+        origin_id=origin_id,
+        parent_label=parent_label,
+        parent_order=str(parent_order),
+        parent_number_property=nonblank(number_property) if parent_order == "column" else None,
+        role_columns=custom_columns,
+        classification_column=column,
+        classification_values=classes,
+        classification_rules=rules,
+        classification_default=fallback,
     )
 
 
@@ -394,7 +491,9 @@ def parse_alert_scope(
         parse_list_filters(raw["filters"]),
         exclusions=parse_list_filters(raw.get("exclusions", [])),
     )
-    rules.validate({key: col.kind for key, col in columns.items()})
+    rules.validate(
+        {EVENT_CLASSIFICATION: "text", **{key: col.kind for key, col in columns.items()}}
+    )
     return rules if rules.fields else None
 
 
@@ -767,7 +866,7 @@ def parse_inherited_options(raw: object) -> tuple[CategorySourceOptions, ...]:
 
 def parse_category_configuration(raw: object) -> CategoryConfiguration:
     """칼럼 변경이 기존 날짜·알림·목록 규칙의 참조를 깨는지 검사한다."""
-    if not isinstance(raw, dict) or set(raw) - {"eventAlerts", "mainList"} != {
+    if not isinstance(raw, dict) or set(raw) - {"eventAlerts", "mainList", "classification"} != {
         "columns",
         "calendarVisible",
         "calendarColor",
@@ -785,6 +884,28 @@ def parse_category_configuration(raw: object) -> CategoryConfiguration:
         and (not isinstance(day, str) or day not in by_id or by_id[day].kind != "date")
     ) or type(raw["calendarVisible"]) is not bool:
         raise ValueError
+    classification_default = None
+    classification_column = None
+    classification_values: dict[str, str] = {}
+    if "classification" in raw:
+        classification = raw["classification"]
+        if not isinstance(classification, dict) or set(classification) - {"default"} != {
+            "column",
+            "values",
+        }:
+            raise ValueError
+        if "default" in classification:
+            classification_default = nonblank(classification["default"])
+        classification_column = nonblank(classification["column"])
+        column = by_id.get(classification_column)
+        values = classification["values"]
+        if column is None or column.kind != "text" or not isinstance(values, dict):
+            raise ValueError
+        for key, value in values.items():
+            name = nonblank(key)
+            if name in classification_values:
+                raise ValueError
+            classification_values[name] = nonblank(value)
     return CategoryConfiguration(
         columns,
         raw["calendarVisible"],
@@ -795,6 +916,9 @@ def parse_category_configuration(raw: object) -> CategoryConfiguration:
         parse_inherited_options(raw["inherited"]),
         parse_category_event_alerts(raw["eventAlerts"]) if "eventAlerts" in raw else None,
         parse_main_list(raw["mainList"], columns) if "mainList" in raw else None,
+        classification_column,
+        tuple(classification_values.items()),
+        classification_default,
     )
 
 
@@ -939,6 +1063,21 @@ def category_configuration_payload(value: CategoryConfiguration) -> dict[str, ob
             }
             for item in value.columns
         ],
+        **(
+            {
+                "classification": {
+                    "column": value.classification_column,
+                    "values": dict(value.classification_values),
+                    **(
+                        {"default": value.classification_default}
+                        if value.classification_default
+                        else {}
+                    ),
+                }
+            }
+            if value.classification_column
+            else {}
+        ),
         "calendarVisible": value.calendar_visible,
         "calendarColor": value.calendar_color,
         "calendarDate": value.calendar_date,
@@ -1043,6 +1182,17 @@ def resolve_category_mapping(
     if links.keys() - {item.id for item in config.columns}:
         raise ValueError
     rule_fields = config.main_list.fields if config.main_list is not None else set()
+    sort = raw.get("sort")
+    if isinstance(sort, str) and sort.startswith("column:"):
+        rule_fields.add(sort.removeprefix("column:"))
+    # 업무 분류가 비교 대상이면 화면에 보이지 않는 긴 분류 이름도 전체 값으로 비교한다.
+    classification_rule = source.kind == "task" and "statusGroup" in rule_fields
+    if classification_rule and source.classification_column:
+        rule_fields.update(
+            key
+            for key, binding in links.items()
+            if binding.property_id == source.classification_column.property_id
+        )
     applicable_alerts = tuple(
         bound
         for entry in config.alerts
@@ -1058,7 +1208,10 @@ def resolve_category_mapping(
         if (origin := links.get(item.id)) is None:
             continue
         source_kind = origin.kind or item.legacy_kind or item.kind
-        if not accepts_column_type(source.provider, item.kind, source_kind):
+        # 실제 선택·상태 타입을 저장하지 않았던 이전 연결은 행의 메타데이터로 판별한다.
+        if not (
+            item.kind == "text" and source_kind == "status_or_select"
+        ) and not accepts_column_type(source.provider, item.kind, source_kind):
             raise ValueError
         columns[item.id] = DisplayColumn(
             item.id,
@@ -1086,13 +1239,13 @@ def resolve_category_mapping(
     shown = tuple(columns[key] for key in order if key in visible and key in columns)
     # 연결한 칼럼을 모두 숨긴 선택은 빈 표시다. 이전 알림 전용 칼럼만 있는 소스는 기본 표시를 유지한다.
     custom_display = previous.custom_display or bool(columns.keys() - previous.hidden_columns)
+    bindings = {key: (key, col.value_key, column_kinds[key]) for key, col in columns.items()}
+    if source.kind == "meeting":
+        bindings[EVENT_CLASSIFICATION] = (EVENT_CLASSIFICATION, EVENT_CLASSIFICATION, "text")
     alerts = tuple(
         replace(
             rule,
-            scope_bindings=tuple(
-                (key, columns[key].value_key, column_kinds[key])
-                for key in sorted(rule.scope.fields)
-            )
+            scope_bindings=tuple(bindings[key] for key in sorted(rule.scope.fields))
             if rule.scope
             else (),
             column_id=matched.property_id,
@@ -1103,11 +1256,29 @@ def resolve_category_mapping(
         if (matched := columns.get(rule.column_id)) is not None
         and (rule.member is None or matched.kind == "people")
         # 연결되지 않은 비교 칼럼을 빈 값으로 해석하면 적용 범위가 넓어진다.
-        and (rule.scope is None or rule.scope.fields <= columns.keys())
+        and (rule.scope is None or rule.scope.fields <= bindings.keys())
     )
     required = {rule.column_id for rule in applicable_alerts if rule.enabled}
     # 이전 표시 설정에서 숨긴 칼럼도 현재 목록 규칙이 참조하면 수집한다.
     required.update(rule_fields)
+    classified = source.classification_column
+    if classified:
+        # 같은 원본을 표시하는 저장 칼럼은 기존 값 키를 유지한다.
+        classified = next(
+            (
+                col
+                for col in columns.values()
+                if col.property_id == classified.property_id and col.id == classified.id
+            ),
+            next(
+                (col for col in columns.values() if col.property_id == classified.property_id),
+                replace(classified, full_text=True) if classification_rule else classified,
+            ),
+        )
+        required.add(classified.id)
+    elif config.classification_column:
+        classified = columns.get(config.classification_column)
+        required.add(config.classification_column)
     storage = tuple(
         column
         for key, column in columns.items()
@@ -1115,6 +1286,13 @@ def resolve_category_mapping(
     )
     return replace(
         source,
+        classification_column=classified,
+        classification_values=source.classification_values
+        if source.classification_column
+        else dict(config.classification_values),
+        classification_default=source.classification_default
+        if source.classification_column
+        else config.classification_default,
         stored_columns=storage,
         display_columns=shown if custom_display else None,
         calendar_column=columns.get(config.calendar_date) if config.calendar_date else None,
@@ -1142,7 +1320,18 @@ def read_display(
     )
     if color is not None and (not isinstance(color, str) or color not in SOURCE_COLORS):
         raise ValueError
-    if not isinstance(sort, str) or sort not in SOURCE_SORTS:
+    direction = raw.get("sortDirection", "asc")
+    if not isinstance(direction, str) or direction not in ("asc", "desc"):
+        raise ValueError
+    if not isinstance(sort, str) or (
+        sort not in SOURCE_SORTS
+        and not (
+            sort.startswith("column:")
+            and category is not None
+            and category.configuration is not None
+            and sort.removeprefix("column:") in category_bindings(raw)
+        )
+    ):
         raise ValueError
     calendar_visible = raw.get("calendarVisible", True)
     if not isinstance(calendar_visible, bool):
@@ -1205,6 +1394,7 @@ def read_display(
                 if rule.enabled
             ),
         ),
+        sort_direction=direction,
     )
 
 
@@ -1291,13 +1481,21 @@ class WorkSettingsDocument:
 
 def empty_work_settings() -> dict[str, object]:
     """새 설치에서만 사용하는 미설정 문서를 매번 새 값으로 만든다."""
-    return {"version": 1, "timezone": "Asia/Seoul", "sources": [], "mainListRulesVersion": 1}
+    return {
+        "version": 1,
+        "timezone": "Asia/Seoul",
+        "sources": [],
+        "mainListRulesVersion": 1,
+        "classificationVersion": 4,
+    }
 
 
 def is_initial_document(document: WorkSettingsDocument) -> bool:
     """새 설치의 빈 문서만 최초 가져오기 대상으로 구분한다."""
     # 표시 규칙 버전만 없던 초기 문서도 한 번의 파일 가져오기를 허용한다.
-    normalized = {"mainListRulesVersion": 1, **document.payload}
+    normalized = {"mainListRulesVersion": 1, "classificationVersion": 4, **document.payload}
+    if normalized["classificationVersion"] in (1, 2, 3):
+        normalized["classificationVersion"] = 4
     return document.revision == 1 and normalized == empty_work_settings()
 
 

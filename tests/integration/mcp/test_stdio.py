@@ -24,6 +24,7 @@ async def test_stdio_mcp_lists_read_only_tool() -> None:
                 "get_my_system_status",
                 "get_my_today",
                 "get_my_workday",
+                "list_my_task_statuses",
                 "search_my_tasks",
             }
             for tool in tools.tools:
@@ -40,6 +41,7 @@ async def test_stdio_queries_share_connection_and_close_it_on_exit() -> None:
 
     connections = 0
     requests: list[bytes] = []
+    paths: list[bytes] = []
     closed = asyncio.Event()
 
     async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -47,7 +49,8 @@ async def test_stdio_queries_share_connection_and_close_it_on_exit() -> None:
         nonlocal connections
         connections += 1
         try:
-            while await reader.readline():
+            while line := await reader.readline():
+                paths.append(line)
                 headers = await reader.readuntil(b"\r\n\r\n")
                 requests.append(headers)
                 writer.write(
@@ -71,12 +74,13 @@ async def test_stdio_queries_share_connection_and_close_it_on_exit() -> None:
         async with stdio_client(parameters) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                for _ in range(2):
-                    result = await session.call_tool("get_my_system_status", {})
+                for tool_name in ("get_my_system_status", "list_my_task_statuses"):
+                    result = await session.call_tool(tool_name, {})
                     assert not result.isError
                     assert result.structuredContent == {"fixture": True}
         await asyncio.wait_for(closed.wait(), timeout=3)
     assert connections == 1 and len(requests) == 2
+    assert paths == [b"GET /v1/status HTTP/1.1\r\n", b"GET /v1/tasks/statuses HTTP/1.1\r\n"]
     for headers in requests:
         assert f"Authorization: Bearer {token}\r\n".encode() in headers
         assert b"\ncookie:" not in headers.lower()

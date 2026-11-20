@@ -40,8 +40,8 @@ class CalendarSnapshotReader(Protocol):
 
     async def read_if_changed(
         self, sources: Sequence[SourceMapping], previous: str | None
-    ) -> tuple[str, tuple[SourceSnapshot, ...] | None]:
-        """버전이 같으면 None, 바뀌면 같은 읽기 시점의 전체 스냅샷을 반환한다."""
+    ) -> tuple[str, tuple[SourceSnapshot, ...]]:
+        """일정 버전이 같으면 최신 헤더만, 바뀌면 원문까지 같은 시점에서 읽는다."""
         ...
 
 
@@ -170,7 +170,7 @@ def project_item(
     else:
         return None
     return CalendarItem(
-        f"{kind}:{item.source_id}:{item.id}",
+        f"{kind}:{mapping.source_id}:{item.id}",
         kind,
         title,
         first,
@@ -188,6 +188,24 @@ def project_item(
         if mapping.display_columns is not None
         else None,
         category=item.category if isinstance(item, CalendarEvent) else None,
+        # 표시 순번을 사용해 이름이 같은 칼럼도 메인 목록과 같은 방식으로 구분한다.
+        badge_field_indices=frozenset(
+            index
+            for index, column in enumerate(mapping.display_columns or ())
+            if column.shows_status_badge
+        ),
+    )
+
+
+def calendar_item_order(item: CalendarItem) -> tuple[date, bool, str, str, str, str]:
+    """종류별 한도를 적용한 뒤에도 월 응답을 같은 날짜·시각·종류 순서로 제공한다."""
+    return (
+        item.first,
+        not item.all_day,
+        item.start_at.isoformat() if item.start_at else "",
+        item.kind,
+        item.title,
+        item.key,
     )
 
 
@@ -227,11 +245,11 @@ class CalendarService:
                 tuple(source.mapping for source in self._visible_sources),
                 cached.revision if cached else None,
             )
-            if snapshots is None:
-                if cached is None or cached.revision != revision:
-                    raise QueryReadError()
-                return cached
-            projection = await asyncio.to_thread(self._project_sources, revision, snapshots)
+            if cached is not None and cached.revision == revision:
+                # 수집 상태와 예약만 갱신되면 마지막 정상 일정의 변환·정렬을 생략한다.
+                projection = replace(cached, metadata=snapshots)
+            else:
+                projection = await asyncio.to_thread(self._project_sources, revision, snapshots)
             self._projection = projection
             return projection
 
@@ -240,7 +258,9 @@ class CalendarService:
     ) -> _CalendarProjection:
         """월과 무관한 본인 범위·일정 구간·정렬을 수집 버전당 한 번 계산한다."""
         metadata: list[SourceSnapshot] = []
-        projected: list[CalendarItem] = []
+        occurrences: dict[
+            tuple[str, str, date, date, datetime | None, datetime | None], list[CalendarItem]
+        ] = {}
         by_id = {snapshot.source_id: snapshot for snapshot in snapshots}
         if len(by_id) != len(snapshots):
             raise QueryReadError()
@@ -256,17 +276,22 @@ class CalendarService:
             for raw in snapshot.items:
                 item = project_item(raw, source, self._user, self._policy)
                 if item is not None:
-                    projected.append(item)
-        projected.sort(
-            key=lambda item: (
-                item.first,
-                not item.all_day,
-                item.start_at.isoformat() if item.start_at else "",
-                item.kind,
-                item.title,
-                item.key,
-            )
-        )
+                    # 표시 설정의 종류가 달라도 원본 행과 실제 일정 구간이 같으면 함께 묶는다.
+                    key = (
+                        source.mapping.origin,
+                        raw.id,
+                        item.first,
+                        item.last,
+                        item.start_at,
+                        item.end_at,
+                    )
+                    occurrences.setdefault(key, []).append(item)
+        projected: list[CalendarItem] = []
+        for variants in occurrences.values():
+            # 카테고리 필터를 바꿀 때 원래 색상과 상세를 복원할 수 있도록 모든 후보를 보관한다.
+            variants.sort(key=lambda item: (item.category_key or "", item.key))
+            projected.append(replace(variants[0], alternatives=tuple(variants[1:])))
+        projected.sort(key=calendar_item_order)
         return _CalendarProjection(revision, tuple(projected), tuple(metadata))
 
     async def month(self, month: str | None) -> CalendarMonth:
@@ -299,11 +324,22 @@ class CalendarService:
                 break  # 시작 날짜순이므로 이 뒤의 일정도 격자 밖이다.
             if item.last < first:
                 continue
-            counts[item.kind] = counts.get(item.kind, 0) + 1
-            if counts[item.kind] <= 300:
+            variants = (item, *item.alternatives)
+            kinds = {variant.kind for variant in variants}
+            # 같은 일정·종류는 카테고리가 여럿이어도 한 자리만 차지한다.
+            allowed = {kind for kind in kinds if counts.get(kind, 0) < 300}
+            for kind in allowed:
+                counts[kind] = counts.get(kind, 0) + 1
+            if allowed == kinds:
                 limited.append(item)
-            else:
-                truncated = True
+                continue
+            truncated = True
+            if allowed:
+                # 대표 종류의 한도가 찼어도 다른 종류의 표시·색상은 월 응답에 남긴다.
+                remaining = [variant for variant in variants if variant.kind in allowed]
+                limited.append(replace(remaining[0], alternatives=tuple(remaining[1:])))
+        if truncated:
+            limited.sort(key=calendar_item_order)
         attendance = tuple(
             CalendarAttendance(
                 record.day,

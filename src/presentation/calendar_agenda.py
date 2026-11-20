@@ -16,9 +16,8 @@ from src.presentation.calendar_style import (
     item_time,
     kind_color,
 )
+from src.presentation.entry_list import status_badge
 from src.presentation.native_views import button, frame, label, symbol
-from src.presentation.settings_badge import SettingsBadge
-from src.presentation.task_appearance import status_tone
 
 
 def agenda_height(item: CalendarItem) -> int:
@@ -110,16 +109,18 @@ class CalendarAgenda:
         for index, item in enumerate(self.items):
             task = item.display_fields is None and item.kind in {"task", "qa"}
             row_height = agenda_height(item)
-            box(
-                view,
-                5,
-                top - row_height + 13,
-                3,
-                row_height - 18,
-                kind_color(item.kind, item.color),
-                1,
-            )
-            label(
+            segment = (row_height - 18) / len(item.visible_colors)
+            for offset, (kind, color) in enumerate(item.visible_colors):
+                box(
+                    view,
+                    5,
+                    top - row_height + 13 + offset * segment,
+                    3,
+                    segment,
+                    kind_color(kind, color),
+                    1,
+                )
+            heading = label(
                 view,
                 (
                     (item.category or KIND_LABELS[item.kind]) + " · "
@@ -134,9 +135,19 @@ class CalendarAgenda:
                 secondary=True,
             )
             if task:
-                badge = SettingsBadge(view, width - 132, top - 24, 96)
-                badge.update(item.status or "미지정", status_tone(item.status or ""))
-                badge.set_tooltip(item.status or "상태 미지정")
+                status_badge(view, item.status or "미지정", top - 23, x=width - 132, max_width=96)
+            elif item.display_fields and item.badge_field_indices:
+                # 시간과 원본 열기 버튼 사이에 맞는 배지만 놓는다. 전체 칼럼은 아래 상세에 남는다.
+                x = 16 + heading.fittingSize()[0] + 6
+                for field_index, (_, value) in enumerate(item.display_fields):
+                    available = width - 34 - x
+                    if available < 36:
+                        break
+                    if field_index in item.badge_field_indices and value:
+                        x += (
+                            status_badge(view, value, top - 23, x=x, max_width=min(128, available))
+                            + 6
+                        )
             title = NSTextField.wrappingLabelWithString_(item.title)
             title.setFont_(NSFont.systemFontOfSize_(13))
             title.setMaximumNumberOfLines_(2)

@@ -19,7 +19,7 @@ uv run maeng-mate sync  # Notion 한 번 수집
 - 개발용 API는 `127.0.0.1:43128`, 배포용 API는 `127.0.0.1:43127`을 기본으로 사용한다. `GET /v1/status`와 `GET /v1/today?date=YYYY-MM-DD` 조회에는 Bearer 인증이 필요하다.
 - DB는 실행본의 지원 폴더 아래 `data/maeng-mate.sqlite3`에 저장한다. 개발용 지원 폴더는 `~/Library/Application Support/MaengMateDev/`, 배포용은 `~/Library/Application Support/MaengMate/`다.
 - 수집: `연동 → Notion`에서 토큰을 등록한다. `수집 소스`에서 원본 표 주소나 데이터 소스 ID로 칼럼을 조회하고 연결한다. 매핑은 SQLite `work_settings`의 JSON에 저장한다.
-- 개인 조회: Notion 설정의 사용자 ID와 업무·회의 소스가 필요하다. task 소스의 `completedStatuses`에 완료 상태 이름을 넣는다.
+- 개인 조회에는 Notion 설정의 사용자 ID와 연결한 업무·회의 소스가 필요하다. MCP는 업무 표에 저장된 상태 이름을 그대로 사용한다.
 - 일정 분류: meeting 소스의 `properties.category`, `properties.cancelled`, `eventTypes`로 연결한다.
 - 기존 설정은 `uv run maeng-mate settings import-work --file <JSON 경로>`로 한 번 가져온다. 이후에는 DB만 사용한다.
 
@@ -54,7 +54,7 @@ uv run --extra menubar maeng-mate menubar
 
 카드 안에서 볼 항목과 순서는 **설정 → 카테고리 → 설정… → 메인 목록**에서 정한다. 예를 들어 상태가 ‘완료’인 항목을 제외하고, 우선순위가 ‘긴급 → 보통 → 낮음’인 순서로 본 뒤 같은 우선순위 안에서 마감이 가까운 순으로 정렬할 수 있다. 여러 표가 한 카드에 연결돼 있어도 이 순서로 함께 표시한다. 표시 필터와 숨김 조건이 모두 비어 있으면 오래된 완료 항목과 다른 날짜의 일정도 표시한다. 오늘 회의만 보려면 회의 카드에 `오늘 일정 → 같음 → 예`를 추가한다. 저장 후 앱을 다시 시작하면 적용된다.
 
-기존 카드는 업데이트 후 앱을 처음 실행할 때 이전에 쓰던 표시 방식을 편집 가능한 규칙으로 이어받는다. 예를 들어 업무 카드의 `숨김 조건`에서 완료 업무의 기한 경과 일수를 바꾸고, `정렬 순서`에서 상태 그룹의 우선순위를 옮길 수 있다. 새 카드는 규칙 없이 시작한다. 기존 카드에서 지운 규칙은 앱을 다시 시작해도 복원되지 않는다.
+기존 카드는 업데이트 후 앱을 처음 실행할 때 이전에 쓰던 표시 방식을 편집 가능한 규칙으로 이어받는다. 예를 들어 업무 카드의 `숨김 조건`에서 완료 업무의 기한 경과 일수를 바꾸고, `정렬 순서`에서 ‘업무 분류 (수집 소스)’의 우선순위를 바꾸거나 삭제할 수 있다. 각 상태를 어느 분류에 넣을지는 **수집 소스 → 연결 편집 → 분류 기준**에서 정한다. 새 카드는 규칙 없이 시작한다. 기존 카드에서 지운 규칙은 앱을 다시 시작해도 복원되지 않는다.
 
 목록은 하나의 표에서 읽을 수 있다. 회차마다 별도의 하위 표를 사용하는 경우에는 수집 소스에서 차시별 수집을 선택한다. 완료로 취급할 상태와 오늘 목록에 표시할 기간은 소스별로 설정한다.
 
@@ -130,13 +130,15 @@ AI 앱에는 설정에 표시된 주소와 `Authorization: Bearer <발급 토큰
 
 기존 stdio 연결도 `maeng-mate mcp`로 사용할 수 있다. `MCP_ACCESS_TOKEN`에 발급 토큰을 주입하고 포트가 다르면 `LOCAL_API_PORT`를 지정한다. 기존 `LOCAL_API_TOKEN` 연결은 조회 전용 호환 토큰으로 유지한다. MCP 프로세스는 `.env`·앱 관리 키·DB를 읽지 않는다.
 
-`get_my_system_status`, `get_my_today`, `get_my_workday`, `search_my_tasks`를 제공한다.
+`get_my_system_status`로 연결과 수집 상태를 확인한다. `get_my_today`는 본인 업무·QA를 모든 상태로 보여 주고, 지정한 날짜의 회의·휴가·기타 일정을 `meetings`·`leaves`·`otherEvents`에 담는다. 취소 일정은 제외한다.
 
 `get_my_workday`는 오늘 출근·휴가·퇴근 예상과 계산 근거를 읽는다. 시각은 서울 기준이며 `recorded=false`는 미기록이다. 개인 메모는 반환하지 않는다. 도구가 보이지 않으면 MCP 클라이언트에서 서버를 재연결한다.
 
-`search_my_tasks`는 제목·상태·마감 범위로 검색한다. `section`은 `tasks`·`qa`·`all`, 날짜는 서울 기준 `due_from`·`due_to`다. 기본50건·최대100건이며 `nextOffset`으로 이어 읽는다.
+`list_my_task_statuses`로 연결한 업무·QA 표의 이름, `sourceId`, 원본 상태 이름(`statuses`)을 확인한다. `statusOptionsBasis`가 `schema`면 표에서 사용할 수 있는 선택지이고, `observed`면 수집된 본인 행에서 확인한 값이다. `unavailable`은 선택지를 확인할 자료가 없음을 뜻한다. `tracksStatus`는 해당 소스의 상태 추적 여부이고, `hasUnspecifiedStatus`는 상태가 비어 있는 본인 행이 있는지 나타낸다.
 
-조회는 현재 저장된 자료를 사용하며 회의·휴가·기타는 `meetings`·`leaves`·`otherEvents`로 나눈다. 취소 건은 제외한다. `stale`, `warnings`, `completionState`, `truncated`를 함께 확인한다. 완료 상태 미설정 시 판정 불가 항목도 포함한다. 정기 수집의 지연은 소스별 다음 예정 시각에서 5분이 지난 경우에 표시한다. 주기 변경도 바로 반영한다. 예약이 없는 수동 수집만 `SNAPSHOT_MAX_AGE_SECONDS`를 사용한다(기본 1200초).
+`search_my_tasks`는 제목·소스·상태·마감 범위로 검색한다. 예를 들어 한 표의 상태 목록에 ‘작업 중’과 ‘검토 대기’가 있다면, 그 표의 `sourceId`를 `source_id`에, 두 이름을 `statuses`에 넣어 어느 하나에 정확히 일치하는 본인 업무를 찾는다. 한 이름만 찾을 때는 `status`도 쓸 수 있다. 상태를 지정하지 않으면 완료·미지정을 포함한 모든 상태를 조회한다. `include_unset=true`는 선택한 상태에 미지정 행을 더하며 단독으로 쓰면 미지정 행만 조회한다. `statuses=[]`는 선택한 이름이 없음을 뜻한다. `section`은 `tasks`·`qa`·`all`, 날짜는 서울 기준 `due_from`·`due_to`다. 기본 50건·최대 100건이며 `nextOffset`으로 이어 읽는다.
+
+조회는 현재 저장된 자료를 사용한다. `stale`, `warnings`, `truncated`를 함께 확인한다. 정기 수집의 지연은 소스별 다음 예정 시각에서 5분이 지난 경우에 표시한다. 주기 변경도 바로 반영한다. 예약이 없는 수동 수집만 `SNAPSHOT_MAX_AGE_SECONDS`를 사용한다(기본 1200초).
 
 ## 실행 구조
 

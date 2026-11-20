@@ -8,7 +8,7 @@ from importlib.resources import files
 from src.application.ai_skills import SkillInstallError, version_numbers
 
 SKILL_FILES = ("SKILL.md", "agents/openai.yaml")
-SKILL_VERSION = "1.0.0"
+SKILL_VERSION = "1.1.0"
 MARKER = ".maeng-mate-install.json"
 
 

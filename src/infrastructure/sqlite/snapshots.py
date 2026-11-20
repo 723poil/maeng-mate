@@ -1,6 +1,7 @@
 """SQLite 트랜잭션으로 실행 lease와 정상 스냅샷을 보존한다."""
 
 import asyncio
+import json
 import sqlite3
 import time
 from collections.abc import Callable, Sequence
@@ -61,7 +62,11 @@ class SQLiteSnapshots:
                 (source.source_id, source.kind),
             )
             row = connection.execute(
-                "SELECT generation,lease_until FROM work_source_state WHERE source_id=?",
+                """SELECT state.generation,state.lease_until,latest.started_at
+                    FROM work_source_state AS state
+                    LEFT JOIN sync_runs AS latest ON latest.source_id=state.source_id
+                      AND latest.generation=state.generation
+                    WHERE state.source_id=?""",
                 (source.source_id,),
             ).fetchone()
             epoch = self._clock()
@@ -69,6 +74,13 @@ class SQLiteSnapshots:
                 raise SnapshotError("storage_failed")
             if row["lease_until"] is not None and row["lease_until"] > epoch:
                 raise SnapshotError("source_busy")
+            # 다른 실행이 이 연결을 먼저 갱신했으면 이전 회차의 원본 응답으로 덮지 않는다.
+            previous_start = row["started_at"]
+            if previous_start is not None:
+                previous_epoch = datetime.fromisoformat(previous_start).timestamp()
+                # 시계가 뒤로 이동해 이전 기록이 미래이면 새 수집을 영구 차단하지 않는다.
+                if datetime.fromisoformat(started_at).timestamp() < previous_epoch <= epoch:
+                    raise SnapshotError("newer_observation")
             if self._scheduled:
                 schedule = connection.execute(
                     "SELECT next_run_at FROM sync_schedules WHERE source_id=?", (source.source_id,)
@@ -119,12 +131,23 @@ class SQLiteSnapshots:
         return previous
 
     async def complete_run(
-        self, run: SyncRun, items: Sequence[WorkItem], completed_at: str
+        self,
+        run: SyncRun,
+        items: Sequence[WorkItem],
+        completed_at: str,
+        *,
+        status_options: tuple[str, ...] | None = None,
     ) -> None:
         """완전 수집 결과만 작업 스레드에서 원자적으로 확정한다."""
-        await asyncio.to_thread(self._complete_run, run, items, completed_at)
+        await asyncio.to_thread(self._complete_run, run, items, completed_at, status_options)
 
-    def _complete_run(self, run: SyncRun, items: Sequence[WorkItem], completed_at: str) -> None:
+    def _complete_run(
+        self,
+        run: SyncRun,
+        items: Sequence[WorkItem],
+        completed_at: str,
+        status_options: tuple[str, ...] | None,
+    ) -> None:
         """부분 저장 오류가 나면 staging과 스냅샷을 함께 롤백한다."""
         with self._database.transaction() as connection:
             previous_mapping = self._previous_mapping(connection, run)
@@ -139,6 +162,7 @@ class SQLiteSnapshots:
                     completed_at,
                     previous_mapping,
                     run.mapping_hash,
+                    run.source.origin,
                 )
             if run.source is not None and run.source.allows_event_alert("meeting"):
                 enqueue_meeting_reminders(
@@ -186,6 +210,17 @@ class SQLiteSnapshots:
                 "UPDATE work_source_state SET lease_until=NULL,mapping_hash=?,last_completed_at=? WHERE source_id=?",
                 (run.mapping_hash, completed_at, run.source_id),
             )
+            # 선택값과 행은 같은 매핑의 정상 스냅샷이다. 스키마가 없어진 경우 옛 목록도 지운다.
+            if status_options is None:
+                connection.execute(
+                    "DELETE FROM source_status_options WHERE source_id=?", (run.source_id,)
+                )
+            else:
+                connection.execute(
+                    """INSERT INTO source_status_options(source_id,options_json) VALUES(?,?)
+                    ON CONFLICT(source_id) DO UPDATE SET options_json=excluded.options_json""",
+                    (run.source_id, json.dumps(status_options, ensure_ascii=False)),
+                )
             resolve_sync_failure(connection, run.source_id)
             record_field_alerts(connection, run, items, self._notification_user_id, completed_at)
             connection.execute("DELETE FROM sync_staging WHERE run_id=?", (run.id,))

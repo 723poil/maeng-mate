@@ -13,6 +13,29 @@ EventType = Literal["meeting", "leave", "other"]
 
 
 @dataclass(frozen=True)
+class ClassificationCondition:
+    """원본 속성의 표시 문자열과 비교할 값을 보관한다."""
+
+    property_id: str
+    kind: str
+    value: str
+
+
+@dataclass(frozen=True)
+class ClassificationRule:
+    """조건 결합 방식에 따라 결과 이름을 선택한다."""
+
+    match: str
+    conditions: tuple[ClassificationCondition, ...]
+    result: str
+
+    def matches(self, originals: Mapping[str, str]) -> bool:
+        """빈 문자열도 명시적인 비교값으로 평가한다."""
+        matches = (originals[c.property_id] == c.value for c in self.conditions)
+        return all(matches) if self.match == "all" else any(matches)
+
+
+@dataclass(frozen=True)
 class SourceMapping:
     """회사별 속성 ID와 업무 의미의 연결을 표현한다."""
 
@@ -34,6 +57,23 @@ class SourceMapping:
     failure_rules: tuple[SourceAlertRule, ...] = ()
     event_alert_triggers: frozenset[str] = frozenset()
 
+    classification_column: DisplayColumn | None = None
+    classification_values: Mapping[str, str] = field(default_factory=dict)
+    classification_rules: tuple[ClassificationRule, ...] = ()
+    classification_default: str | None = None
+
+    parent_label: bool = False
+    parent_order: str = "none"
+    parent_number_property: str | None = None
+
+    role_columns: tuple[DisplayColumn, ...] = ()
+    origin_id: str | None = None
+
+    @property
+    def origin(self) -> str:
+        """표시 설정이 분리되기 전 연결도 같은 원본 식별자로 읽는다."""
+        return self.origin_id if self.origin_id is not None else self.source_id
+
     @property
     def has_person_scope(self) -> bool:
         """사람 칼럼을 비워 둔 사용자 정의 소스만 표 전체를 사용한다."""
@@ -50,12 +90,18 @@ class SourceMapping:
         columns.update(
             {rule.column_id: rule.column_kind for rule in self.alert_rules if rule.enabled}
         )
+        for rule in self.classification_rules:
+            for condition in rule.conditions:
+                columns.setdefault(condition.property_id, condition.kind)
         return columns
 
     @property
     def storage_layout(self) -> tuple[DisplayColumn, ...]:
         """새 연결은 숨겨 둔 칼럼도 저장하고 이전 소스는 기존 저장 구성을 쓴다."""
-        return self.stored_columns or self.display_columns or ()
+        layout = self.stored_columns or self.display_columns or ()
+        layout = (*layout, *self.role_columns)
+        column = self.classification_column
+        return (*layout, column) if column and column not in layout else layout
 
 
 @dataclass(frozen=True)
@@ -96,6 +142,8 @@ class Task(ItemBase):
     status: str | None
     due: Period | None
     qa_round: str | None = None
+    parent_label: str | None = None
+    parent_order: str | None = None
     kind: Literal["task"] = field(default="task", init=False)
 
 

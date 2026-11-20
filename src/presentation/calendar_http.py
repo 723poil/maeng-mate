@@ -13,10 +13,13 @@ from src.domain.calendar import CalendarItem, CalendarMonth
 _FIELD_OVERHEAD = len(json.dumps({"label": "", "value": ""})) - 2 * len('""')
 
 
-def detail_size_within_budget(fields: tuple[tuple[str, str], ...], budget: int) -> int | None:
+def detail_size_within_budget(
+    fields: tuple[tuple[str, str], ...], budget: int, badge_count: int = 0
+) -> int | None:
     """남은 한도를 넘으면 그 행의 나머지 칼럼은 변환하지 않는다."""
     # 배열·구분자·객체 키의 고정 비용은 문자열을 읽기 전에 알 수 있다.
     size = len("[]") + max(0, len(fields) - 1) * len(", ") + len(fields) * _FIELD_OVERHEAD
+    size += badge_count * len(', "badge": true')
     if size > budget:
         return None
     for name, value in fields:
@@ -29,23 +32,34 @@ def detail_size_within_budget(fields: tuple[tuple[str, str], ...], budget: int) 
 
 def calendar_payload(value: CalendarMonth) -> dict[str, object]:
     """원문 근무 규칙·사용자 ID·소스 매핑 없이 필요한 달력 값만 전달한다."""
-    items = []
+    items: list[dict[str, object]] = []
     detail_budget = 900_000
     truncated = value.truncated
-    for item in value.items:
+
+    def serialize(item: CalendarItem) -> dict[str, object]:
+        """같은 일정의 모든 표시 후보가 월 응답의 상세 크기 한도를 공유한다."""
+        nonlocal detail_budget, truncated
         row = calendar_item_payload(item)
         if item.display_fields is not None:
-            size = detail_size_within_budget(item.display_fields, detail_budget)
+            size = detail_size_within_budget(
+                item.display_fields, detail_budget, len(item.badge_field_indices)
+            )
             if size is not None:
                 detail_budget -= size
                 row["displayFields"] = [
-                    {"label": name, "value": text} for name, text in item.display_fields
+                    {
+                        "label": name,
+                        "value": text,
+                        **({"badge": True} if index in item.badge_field_indices else {}),
+                    }
+                    for index, (name, text) in enumerate(item.display_fields)
                 ]
             else:
                 row["displayFields"] = []
                 truncated = True  # 월 격자와 제목은 보존하고 긴 상세만 한도를 둔다.
-        items.append(row)
-    return {
+        return row
+
+    result: dict[str, object] = {
         "month": value.month,
         "today": value.today.isoformat(),
         "first": value.first.isoformat(),
@@ -66,6 +80,42 @@ def calendar_payload(value: CalendarMonth) -> dict[str, object]:
             for item in value.attendance
         ],
     }
+    # ASCII 이스케이프와 공백까지 포함해 실제 HTTP 응답보다 보수적인 크기를 센다.
+    remaining = 2 * 1024 * 1024 - len(json.dumps(result)) - 1
+    for item in value.items:
+        prior_budget = detail_budget
+        row = serialize(item)
+        variants: list[dict[str, object]] = []
+        for variant in item.alternatives:
+            # 같은 상세를 다시 예산에 넣지 않고 기본 일정에서 상속한다.
+            same_fields = (variant.display_fields, variant.badge_field_indices) == (
+                item.display_fields,
+                item.badge_field_indices,
+            )
+            candidate = calendar_item_payload(variant) if same_fields else serialize(variant)
+            delta = {
+                key: val for key, val in candidate.items() if key == "key" or val != row.get(key)
+            }
+            for optional in ("category", "displayFields"):
+                if (
+                    optional in row
+                    and optional not in candidate
+                    and not (same_fields and optional == "displayFields")
+                ):
+                    delta[optional] = None
+            variants.append(delta)
+        if variants:
+            row["variantOverrides"] = variants
+        cost = len(json.dumps(row)) + (2 if items else 0)
+        if cost > remaining:
+            # 일부 카테고리만 남기면 필터가 틀리므로 한 일정 전체를 제외한다.
+            detail_budget = prior_budget
+            truncated = True
+            continue
+        remaining -= cost
+        items.append(row)
+    result["truncated"] = truncated
+    return result
 
 
 def calendar_item_payload(item: CalendarItem) -> dict[str, object]:
@@ -99,10 +149,7 @@ def create_calendar_router(service: CalendarService | None) -> APIRouter:
         if service is None:
             raise HTTPException(503, "캘린더 DB가 필요합니다.")
         try:
-            result = calendar_payload(await service.month(month))
-            if len(json.dumps(result, ensure_ascii=True)) > 2 * 1024 * 1024:
-                raise QueryReadError()
-            return result
+            return calendar_payload(await service.month(month))
         except (QueryReadError, SnapshotError):
             raise HTTPException(503, "저장된 캘린더 자료를 읽지 못했습니다.") from None
         except (ValueError, OverflowError):

@@ -7,7 +7,7 @@ from datetime import datetime
 from src.domain.display_columns import DisplayColumn
 from src.domain.main_list import MainListRules
 from src.domain.models import SourceMapping, WorkItem
-from src.domain.task_display import QATaskDisplayPolicy, StatusTaskDisplayPolicy, TaskDisplayPolicy
+from src.domain.source_display import SourceCategory
 
 
 @dataclass(frozen=True)
@@ -27,13 +27,19 @@ class TodayContext:
     sources: tuple[SourceMapping, ...]
     completed_statuses: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     max_age_seconds: int = 1200
-    task_display_policy: TaskDisplayPolicy = field(default_factory=StatusTaskDisplayPolicy)
     source_pages: Mapping[str, str] = field(default_factory=dict)
-    qa_display_policy: TaskDisplayPolicy = field(default_factory=QATaskDisplayPolicy)
     page_links_revision: int = 0
     desktop_areas: Mapping[str, str] = field(default_factory=dict)
+    desktop_sort_directions: Mapping[str, str] = field(default_factory=dict, kw_only=True)
+    source_categories: Mapping[str, SourceCategory] = field(default_factory=dict, kw_only=True)
+    source_names: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     main_cards: Mapping[str, MainListCard] = field(default_factory=dict, kw_only=True)
     display_columns: Mapping[str, tuple[DisplayColumn, ...]] = field(default_factory=dict)
+
+    def category_fields(self, source: SourceMapping) -> dict[str, str]:
+        """현재 설정의 카테고리 이름과 검색용 고정 ID를 함께 제공한다."""
+        category = self.source_categories.get(source.source_id)
+        return {"categoryId": category.id, "categoryName": category.name} if category else {}
 
 
 @dataclass(frozen=True)
@@ -47,3 +53,4 @@ class SourceSnapshot:
     mapping_matches: bool
     items: tuple[WorkItem, ...]
     next_scheduled_at: datetime | None = None
+    status_options: tuple[str, ...] | None = None

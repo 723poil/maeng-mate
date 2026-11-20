@@ -155,12 +155,23 @@ def record_task_changes(
             run.source.allows_event_alert(kind) for kind in change.kinds
         ):
             continue  # 저장 이력과 사용자가 등록한 발송 조건을 구분한다.
+        # 같은 페이지 변경을 본 뷰들은 발동한 역할의 원본 칼럼과 결과가 같을 때 전달을 공유한다.
+        roles = {"assigned": "assignees", "status": "status", "due": "dueDate"}
+        values = asdict(change.after)
+        triggers = [
+            (kind, run.source.properties.get(roles[kind]), values[kind])
+            for kind in change.kinds
+            if kind in roles and run.source.allows_event_alert(kind)
+        ]
+        delivery_key = fingerprint(
+            ("task-change", run.source.origin, item.id, user_key, item.source_edited_at, triggers)
+        )
         connection.execute(
             """INSERT INTO notification_jobs(id,logical_key,kind,title,body,notion_url,due_at,expires_at,state,source_key,task_change_id)
             VALUES(?,?,'task',?,?,?,?,?,'pending',?,?)""",
             (
                 identifier,
-                identifier,
+                delivery_key,
                 "새 업무 배정" if "assigned" in change.kinds else "업무 변경",
                 notification_body(item.title, description),
                 notion_link(item.url),

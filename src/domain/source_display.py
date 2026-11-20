@@ -56,6 +56,7 @@ class SourceDisplay:
     category: SourceCategory | None = None
     flexible: bool = False
     events: tuple[tuple[str, str], ...] = ()
+    sort_direction: str = "asc"
 
     @property
     def key(self) -> str | None:

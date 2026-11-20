@@ -2,7 +2,15 @@
 
 from dataclasses import dataclass, field
 
-from src.domain.models import SourceMapping
+from src.domain.models import SourceMapping, WorkItem
+
+
+@dataclass(frozen=True)
+class CollectedWork:
+    """한 번의 완전 수집에서 얻은 행과 원본 상태 칼럼의 선택값이다."""
+
+    items: list[WorkItem]
+    status_options: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)

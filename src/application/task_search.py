@@ -8,6 +8,7 @@ from typing import Literal
 from src.application.date_inputs import parse_day
 from src.application.errors import InvalidDateError
 from src.domain.task_search import TaskCriteria
+from src.domain.work_dates import canonical_identity
 
 
 class TaskSearchInputError(ValueError):
@@ -15,7 +16,9 @@ class TaskSearchInputError(ValueError):
 
     def __init__(self) -> None:
         """허용 형식만 짧게 안내한다."""
-        super().__init__("검색어·상태·마감 날짜(YYYY-MM-DD)·대상·개수·offset을 확인하세요.")
+        super().__init__(
+            "검색어·카테고리·표·원본 상태·마감 날짜(YYYY-MM-DD)·개수·offset을 확인하세요. status와 statuses 중 하나만 지정하세요."
+        )
 
 
 def optional_text(value: object) -> str | None:
@@ -39,6 +42,24 @@ def optional_date(value: object) -> date | None:
         raise TaskSearchInputError() from None
 
 
+def raw_status_names(single: object, multiple: object) -> frozenset[str] | None:
+    """단일 상태 입력도 같은 정확 일치 검색으로 정규화하며 원문은 보존한다."""
+    if single is not None and multiple is not None:
+        raise TaskSearchInputError()
+    if multiple is None:
+        if single is None or single == "":
+            return None
+        multiple = [single]
+    if not isinstance(multiple, list) or len(multiple) > 256:
+        raise TaskSearchInputError()
+    names: set[str] = set()
+    for name in multiple:
+        if not isinstance(name, str) or not name.strip() or len(name) > 2000:
+            raise TaskSearchInputError()
+        names.add(name)
+    return frozenset(names)
+
+
 @dataclass(frozen=True)
 class TaskSearch:
     """검증한 검색 조건과 결과 범위다."""
@@ -47,6 +68,8 @@ class TaskSearch:
     section: Literal["tasks", "qa", "all"]
     limit: int
     offset: int
+    source_id: str | None = None
+    category_id: str | None = None
 
     @classmethod
     def parse(cls, payload: object) -> "TaskSearch":
@@ -54,6 +77,10 @@ class TaskSearch:
         if not isinstance(payload, dict) or set(payload) - {
             "query",
             "status",
+            "statuses",
+            "include_unset",
+            "source_id",
+            "category_id",
             "due_from",
             "due_to",
             "section",
@@ -63,6 +90,18 @@ class TaskSearch:
             raise TaskSearchInputError()
         start, end = optional_date(payload.get("due_from")), optional_date(payload.get("due_to"))
         limit, offset = payload.get("limit", 50), payload.get("offset", 0)
+        include_unset = payload.get("include_unset", False)
+        source_id = payload.get("source_id")
+        if type(include_unset) is not bool or (
+            source_id is not None
+            and (not isinstance(source_id, str) or not source_id.strip() or len(source_id) > 256)
+        ):
+            raise TaskSearchInputError()
+        category_id = payload.get("category_id")
+        if category_id is not None and (
+            not isinstance(category_id, str) or not category_id.strip() or len(category_id) > 256
+        ):
+            raise TaskSearchInputError()
         section = payload.get("section", "all")
         if (
             type(limit) is not int
@@ -76,20 +115,28 @@ class TaskSearch:
         return cls(
             TaskCriteria(
                 optional_text(payload.get("query")),
-                optional_text(payload.get("status")),
+                raw_status_names(payload.get("status"), payload.get("statuses")),
                 start,
                 end,
+                include_unset,
             ),
             section,
             limit,
             offset,
+            canonical_identity(source_id) if source_id is not None else None,
+            canonical_identity(category_id) if category_id is not None else None,
         )
 
     def payload(self) -> dict[str, object]:
         """URL 대신 인증된 검색 본문으로만 조건을 전달한다."""
         return {
             "query": self.criteria.query,
-            "status": self.criteria.status,
+            "statuses": sorted(self.criteria.statuses)
+            if self.criteria.statuses is not None
+            else None,
+            "include_unset": self.criteria.include_unset,
+            "source_id": self.source_id,
+            **({"category_id": self.category_id} if self.category_id is not None else {}),
             "due_from": self.criteria.due_from.isoformat() if self.criteria.due_from else None,
             "due_to": self.criteria.due_to.isoformat() if self.criteria.due_to else None,
             "section": self.section,
@@ -99,3 +146,5 @@ class TaskSearch:
 
 
 type TaskSearchQuery = Callable[[TaskSearch], Awaitable[dict[str, object]]]
+
+type TaskStatusesQuery = Callable[[], Awaitable[dict[str, object]]]

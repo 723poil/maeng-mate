@@ -126,7 +126,7 @@ class McpSettingsService:
 
 
 def is_mcp_read_route(method: str, path: str) -> bool:
-    """stdio 호환 토큰도 업무 조회 네 경로에만 접근하게 한다."""
-    return (method == "GET" and path in {"/v1/status", "/v1/today", "/v1/day"}) or (
-        method == "POST" and path == "/v1/tasks/search"
-    )
+    """stdio 호환 토큰에도 지정한 메서드와 개인 조회 경로만 허용한다."""
+    return (
+        method == "GET" and path in {"/v1/status", "/v1/today", "/v1/day", "/v1/tasks/statuses"}
+    ) or (method == "POST" and path == "/v1/tasks/search")

@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime
@@ -13,10 +14,9 @@ from src.application.ports import SnapshotReader
 from src.application.today_metadata import source_metadata, utc_string
 from src.application.today_models import MainListCard, SourceSnapshot, TodayContext
 from src.domain.display_columns import DisplayColumn, labelled_values
-from src.domain.main_list import STATUS_GROUP_NAMES
+from src.domain.main_list import ListSort
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
 from src.domain.policies import RelevancePolicy
-from src.domain.task_display import TaskDisplayGroup, TaskDisplayPolicy, display_group
 from src.domain.work_dates import SEOUL, canonical_identity, deadline_flags, meeting_on_day
 
 
@@ -26,37 +26,33 @@ def task_view(
     context: TodayContext,
     day: date,
     now: datetime,
-) -> dict[str, object] | None:
-    """완료 기준이 없으면 추측하지 않고 판정 불가 상태를 남긴다."""
-    configured = context.completed_statuses.get(item.source_id)
-    completed = configured is not None and item.status in configured
-    display = context.qa_display_policy if source.section == "qa" else context.task_display_policy
-    if source.source_id not in context.desktop_areas and not display.includes(
-        item, completed=completed, day=day
-    ):
-        return None
+) -> dict[str, object]:
+    """원본 업무를 반환하고 메뉴바의 완료 조건은 해당 화면에서만 계산한다."""
     due_today, overdue = deadline_flags(item.due, day, now)
     tracks_status = "status" in source.properties or not source.flexible
-    return {
+    row: dict[str, object] = {
         "id": item.id,
         "sourceId": item.source_id,
         "title": item.title,
         "status": item.status,
         **({"tracksStatus": False} if not tracks_status else {}),
         "section": source.section,
+        **context.category_fields(source),
         "qaRound": item.qa_round,
+        # 이전 스냅샷은 부모 제목을 QA 차시에만 저장하므로 현재 표시 설정을 먼저 적용한다.
+        "parentLabel": (item.parent_label or item.qa_round) if source.parent_label else None,
         "url": item.url,
         "due": item.due.payload() if item.due else None,
         "dueToday": due_today,
         "overdue": overdue,
-        "completionState": "completed"
-        if completed
-        else "not_completed"
-        if configured is not None
-        else "unknown"
-        if tracks_status
-        else "not_applicable",
     }
+    if source.source_id in context.desktop_areas:
+        configured = context.completed_statuses.get(item.source_id)
+        if configured is not None:
+            row["completionState"] = "completed" if item.status in configured else "not_completed"
+        else:
+            row["completionState"] = "unknown" if tracks_status else "not_applicable"
+    return row
 
 
 def calendar_view(item: CalendarEvent) -> dict[str, object]:
@@ -97,14 +93,25 @@ def desktop_fields(
     return {"displayFields": fields}
 
 
-def main_list_projection(source: SourceMapping, card: MainListCard | None) -> SourceMapping:
+def main_list_projection(
+    source: SourceMapping, card: MainListCard | None, order: str | None = None
+) -> SourceMapping:
     """메인 카드 조회에서만 숨긴 조건·정렬 칼럼을 추가로 읽는다."""
-    if card is None:
+    fields = card.rules.fields if card else set()
+    if order and order.startswith("column:"):
+        fields.add(order.removeprefix("column:"))
+    if not fields:
         return source
-    fields = card.rules.fields
     visible = source.display_columns or ()
+    # 카드의 업무 분류는 표시 칼럼을 끈 소스에서도 수집된 분류값을 읽는다.
     hidden = tuple(
-        column for column in source.storage_layout if column.id in fields and column not in visible
+        column
+        for column in source.storage_layout
+        if column not in visible
+        and (
+            column.id in fields
+            or ("statusGroup" in fields and column == source.classification_column)
+        )
     )
     return replace(source, display_columns=(*visible, *hidden)) if hidden else source
 
@@ -136,15 +143,21 @@ def main_list_values(
         )
     if isinstance(item, Task):
         completed = row["completionState"] == "completed"
-        group = TaskDisplayGroup.COMPLETED if completed else display_group(item.status)
+        # 완료 판정은 완료 관련 조건에 쓰고 정렬·필터의 분류값은 소스 설정을 따른다.
+        if column := source.classification_column:
+            values["statusGroup"] = item.display_values.get(column.value_key, "")
         values.update(
             status=item.status or "",
+            parentLabel=item.parent_label or item.qa_round or "",
             qaRound=item.qa_round or "",
-            statusGroup=STATUS_GROUP_NAMES[group],
             overdue="예" if row["overdue"] else "아니요",
             dueToday="예" if row["dueToday"] else "아니요",
         )
-        if "roundNumber" in fields:
+        if item.parent_order:
+            values["parentOrder"] = item.parent_order
+        if item.parent_order and "roundNumber" in fields:
+            values["roundNumber"] = item.parent_order
+        elif "roundNumber" in fields and source.parent_order == "legacy":
             values["roundNumber"] = str(round_number(item.qa_round))
         # 완료 판정이 없는 소스는 미완료와 구별한다.
         if row["completionState"] in ("completed", "not_completed"):
@@ -174,6 +187,29 @@ type PreviewValues = dict[tuple[str, str], Mapping[str, str]]
 type ScopedRow = tuple[str, WorkItem, dict[str, object]]
 
 
+def relevant_items(
+    snapshot: SourceSnapshot, user_id: str, policy: RelevancePolicy, *, whole_source: bool = False
+) -> Iterator[WorkItem]:
+    """같은 소스의 행 조회와 상태 목록에 동일한 담당·참여 권한을 적용한다."""
+    if not snapshot.mapping_matches:
+        return
+    normalize_id = lru_cache(maxsize=128)(canonical_identity)
+    user = normalize_id(user_id)
+    for item in snapshot.items:
+        if isinstance(item, Task):
+            allowed = whole_source or policy.includes(
+                tuple(map(normalize_id, item.assignee_ids)), (), user
+            )
+        elif isinstance(item, CalendarEvent):
+            allowed = whole_source or policy.includes(
+                (), tuple(map(normalize_id, item.participant_ids)), user
+            )
+        else:
+            allowed = user in map(normalize_id, item.person_ids)
+        if allowed:
+            yield item
+
+
 def scoped_rows(
     snapshot: SourceSnapshot,
     source: SourceMapping,
@@ -183,41 +219,25 @@ def scoped_rows(
     now: datetime,
     task_filter: Callable[[Task], bool] | None = None,
 ) -> Iterator[ScopedRow]:
-    """소스의 사람 범위와 일반 오늘 조회의 표시 규칙을 확인한다."""
-    if not snapshot.mapping_matches:
-        return
-    # 같은 소스에서 반복되는 담당자·참석자 ID는 이 조회 동안만 정규화 결과를 재사용한다.
-    normalize_id = lru_cache(maxsize=128)(canonical_identity)
-    user_id = normalize_id(context.user_id)
-    all_rows = not source.has_person_scope
+    """본인 행에 요청한 검색·날짜 조건을 적용하고 메뉴바용 범위는 따로 유지한다."""
     desktop = source.source_id in context.desktop_areas
-    for item in snapshot.items:
-        if isinstance(item, Task) and (
-            all_rows or policy.includes(tuple(map(normalize_id, item.assignee_ids)), (), user_id)
-        ):
+    items = relevant_items(
+        snapshot, context.user_id, policy, whole_source=desktop and not source.has_person_scope
+    )
+    for item in items:
+        if isinstance(item, Task):
             if task_filter is not None and not task_filter(item):
                 continue
             selected = task_view(item, source, context, day, now)
-            if selected is None:
-                continue
             group = "qa" if source.section == "qa" else "tasks"
-        elif (
-            isinstance(item, CalendarEvent)
-            and (
-                all_rows
-                or policy.includes((), tuple(map(normalize_id, item.participant_ids)), user_id)
-            )
-            and (desktop or (not item.cancelled and meeting_on_day(item.period, day)))
+        elif isinstance(item, CalendarEvent) and (
+            desktop or (not item.cancelled and meeting_on_day(item.period, day))
         ):
             group = {"meeting": "meetings", "leave": "leaves", "other": "otherEvents"}[
                 item.event_type
             ]
             selected = calendar_view(item)
-        elif (
-            isinstance(item, Leave)
-            and user_id in map(normalize_id, item.person_ids)
-            and (desktop or meeting_on_day(item.period, day))
-        ):
+        elif isinstance(item, Leave) and (desktop or meeting_on_day(item.period, day)):
             group = "leaves"
             selected = {
                 "id": item.id,
@@ -233,24 +253,18 @@ def scoped_rows(
         yield group, item, selected
 
 
-def task_sort_key(
-    item: dict[str, object], *, display_policy: TaskDisplayPolicy
-) -> tuple[int, int, bool, bool, str, str, str]:
-    """상태·최근 QA 차시를 먼저 적용하고 같은 그룹은 기한·식별자로 정렬한다."""
-    due = item["due"]
-    deadline = str(due.get("end") or due.get("start")) if isinstance(due, dict) else "9999-12-31"
-    return (
-        display_policy.priority(
-            item["status"] if isinstance(item["status"], str) else None,
-            completed=item["completionState"] == "completed",
-        ),
-        -round_number(item.get("qaRound")),
-        not bool(item["overdue"]),
-        not bool(item["dueToday"]),
-        deadline,
-        str(item["id"]),
-        str(item["sourceId"]),
-    )
+def shared_source_origins(sources: Iterable[SourceMapping]) -> dict[str, str]:
+    """같은 원본을 여러 번 읽는 경우에만 행 식별자를 보관하도록 표시 설정을 추린다."""
+    origins = {source.source_id: source.origin for source in sources}
+    counts = Counter(origins.values())
+    return {source_id: origin for source_id, origin in origins.items() if counts[origin] > 1}
+
+
+def raw_task_sort_key(row: dict[str, object]) -> tuple[bool, str, str, str]:
+    """업무 의미를 추측하지 않고 마감과 안정적인 원본 키로 페이지 순서를 정한다."""
+    due = row["due"]
+    deadline = str(due.get("end") or due.get("start")) if isinstance(due, dict) else ""
+    return not bool(deadline), deadline, str(row["sourceId"]), str(row["id"])
 
 
 def event_sort_key(item: dict[str, object]) -> tuple[str, str, str]:
@@ -258,6 +272,42 @@ def event_sort_key(item: dict[str, object]) -> tuple[str, str, str]:
     period = item["period"]
     start = str(period.get("start", "")) if isinstance(period, dict) else ""
     return start, str(item["id"]), str(item["sourceId"])
+
+
+def ordered_source_rows(
+    rows: Iterable[ScopedRow],
+    source: SourceMapping,
+    context: TodayContext,
+    card: MainListCard | None,
+) -> Iterator[ScopedRow]:
+    """한 표시 설정의 칼럼과 방향으로 정렬한 행을 카드 필터와 미리보기에 전달한다."""
+    order = context.desktop_areas.get(source.source_id)
+    if not order or order == "default":
+        yield from rows
+        return
+    descending = context.desktop_sort_directions.get(source.source_id) == "desc"
+    ordered = list(rows)
+    if source.kind != "task" and card and "sourceRowOrder" in card.rules.fields:
+        # 이전한 일정 카드에서 소스 정렬이 같으면 기존 일정 그룹의 순번을 유지한다.
+        groups = {name: rank for rank, name in enumerate(empty_groups())}
+        ordered.sort(key=lambda row: (groups[row[0]], event_sort_key(row[2])))
+    if order == "title":
+        ordered.sort(key=lambda row: str(row[2]["title"]).casefold(), reverse=descending)
+    elif order == "date":
+        ordered.sort(key=lambda row: desktop_date_key(row[2]), reverse=descending)
+        if descending:
+            # 내림차순에서도 날짜가 비어 있는 행은 마지막에 둔다.
+            ordered.sort(key=lambda row: desktop_date_key(row[2])[0] == "~")
+    elif order.startswith("column:"):
+        column_id = order.removeprefix("column:")
+        column = next((c for c in source.storage_layout if c.id == column_id), None)
+        category = context.source_categories.get(source.source_id)
+        config = category.configuration if category else None
+        if column and config:
+            kind = next(c.kind for c in config.columns if c.id == column_id)
+            key = ListSort(column.value_key, descending=descending).sort_key(kind)
+            ordered.sort(key=lambda row: key((row[2], row[1].display_values)), reverse=descending)
+    yield from ordered
 
 
 def main_card_rows(
@@ -274,28 +324,12 @@ def main_card_rows(
     if not fields:
         yield from rows
         return
-    positions: dict[str, int] = {}
     order = context.desktop_areas.get(source.source_id)
-    if "sourceRowOrder" in fields and order in ("date", "title"):
-        # 이전 표의 순번을 요청했을 때만 당시 동률 기준을 재현하고 원본 읽기 순서는 보존한다.
-        rows = list(rows)
-        if source.kind == "task":
-            ordered = sorted(
-                rows, key=lambda r: task_sort_key(r[2], display_policy=context.task_display_policy)
-            )
-        else:
-            groups = {name: rank for rank, name in enumerate(empty_groups())}
-            ordered = sorted(rows, key=lambda r: (groups[r[0]], event_sort_key(r[2])))
-        if order == "title":
-            ordered.sort(key=lambda r: str(r[2]["title"]).casefold())
-        else:
-            ordered.sort(key=lambda r: desktop_date_key(r[2]))
-        positions = {item.id: index for index, (_, item, _) in enumerate(ordered, 1)}
-    for group, item, row in rows:
+    for position, (group, item, row) in enumerate(rows, 1):
         values = main_list_values(item, source, row, day, fields)
         values["sourceOrder"] = str(source_order)
-        if item.id in positions:
-            values["sourceRowOrder"] = str(positions[item.id])
+        if order and order != "default" and "sourceRowOrder" in fields:
+            values["sourceRowOrder"] = str(position)
         if card.rules.includes(values, card.kinds, day):
             if card.rules.sorts:
                 sort_values[(item.source_id, item.id)] = values
@@ -322,12 +356,24 @@ def desktop_card_previews(
     preview = partial(
         desktop_preview, limit=limit, budget=budget, context=context, preview_values=preview_values
     )
+    parent_sorted = {
+        source.source_id
+        for source in context.sources
+        if source.parent_order in ("suffix", "column")
+    }
     for source_id, items in areas.items():
         order = ordering[source_id]
-        if order == "title":
-            items.sort(key=lambda item: str(item["title"]).casefold())
-        elif order == "date":
-            items.sort(key=desktop_date_key)
+        if (
+            order == "default"
+            and source_id in parent_sorted
+            and not (source_id in cards and cards[source_id].rules.sorts)
+        ):
+            # 카드와 소스의 명시 정렬이 없을 때만 해당 표 안에서 부모 숫자를 비교한다.
+            ranked: list[tuple[dict[str, object], Mapping[str, str]]] = [
+                (item, sort_values[(source_id, str(item["id"]))]) for item in items
+            ]
+            ListSort("parentOrder", descending=True).apply(ranked, "number")
+            items[:] = [item for item, _ in ranked]
         if source_id in cards:
             categories.setdefault(cards[source_id].key, []).extend(items)
             continue
@@ -398,11 +444,21 @@ def checked_query_result(payload: dict[str, object]) -> dict[str, object]:
 
 
 @dataclass(frozen=True)
+class PersonalSourceBatch:
+    """표의 원본 메타데이터와 본인 범위로 제한한 행을 같은 읽기 시점에 묶는다."""
+
+    source: SourceMapping
+    snapshot: SourceSnapshot
+    metadata: dict[str, object]
+    rows: Iterator[ScopedRow]
+
+
+@dataclass(frozen=True)
 class PersonalWorkSelection:
     """한 읽기 시점의 수집 근거와 아직 표시 목록에 담지 않은 소스별 행이다."""
 
     metadata: dict[str, object]
-    batches: list[tuple[SourceMapping, Iterator[ScopedRow]]]
+    batches: list[PersonalSourceBatch]
     max_rows: int
     sort_values: SortValues
 
@@ -413,10 +469,20 @@ class PersonalWorkSelection:
         preview_values: PreviewValues | None = None,
     ) -> Iterator[tuple[str, str, dict[str, object]]]:
         """모든 행의 경고를 확인하고, 카드 미리보기는 정렬 후 표시값을 만들도록 원본을 남긴다."""
-        for source, batch in self.batches:
-            for group, item, row in batch:
-                if row.get("completionState") == "unknown" and not self.metadata["warnings"]:
-                    self.metadata["warnings"] = ["completion_status_unconfigured"]
+        for batch in self.batches:
+            source = batch.source
+            card = context.main_cards.get(source.source_id)
+            use_parent_order = (
+                preview_values is not None
+                and context.desktop_areas.get(source.source_id) == "default"
+                and source.parent_order in ("suffix", "column")
+                and not (card and card.rules.sorts)
+            )
+            for group, item, row in batch.rows:
+                if use_parent_order and isinstance(item, Task):
+                    self.sort_values[(source.source_id, item.id)] = {
+                        "parentOrder": item.parent_order or ""
+                    }
                 columns = context.display_columns.get(item.source_id)
                 if columns is not None:
                     if preview_values is not None and source.source_id in context.desktop_areas:
@@ -437,10 +503,18 @@ async def read_personal_sources(
 ) -> PersonalWorkSelection:
     """조회는 저장 자료만 읽으며 수집·확인 커서·발송 상태를 변경하지 않는다."""
     requested_day = parse_day(requested_date) if requested_date is not None else None
-    configured = context.sources
+    configured = tuple(
+        s
+        for s in context.sources
+        if s.source_id in context.desktop_areas or (context.user_id and s.has_person_scope)
+    )
     snapshots = await reader.read_sources(
         tuple(
-            main_list_projection(source, context.main_cards.get(source.source_id))
+            main_list_projection(
+                source,
+                context.main_cards.get(source.source_id),
+                context.desktop_areas.get(source.source_id),
+            )
             for source in configured
         )
     )
@@ -452,7 +526,7 @@ async def read_personal_sources(
     by_id = {snapshot.source_id: snapshot for snapshot in snapshots}
     if len(by_id) != len(snapshots):
         raise QueryReadError()
-    batches: list[tuple[SourceMapping, Iterator[ScopedRow]]] = []
+    batches: list[PersonalSourceBatch] = []
     sources: list[dict[str, object]] = []
     successful: list[datetime] = []
     sort_values: SortValues = {}
@@ -463,7 +537,8 @@ async def read_personal_sources(
         )
         if snapshot.kind != source.kind:
             raise QueryReadError()
-        sources.append(source_metadata(snapshot, observed_now, context.max_age_seconds))
+        source_meta = source_metadata(snapshot, observed_now, context.max_age_seconds)
+        sources.append(source_meta)
         if snapshot.last_success_at is not None and snapshot.mapping_matches:
             successful.append(snapshot.last_success_at)
         selected = scoped_rows(
@@ -475,11 +550,14 @@ async def read_personal_sources(
             observed_now,
             task_filter,
         )
-        if card := context.main_cards.get(source.source_id):
+        card = context.main_cards.get(source.source_id)
+        if source.source_id in context.desktop_areas:
+            selected = ordered_source_rows(selected, source, context, card)
+        if card:
             selected = main_card_rows(
                 selected, source, card, context, day, source_order, sort_values
             )
-        batches.append((source, selected))
+        batches.append(PersonalSourceBatch(source, snapshot, source_meta, selected))
         if snapshot.mapping_matches:
             max_rows += len(snapshot.items)
     metadata: dict[str, object] = {
@@ -503,18 +581,32 @@ async def read_personal_work(
     context: TodayContext,
     policy: RelevancePolicy,
     now: Callable[[], datetime],
+    event_classification: str | None = None,
 ) -> PersonalWorkRows:
     """오늘 목록과 메인 카드는 소스별 표시 자료를 모두 모아 각 화면 순서로 정렬한다."""
     selection = await read_personal_sources(requested_date, reader, context, policy, now)
     groups = empty_groups()
     areas: dict[str, list[dict[str, object]]] = {key: [] for key in context.desktop_areas}
     preview_values: PreviewValues = {}
+    shared = shared_source_origins(batch.source for batch in selection.batches)
+    seen: set[tuple[str, str, str]] = set()
     for source_id, name, row in selection.rows(context, preview_values=preview_values):
+        if event_classification is not None and row.get("category") != event_classification:
+            continue
         area = areas.get(source_id)
-        (groups[name] if area is None else area).append(row)
+        if area is not None:
+            area.append(row)
+            continue
+        # 개인 목록은 필터를 통과한 원본 행을 그룹마다 한 번만 표시한다.
+        if source_id in shared:
+            key = name, shared[source_id], str(row["id"])
+            if key in seen:
+                continue
+            seen.add(key)
+        groups[name].append(row)
     for name, values in groups.items():
         if name in {"tasks", "qa"}:
-            values.sort(key=partial(task_sort_key, display_policy=context.task_display_policy))
+            values.sort(key=raw_task_sort_key)
         else:
             values.sort(key=event_sort_key)
     desktop_areas, category_areas = desktop_card_previews(

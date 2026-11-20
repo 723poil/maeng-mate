@@ -1,5 +1,6 @@
 """이전 소스의 표시와 규칙을 소속 카테고리로 옮긴다."""
 
+from collections.abc import Mapping
 from dataclasses import replace
 from uuid import UUID, uuid5
 
@@ -22,8 +23,10 @@ from src.domain.category_configuration import (
 )
 from src.domain.category_event_alerts import EVENT_ALERT_KINDS, CategoryEventAlert
 from src.domain.display_columns import DisplayColumn
+from src.domain.main_list import STATUS_GROUP_NAMES
 from src.domain.models import SourceMapping
 from src.domain.source_display import SourceCategory, SourceDisplay
+from src.domain.task_display import TaskDisplayGroup, display_group
 
 FORMER_CATEGORY_KEYS = (
     "displayColumns",
@@ -181,6 +184,9 @@ def merge_members(
             (*untouched, *previous),
             base.event_alerts if base is not None else None,
             base.main_list if base is not None else None,
+            base.classification_column if base else None,
+            base.classification_values if base else (),
+            base.classification_default if base else None,
         ),
     )
 
@@ -247,7 +253,7 @@ def move_unassigned_settings(
         return settings.categories
     groups: dict[str, list[tuple[SourceMapping, SourceDisplay, dict[str, object]]]] = {}
     for raw in sources:
-        category_id, source_id = raw.get("categoryId"), raw.get("dataSourceId")
+        category_id, source_id = raw.get("categoryId"), raw.get("sourceId", raw.get("dataSourceId"))
         if not isinstance(category_id, str) or not isinstance(source_id, str):
             continue
         try:
@@ -272,3 +278,135 @@ def attribute_name(raw: dict[str, object], mapping: SourceMapping, property_id: 
         if identifier == property_id and isinstance(name := labels.get(role), str):
             return name
     return None
+
+
+def _upgrade_classification_v2(payload: dict[str, object]) -> dict[str, object]:
+    """카테고리 공통 규칙과 기존 역할별 분류를 실제 원본에 연결된 소스 규칙으로 옮긴다."""
+    settings = parse_settings(payload)
+    sources = source_documents(payload)
+    for source, raw in zip(settings.sources, sources, strict=True):
+        if "classification" in raw:
+            continue
+        column = source.classification_column
+        if column:
+            # 같은 카테고리에서도 원본 ID와 타입은 표마다 다르다.
+            rule: dict[str, object] = {
+                "property": column.property_id,
+                "kind": column.kind,
+                "name": column.label,
+                "storageId": column.id,
+                "values": dict(source.classification_values),
+            }
+            if source.classification_default is not None:
+                rule["default"] = source.classification_default
+        else:
+            role = {"meeting": "category", "task": "status", "leave": "approval"}[source.kind]
+            prop = source.properties.get(role)
+            if prop is None:
+                continue
+            label = (
+                attribute_name(raw, source, prop)
+                or {"status": "상태", "category": "일정 유형", "approval": "승인 상태"}[role]
+            )
+            rule = {"property": prop, "name": label, "kind": "status_or_select"}
+            if source.kind == "meeting":
+                titles = {"meeting": "회의", "leave": "휴가", "other": "기타"}
+                rule.update(
+                    values={k: titles[v] for k, v in source.event_types.items()}, default="기타"
+                )
+            elif source.kind == "leave":
+                rule["values"] = dict.fromkeys(source.approved_values, "승인")
+            else:
+                rule["values"] = dict.fromkeys(
+                    settings.completed_statuses.get(source.source_id, ()), "완료"
+                )
+        raw["classification"] = rule
+    categories = tuple(
+        replace(
+            item,
+            configuration=replace(
+                item.configuration,
+                classification_column=None,
+                classification_values=(),
+                classification_default=None,
+            ),
+        )
+        if item.configuration and item.configuration.classification_column
+        else item
+        for item in settings.categories
+    )
+    return {
+        **payload,
+        "classificationVersion": 2,
+        "sources": sources,
+        **({"categories": category_documents(categories)} if categories else {}),
+    }
+
+
+def _upgrade_classification_v3(
+    payload: dict[str, object], status_options: Mapping[str, tuple[str, ...]]
+) -> dict[str, object] | None:
+    """기존 카드의 암묵적인 상태 분류를 수집 소스의 편집 가능한 값으로 이전한다."""
+    if payload.get("classificationVersion") == 3:
+        return None
+    if payload.get("classificationVersion") != 2:
+        payload = _upgrade_classification_v2(payload)
+    settings = parse_settings(payload)
+    sources = source_documents(payload)
+    for source, style, raw in zip(settings.sources, settings.display, sources, strict=True):
+        config = style.category.configuration if style.category else None
+        if not (
+            source.kind == "task"
+            and config
+            and config.main_list
+            and "statusGroup" in config.main_list.fields
+        ):
+            continue
+        prop = source.properties.get("status")
+        if not prop:
+            continue
+        completed = settings.completed_statuses.get(source.source_id, ())
+        rule = raw.get("classification")
+        # v2의 자동 이전 형식만 식별한다. 직접 선택한 칼럼·이름·기본값과 해제한 연결을 보존한다.
+        if not isinstance(rule, dict) or rule != {
+            "property": prop,
+            "name": attribute_name(raw, source, prop) or "상태",
+            "kind": "status_or_select",
+            "values": dict.fromkeys(completed, "완료"),
+        }:
+            continue
+        values = dict.fromkeys(completed, "완료")
+        for name in dict.fromkeys((*completed, *status_options.get(source.source_id, ()))):
+            group = display_group(name)
+            # 완료 체크는 숨김 조건에 보존하고, 알려진 상태의 정렬 그룹은 독립시킨다.
+            if group != TaskDisplayGroup.OTHER or name not in values:
+                values[name] = STATUS_GROUP_NAMES[group]
+        raw["classification"] = {**rule, "values": values}
+    return {**payload, "classificationVersion": 3, "sources": sources}
+
+
+def upgrade_classification(
+    payload: dict[str, object], status_options: Mapping[str, tuple[str, ...]]
+) -> dict[str, object] | None:
+    """기존 값별 매핑을 동일한 결과의 단일 조건 규칙으로 한 번 이전한다."""
+    if payload.get("classificationVersion") == 4:
+        return None
+    payload = _upgrade_classification_v3(payload, status_options) or payload
+    sources = source_documents(payload)
+    for source in sources:
+        old = source.get("classification")
+        if isinstance(old, dict) and "values" in old:
+            rule = dict(old)
+            pairs = rule.pop("values")
+            rule["rules"] = [
+                {
+                    "match": "all",
+                    "result": result,
+                    "conditions": [
+                        {"property": rule["property"], "kind": rule["kind"], "value": key}
+                    ],
+                }
+                for key, result in pairs.items()
+            ]
+            source["classification"] = rule
+    return {**payload, "classificationVersion": 4, "sources": sources}

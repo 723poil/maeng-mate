@@ -8,6 +8,7 @@ from datetime import datetime
 from src.application.models import SyncRun
 from src.application.notion_links import notion_link
 from src.application.work_settings import Settings, parse_settings
+from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
 from src.domain.notification_timing import calendar_alert_expiry
 from src.domain.source_alerts import (
@@ -284,6 +285,9 @@ def record_field_alerts(
                     for field, key, _ in rule.scope_bindings
                     if key in item.display_values
                 }
+                # 일정의 최종 분류는 숨긴 칼럼과 무관하게 스냅샷에 저장된다.
+                if EVENT_CLASSIFICATION in kinds and isinstance(item, CalendarEvent):
+                    values[EVENT_CLASSIFICATION] = item.category or ""
                 if values.keys() != kinds.keys() or not rule.scope.includes(
                     values, kinds, basis.astimezone(SEOUL).date()
                 ):
@@ -426,14 +430,32 @@ def enqueue_field_alert(
             )
             if period and period.kind == "instant":
                 body = f"{datetime.fromisoformat(period.start).astimezone(SEOUL):%H:%M} · {body}"
-    logical = job
+    origin = run.source.origin if run.source is not None else run.source_id
+    # 규칙별 관측과 취소는 뷰에 남기고, 실제로 같은 원본 변경을 본 채널만 전달을 공유한다.
+    logical = fingerprint(
+        ("source-change", origin, item.id, rule.id, rule.column_id, item.source_edited_at, digest)
+    )
     if scheduled:
-        logical = notification_key(f"scheduled:{scope}:{item.id}:{digest}")
+        logical = fingerprint(("scheduled", origin, item.id, rule.id, digest, due))
+        # 이전 버전의 예약은 원본 표 ID에 속한다. 실행권과 채널 이력은 보존한다.
+        for prior in connection.execute(
+            """SELECT job.id,job.source_key,job.logical_key FROM source_alert_events AS event
+            JOIN notification_jobs AS job ON job.id=event.job_id
+            WHERE event.source_id=? AND event.item_id=? AND event.field_id=?
+            AND event.value_hash=? AND job.due_at=? AND job.logical_key<>?""",
+            (origin, item.id, rule.id, digest, due, logical),
+        ).fetchall():
+            if prior["logical_key"] == notification_key(
+                f"scheduled:{prior['source_key']}:{item.id}:{digest}"
+            ):
+                connection.execute(
+                    "UPDATE notification_jobs SET logical_key=? WHERE id=?", (logical, prior["id"])
+                )
         # 같은 시각을 다시 수집하면 대기 중인 안내만 갱신한다. 취소된 미래 예약은 복구할 수 있다.
         current = connection.execute(
             """SELECT id,state,body,notion_url FROM notification_jobs
-            WHERE logical_key=? AND state IN ('pending','delivering') LIMIT 1""",
-            (logical,),
+            WHERE logical_key=? AND source_key=? AND state IN ('pending','delivering') LIMIT 1""",
+            (logical, scope),
         ).fetchone()
         if current is not None:
             url = notion_link(item.url)
@@ -464,7 +486,7 @@ def enqueue_field_alert(
                 for row in prior
             ):
                 return
-        if logical_completed(connection, logical):
+        if logical_completed(connection, logical, scope):
             return
     connection.execute(
         """INSERT INTO notification_jobs(id,logical_key,kind,title,body,notion_url,due_at,expires_at,state,source_key)

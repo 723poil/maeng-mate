@@ -20,6 +20,7 @@ from src.application.work_settings import (
 )
 from src.application.work_settings_upgrade import settings_up_to_date, upgrade_work_settings
 from src.domain.category_event_alerts import EVENT_ALERT_TRIGGERS, EventAlertSelection
+from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.domain.preferences import (
     NOTIFICATION_TYPES,
 )
@@ -30,6 +31,7 @@ from src.infrastructure.sqlite.legacy_delivery import legacy_bindings, retire_le
 from src.infrastructure.sqlite.preference_document import read_preferences, write_preferences
 from src.infrastructure.sqlite.preferences import revoke_muted_deliveries
 from src.infrastructure.sqlite.rule_delivery import category_rules, channel_messages
+from src.infrastructure.sqlite.serialization import source_fingerprint
 from src.infrastructure.sqlite.work_reader import snapshot_header, source_versions
 
 _OBSERVED_CHOICES_QUERY = """
@@ -42,6 +44,28 @@ WHERE item.source_id=? AND item.mapping_hash=? AND item.availability='present'
        OR value.key IN (SELECT value FROM json_each(?)))
 ORDER BY item.item_id
 """
+
+
+def _migration_status_options(
+    connection: sqlite3.Connection, settings: Settings
+) -> dict[str, tuple[str, ...]]:
+    """같은 상태 칼럼으로 수집한 실제 원본 이름과 저장된 선택지를 이전에 사용한다."""
+    result = {}
+    for source in settings.sources:
+        if source.kind != "task" or "status" not in source.properties:
+            continue
+        # 구버전 DB는 스키마 선택지 없이 행에 쓰인 상태만 남아 있을 수 있다.
+        rows = connection.execute(
+            """SELECT json_extract(payload, '$.status') AS name FROM item_snapshots
+               WHERE source_id=?1 AND mapping_hash=?2 AND json_type(payload,'$.status')='text'
+               UNION SELECT option.value FROM source_status_options AS options
+               JOIN work_source_state AS state USING(source_id), json_each(options.options_json) AS option
+               WHERE options.source_id=?1 AND state.mapping_hash=?2 AND option.type='text'
+               ORDER BY 1""",
+            (source.source_id, source_fingerprint(source)),
+        )
+        result[source.source_id] = tuple(row[0] for row in rows if row[0].strip())
+    return result
 
 
 def read_work_settings_row(connection: sqlite3.Connection) -> tuple[int, str | bytes] | None:
@@ -137,6 +161,25 @@ class SQLiteWorkSettings:
                 header = snapshot_header(source, version)
                 if version is None or source_metadata(header, now, max_age_seconds)["stale"]:
                     continue
+                if source.kind == "meeting":
+                    # 표시용 칼럼이 없어도 수집 시 확정된 일정 분류를 조건 후보로 제공한다.
+                    labels = connection.execute(
+                        """SELECT DISTINCT json_extract(payload, '$.category') AS label
+                           FROM item_snapshots WHERE source_id=? AND mapping_hash=?
+                           AND availability='present' AND json_type(payload, '$.category')='text'
+                           AND length(trim(json_extract(payload, '$.category'))) BETWEEN 1 AND 200
+                           ORDER BY label LIMIT 100""",
+                        (source.source_id, version["mapping_hash"]),
+                    )
+                    choices = result.setdefault(EVENT_CLASSIFICATION, set())
+                    for row in labels:
+                        if len(choices) >= 100 or count >= 1000:
+                            break
+                        if row["label"] not in choices:
+                            choices.add(row["label"])
+                            count += 1
+                    if count >= 1000:
+                        break
                 columns = tuple(
                     column
                     for column in source.storage_layout
@@ -198,7 +241,7 @@ class SQLiteWorkSettings:
                 # 파일보다 최근인 화면 저장값을 우선하고 이전 응답의 버전보다 높인다.
                 revision = max(revision, legacy["revision"] + 1)
                 for source, mapping in zip(sources, settings.sources, strict=True):
-                    source["dataSourceId"] = mapping.source_id
+                    source["dataSourceId"] = mapping.origin
                     if mapping.source_id in links:
                         url = page_url(links[mapping.source_id])
                         if url is None:
@@ -222,9 +265,14 @@ class SQLiteWorkSettings:
             if latest is None:
                 return None
             # 읽기 잠금을 놓은 뒤 다른 창이 저장했을 수 있어 방금 읽은 버전을 이전한다.
-            current, _ = latest
+            current, settings = latest
             preferences = read_preferences(connection, SOURCE_CHANNELS)
-            upgrade = upgrade_work_settings(current, preferences)
+            statuses = (
+                _migration_status_options(connection, settings)
+                if current.payload.get("classificationVersion") not in (3, 4)
+                else {}
+            )
+            upgrade = upgrade_work_settings(current, preferences, statuses)
             if upgrade is None:
                 return latest
             document = upgrade.document
@@ -276,14 +324,9 @@ class SQLiteWorkSettings:
             if stored is not None and stored[0].revision == revision:
                 current, before = stored
                 # 빈 초기 문서의 revision은 유지되므로 이전 직전에 읽은 편집도 완료 표식을 보존한다.
-                if (
-                    "mainListRulesVersion" not in payload
-                    and "mainListRulesVersion" in current.payload
-                ):
-                    payload = {
-                        **payload,
-                        "mainListRulesVersion": current.payload["mainListRulesVersion"],
-                    }
+                for marker in ("mainListRulesVersion", "classificationVersion"):
+                    if marker not in payload and marker in current.payload:
+                        payload = {**payload, marker: current.payload[marker]}
                 after = _write(connection, revision + 1, payload)
                 retire_changed_rules(connection, before, after)
                 retire_legacy_deliveries(

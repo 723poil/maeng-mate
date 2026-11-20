@@ -16,7 +16,7 @@ from src.infrastructure.notion.normalization import normalize_page
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.serialization import fingerprint
 from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
-from tests.fixtures.notion import OBSERVED, SOURCE, page
+from tests.fixtures.notion import OBSERVED, SOURCE, page, task_schema
 
 
 def source() -> SourceMapping:
@@ -178,6 +178,7 @@ async def test_encoded_alias_reuses_complete_property_and_preserves_snapshot(db:
 
     from src.domain.display_columns import DisplayColumn
     from src.infrastructure.notion.source import NotionSource
+    from src.infrastructure.sqlite.work_reader import SQLiteWorkReader
 
     mapping = replace(
         source(),
@@ -190,6 +191,10 @@ async def test_encoded_alias_reuses_complete_property_and_preserves_snapshot(db:
 
     def respond(request: httpx.Request) -> httpx.Response:
         """목록 한 페이지와 두 페이지로 나뉜 가상 사람 속성을 반환한다."""
+        if request.method == "GET" and request.url.path.endswith(
+            f"/data_sources/{mapping.source_id}"
+        ):
+            return httpx.Response(200, json=task_schema())
         if request.method == "POST":
             raw = page()
             props = raw["properties"]
@@ -219,6 +224,8 @@ async def test_encoded_alias_reuses_complete_property_and_preserves_snapshot(db:
         adapter = NotionSource("fixture", client, interval=0)
         result = await synchronize(mapping, adapter, store, lambda: datetime.now(UTC))
         assert result == {"status": "succeeded", "count": 1} and cursors == [None, "next"]
+        reader = SQLiteWorkReader(db)
+        assert (await reader.read_sources((mapping,)))[0].status_options == ("진행 중", "미사용")
         query = (
             "SELECT payload,semantic_hash,last_seen_run_id FROM item_snapshots WHERE source_id=?"
         )
@@ -234,3 +241,4 @@ async def test_encoded_alias_reuses_complete_property_and_preserves_snapshot(db:
         result = await synchronize(mapping, adapter, store, lambda: datetime.now(UTC))
         assert result["status"] == "failed" and cursors == [None, "next", None, "next"]
         assert await db.fetch(query, (mapping.source_id,)) == previous
+        assert (await reader.read_sources((mapping,)))[0].status_options == ("진행 중", "미사용")

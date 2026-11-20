@@ -1,11 +1,13 @@
 """업무 설정 이전 순서와 이전 후 문서 버전을 결정한다."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from src.application.alert_schema_upgrade import upgrade_alert_schema
 from src.application.category_configuration_upgrade import (
     upgrade_category_configuration,
     upgrade_category_event_alerts,
+    upgrade_classification,
 )
 from src.application.category_upgrade import upgrade_category_preferences, upgrade_legacy_categories
 from src.application.main_list_upgrade import upgrade_main_list_rules
@@ -14,6 +16,7 @@ from src.application.work_settings import (
     WorkSettingsDocument,
     is_initial_document,
     parse_settings,
+    source_documents,
 )
 from src.domain.preferences import Preferences
 
@@ -32,6 +35,10 @@ def settings_up_to_date(document: WorkSettingsDocument, settings: Settings) -> b
     categories_ready = payload.get("categoryAssignmentVersion") == 1 or not payload.get("sources")
     return (
         categories_ready
+        and all(
+            s.get("kind") != "meeting" or "defaultEventType" in s for s in source_documents(payload)
+        )
+        and payload.get("classificationVersion") == 4
         and payload.get("mainListRulesVersion") == 1
         and all(
             item.configuration is not None
@@ -43,7 +50,9 @@ def settings_up_to_date(document: WorkSettingsDocument, settings: Settings) -> b
 
 
 def upgrade_work_settings(
-    current: WorkSettingsDocument, preferences: Preferences
+    current: WorkSettingsDocument,
+    preferences: Preferences,
+    status_options: Mapping[str, tuple[str, ...]],
 ) -> WorkSettingsUpgrade | None:
     """카테고리 배정·칼럼·이벤트·메인 목록 순서로 한 버전의 결과를 만든다."""
     assignment = upgrade_legacy_categories(current.payload)
@@ -66,8 +75,20 @@ def upgrade_work_settings(
     schema = upgrade_alert_schema(payload, selected)
     if schema is not None:
         payload = schema
+    classification = upgrade_classification(payload, status_options)
+    if classification is not None:
+        payload = classification
+    sources = source_documents(payload)
+    implicit = [s for s in sources if s.get("kind") == "meeting" and "defaultEventType" not in s]
+    for source in implicit:
+        # 종전 회의 예약과 휴가 연결을 유지하면서 암묵적인 기본값만 문서에 기록한다.
+        source["defaultEventType"] = "meeting"
+    if implicit:
+        payload = {**payload, "sources": sources}
     if (
-        assignment is None
+        not implicit
+        and classification is None
+        and assignment is None
         and columns is None
         and events is None
         and main_list is None

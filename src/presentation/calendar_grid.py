@@ -224,7 +224,9 @@ class CalendarGrid:
                     extra.setContentTintColor_(NSColor.systemOrangeColor())
             items = contents.items
             if self.compact:
-                kinds = tuple(dict.fromkeys((item.kind, item.color) for item in items))
+                kinds = tuple(
+                    dict.fromkeys(color for item in items for color in item.visible_colors)
+                )
                 dots = kinds[: max(0, int((width - 10) // 8))]
                 for offset, (kind, source_color) in enumerate(dots):
                     box(cell, 8 + offset * 8, 2, 5, 5, kind_color(kind, source_color), 2.5)
@@ -233,15 +235,17 @@ class CalendarGrid:
                 shown = items[: slots - 1] if len(items) > slots else items[:slots]
                 for offset, item in enumerate(shown):
                     y = self._row_height - 43 - offset * 18
-                    box(
-                        cell,
-                        4,
-                        y,
-                        width - 8,
-                        16,
-                        kind_color(item.kind, item.color).colorWithAlphaComponent_(0.15),
-                        3,
-                    )
+                    segment = (width - 8) / len(item.visible_colors)
+                    for index, (kind, source_color) in enumerate(item.visible_colors):
+                        box(
+                            cell,
+                            4 + index * segment,
+                            y,
+                            segment,
+                            16,
+                            kind_color(kind, source_color).colorWithAlphaComponent_(0.15),
+                            3,
+                        )
                     title = (
                         item.start_at.astimezone(SEOUL).strftime("%H:%M") + " "
                         if item.start_at and not item.all_day and item.first == day

@@ -29,11 +29,17 @@ from src.domain.category_event_alerts import (
     EVENT_ALERT_TRIGGERS,
     CategoryEventAlert,
 )
-from src.domain.source_alerts import MAX_SOURCE_ALERT_RULES, SourceAlertRule
+from src.domain.source_alerts import MAX_SOURCE_ALERT_RULES, AlertDelivery, SourceAlertRule
 from src.presentation.native_views import button, card, frame, label
 
 RULE_ROW_HEIGHT = 42.0
 RULE_LIST_WIDTH = 226.0
+DELIVERY_CHOICES = (
+    ("선택 안 함", ()),
+    ("macOS 알림", ("macos",)),
+    ("Slack DM", ("slack",)),
+    ("macOS 알림과 Slack DM", ("macos", "slack")),
+)
 
 
 class AlertRuleCell(NSTableCellView):
@@ -126,36 +132,41 @@ class ColumnAlertEditor:
         self.rule_list = self._make_list(parent)
         card(parent, 254, 41, 388, 290)
         self._editor_title = label(parent, "", 268, 294, 360, bold=True)
-        label(parent, "알림 이름", 268, 248, 86)
-        self.name = self._field(359, 244, 269, "알림에 표시할 이름")
-        column_label = label(parent, "알림 받을 칼럼", 268, 211, 86)
-        self.column = self._popup(359, 207, 269, "column:")
-        self.condition = self._popup(359, 170, 269, "condition:")
+        label(parent, "알림 이름", 268, 261, 86)
+        self.name = self._field(359, 257, 269, "알림에 표시할 이름")
+        column_label = label(parent, "알림 받을 칼럼", 268, 230, 86)
+        self.column = self._popup(359, 226, 269, "column:")
+        self.condition = self._popup(359, 195, 269, "condition:")
         self._titles(
             self.condition, ["조건 선택", "값이 바뀔 때", "특정 값으로 바뀔 때", "값이 비워질 때"]
         )
-        condition_label = label(parent, "언제 보낼지", 268, 174, 86)
-        self._target_label = label(parent, "변경 후 값", 268, 138, 86)
-        self.target = self._field(359, 134, 269, "원본의 값과 같게 입력")
-        self._target_choice = self._popup(359, 131, 269, "target:")
+        condition_label = label(parent, "언제 보낼지", 268, 199, 86)
+        self._target_label = label(parent, "변경 후 값", 268, 168, 86)
+        self.target = self._field(359, 164, 269, "원본의 값과 같게 입력")
+        self._target_choice = self._popup(359, 164, 269, "target:")
+        label(parent, "알림 문구", 268, 137, 86)
+        self.message = self._field(359, 133, 269, "보낼 본문 입력")
+        label(parent, "전달 채널", 268, 106, 86)
+        self.delivery_channel = self._popup(359, 102, 269, "target:")
+        self.delivery_channel.setToolTip_("전체 및 카테고리 설정에서 허용한 채널로 보냅니다.")
         self._target_values: tuple[str, ...] = ()
         self._visible_column: CategoryColumn | None = None
         self.enabled = NSButton.checkboxWithTitle_target_action_(
             "이 규칙 사용", self._actions, "condition:"
         )
-        self.enabled.setFrame_(frame(268, 85, 183, 26))
+        self.enabled.setFrame_(frame(268, 58, 183, 26))
         parent.addSubview_(self.enabled)
-        for field in (self.name, self.target):
+        for field in (self.name, self.target, self.message):
             field.setDelegate_(self._actions)
-        self._remove = button(parent, "규칙 삭제", 522, 84, 106, self._actions, "removeRule:")
+        self._remove = button(parent, "규칙 삭제", 522, 57, 106, self._actions, "removeRule:")
         self._edit_controls: tuple[NSView, ...] = (
             column_label,
             self.column,
             condition_label,
             self.condition,
         )
-        self._event_label = label(parent, "언제 보낼지", 268, 211, 86)
-        self.event_condition = label(parent, "", 359, 211, 269)
+        self._event_label = label(parent, "언제 보낼지", 268, 230, 86)
+        self.event_condition = label(parent, "", 359, 230, 269)
         self.status = label(parent, "", 14, 14, 610, secondary=True)
         self.rule_list.setDataSource_(self._actions)
         self.rule_list.setDelegate_(self._actions)
@@ -308,6 +319,7 @@ class ColumnAlertEditor:
         self._preview = None
         rule = self._events[index]
         self.name.setStringValue_(rule.name)
+        self._fill_delivery(rule.delivery, existing=True)
         self.event_condition.setStringValue_(EVENT_ALERT_TRIGGERS[rule.trigger].condition)
         self.enabled.setState_(int(self.event_enabled(rule.trigger)))
         self._present_event(True)
@@ -386,11 +398,42 @@ class ColumnAlertEditor:
         mode = 0 if rule is None else 1 if rule.target is None else 3 if rule.target == "" else 2
         self.condition.selectItemAtIndex_(mode)
         self.enabled.setState_(int(rule is not None and rule.enabled))
+        self._fill_delivery(rule.delivery if rule else None, existing=rule is not None)
         self._load_target(rule.target if rule else None)
         self._present_event(False)
         self.render_condition()
         self.status.setStringValue_("")
         self._refresh_list(reveal_selection=True)
+
+    def _fill_delivery(self, delivery: AlertDelivery | None, *, existing: bool) -> None:
+        """새 규칙은 빈 입력으로 열고 이전 문서의 전달 방식만 별도로 표시한다."""
+        titles = [title for title, _ in DELIVERY_CHOICES]
+        index = 0
+        if delivery is not None:
+            index = next(
+                i
+                for i, (_, keys) in enumerate(DELIVERY_CHOICES)
+                if set(keys) == set(delivery.channels)
+            )
+        elif existing:
+            index = len(titles)
+            titles.append("기존 문구와 채널 유지")
+        self._titles(self.delivery_channel, titles)
+        self.delivery_channel.selectItemAtIndex_(index)
+        self.message.setStringValue_(delivery.message if delivery else "")
+
+    def _read_delivery(self) -> AlertDelivery | None:
+        """기존 동작 유지와 사용자가 명시적으로 비운 채널을 구분한다."""
+        index = self.delivery_channel.indexOfSelectedItem()
+        message = self.message.stringValue().strip()
+        if index == len(DELIVERY_CHOICES):
+            if message:
+                raise SourceSettingsError("직접 입력한 문구를 받을 채널을 선택하세요.")
+            return None
+        try:
+            return AlertDelivery(message, DELIVERY_CHOICES[index][1])
+        except ValueError as error:
+            raise SourceSettingsError(str(error)) from error
 
     def _load_target(self, value: str | None) -> None:
         """참·거짓 칼럼만 선택지를 제공하고 다른 값은 직접 입력한다."""
@@ -471,6 +514,7 @@ class ColumnAlertEditor:
             column.kind,
             target,
             self.enabled.state() == 1,
+            delivery=self._read_delivery(),
         )
 
     def _commit(self) -> None:
@@ -479,7 +523,15 @@ class ColumnAlertEditor:
             self._commit_event(self._event_index)
             return
         existing = self._rules[self._index] if self._index < len(self._rules) else None
-        if existing is None and not self.name.stringValue().strip() and self._chosen() is None:
+        if (
+            existing is None
+            and not self.name.stringValue().strip()
+            and self._chosen() is None
+            and not self.message.stringValue().strip()
+            and self.delivery_channel.indexOfSelectedItem() == 0
+            and self.condition.indexOfSelectedItem() == 0
+            and self.enabled.state() != 1
+        ):
             return
         rule = self._read_rule(existing.id if existing else str(uuid4()))
         if existing is not None:
@@ -495,10 +547,11 @@ class ColumnAlertEditor:
         name = self.name.stringValue().strip()
         if not name or len(name) > 80 or any(ord(char) < 32 for char in name):
             raise SourceSettingsError("알림 이름을 1~80자로 입력하세요.")
+        delivery = self._read_delivery()
         enabled = self.enabled.state() == 1
         if enabled != self.event_enabled(existing.trigger):
             self._event_changes[existing.trigger] = enabled
-        self._events[index] = CategoryEventAlert(existing.trigger, name)
+        self._events[index] = CategoryEventAlert(existing.trigger, name, delivery)
 
     def _commit_before_navigation(self) -> bool:
         """현재 규칙이 완성되지 않았으면 이름과 입력을 보존한다."""

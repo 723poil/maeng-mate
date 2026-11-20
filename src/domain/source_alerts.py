@@ -11,6 +11,21 @@ MAX_SOURCE_ALERT_RULES = 24
 
 
 @dataclass(frozen=True)
+class AlertDelivery:
+    """규칙에 직접 입력한 본문과 발송할 채널이다."""
+
+    message: str
+    channels: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """채널이 있는 규칙은 발신 앱이 표시할 수 있는 문구를 가져야 한다."""
+        if self.channels and not self.message.strip():
+            raise ValueError("선택한 채널에 보낼 알림 문구를 입력하세요.")
+        if len(self.message) > 300 or any(ord(char) < 32 for char in self.message):
+            raise ValueError("알림 문구를 한 줄로 300자 이내로 입력하세요.")
+
+
+@dataclass(frozen=True)
 class SourceAlertRule:
     """값 변경 전체 또는 특정 값으로의 변경을 감시한다."""
 
@@ -21,6 +36,7 @@ class SourceAlertRule:
     target: str | None = None
     enabled: bool = True
     time_only: bool = False
+    delivery: AlertDelivery | None = None
 
     @property
     def comparison_kind(self) -> str:

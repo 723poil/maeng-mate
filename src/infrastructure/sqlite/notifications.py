@@ -24,6 +24,12 @@ from src.infrastructure.sqlite.notification_deliveries import (
 )
 from src.infrastructure.sqlite.notification_keys import departure_key, notification_key
 from src.infrastructure.sqlite.preference_document import read_preferences
+from src.infrastructure.sqlite.rule_delivery import (
+    DeliveryRules,
+    channel_kinds,
+    delivery_job,
+    read_rules,
+)
 from src.infrastructure.sqlite.task_changes import task_job_current
 
 
@@ -165,6 +171,7 @@ class SQLiteNotifications:
         source_channels: Mapping[str, tuple[str, ...]] | None = None,
         source_types: Mapping[str, tuple[str, ...]] | None = None,
         source_titles: Mapping[str, Mapping[str, str]] | None = None,
+        rules_by_group: Mapping[str, DeliveryRules] | None = None,
         notification_groups: Mapping[str, str] | None = None,
     ) -> None:
         """큐 조회·발송 승인에 같은 시계를 사용한다."""
@@ -173,11 +180,25 @@ class SQLiteNotifications:
         self._source_keys = source_keys
         self._user_id = user_id
         self._channels = channels
+        self._rules_by_group = dict(rules_by_group or {})
         self._qa_scopes = qa_scopes
         self._source_channels = dict(source_channels or {})
         self._source_types = dict(source_types or {})
         self._source_titles = dict(source_titles or {})
         self._notification_groups = dict(notification_groups or {})
+
+    def _rules_for(
+        self, connection: sqlite3.Connection, source_key: str | None
+    ) -> DeliveryRules | None:
+        """퇴근 알림과 카테고리별 규칙을 구별해 최신 설정을 읽는다."""
+        group = self._notification_groups.get(source_key) if source_key is not None else None
+        return read_rules(connection, group, self._rules_by_group)
+
+    def _delivery_job(
+        self, connection: sqlite3.Connection, row: sqlite3.Row, token: str
+    ) -> NotificationJob:
+        """메뉴바 발송과 서버의 Slack 발송이 같은 규칙 문구를 사용하게 한다."""
+        return delivery_job(row, token, self._rules_for(connection, row["source_key"]))
 
     def _channels_for(self, key: object) -> tuple[str, ...]:
         """설정된 소스는 전역 채널과 공통인 채널만 사용할 수 있다."""
@@ -230,8 +251,11 @@ class SQLiteNotifications:
                     self._source_types.get(row["source_key"]),
                     self._notification_groups.get(row["source_key"]),
                     self._source_titles.get(row["source_key"]),
+                    self._rules_for(connection, row["source_key"]),
                 )
-            return claim_delivery(connection, now, self._source_keys, self._channels)
+            return claim_delivery(
+                connection, now, self._source_keys, self._channels, self._delivery_job
+            )
 
     async def authorize(self, identifier: str, token: str) -> bool:
         """실행권·현재 사실·최신 설정을 발송 직전에 같은 읽기로 확인한다."""
@@ -265,6 +289,7 @@ class SQLiteNotifications:
             # 만료되거나 정정된 실행권은 구독 설정과 무관하게 발송할 수 없다.
             if row is None:
                 return False
+            rules = self._rules_for(connection, row["source_key"])
             facts: dict[str, object] = dict(row)
             preferences = read_preferences(connection, self._channels)
         raw_kinds = facts["kinds"]
@@ -273,21 +298,25 @@ class SQLiteNotifications:
         kinds: object = json.loads(raw_kinds)
         if not isinstance(kinds, list):
             return False
+        if not all(isinstance(kind, str) for kind in kinds):
+            return False
         selected = tuple(kind for kind in kinds if isinstance(kind, str))
         source_key = facts["source_key"]
+        group = self._notification_groups.get(source_key) if isinstance(source_key, str) else None
         allowed_types = self._source_types.get(source_key) if isinstance(source_key, str) else None
-        if allowed_types is not None:
-            selected = tuple(kind for kind in selected if kind in allowed_types)
         channel = facts["channel"]
-        if (
-            not isinstance(channel, str)
-            or not preferences.permits(
-                channel,
-                selected,
-                self._notification_groups.get(source_key) if isinstance(source_key, str) else None,
-            )
-            or channel not in self._channels_for(source_key)
+        if not isinstance(channel, str) or channel not in self._channels_for(source_key):
+            return False
+        # 실행권을 발급한 뒤 일부만 해제돼도 이미 렌더링된 본문을 그대로 보낼 수 없다.
+        if rules is not None and (
+            selected != channel_kinds(selected, channel, rules)
+            or not all(preferences.notification_enabled(kind, group) for kind in selected)
         ):
+            return False
+        permitted = tuple(
+            kind for kind in selected if allowed_types is None or kind in allowed_types
+        )
+        if not preferences.permits(channel, permitted, group):
             return False
         if (
             facts["kind"] != "departure"
@@ -329,7 +358,7 @@ class SQLiteNotifications:
         """동일 실행권의 동시 HTTP 요청·재호출을 원자적으로 차단한다."""
         with self._database.transaction() as connection:
             row = connection.execute(
-                """SELECT d.id,d.channel,j.title,j.body,j.notion_url FROM notification_deliveries d
+                """SELECT d.id,d.channel,d.kinds,j.source_key,j.title,j.body,j.notion_url FROM notification_deliveries d
                 JOIN notification_jobs j ON j.id=d.job_id
                 WHERE d.id=? AND d.token=? AND d.channel='slack' AND d.state='delivering'
                 AND d.revoked=0 AND d.request_started_at IS NULL AND j.state='delivering'
@@ -342,14 +371,7 @@ class SQLiteNotifications:
                 "UPDATE notification_deliveries SET request_started_at=? WHERE id=?",
                 (self._now().timestamp(), identifier),
             )
-            return NotificationJob(
-                identifier,
-                token,
-                row["title"],
-                row["body"],
-                row["channel"],
-                notion_link(row["notion_url"]),
-            )
+            return self._delivery_job(connection, row, token)
 
     async def complete_slack(self, identifier: str, token: str, result: str) -> None:
         """영속 표식을 얻은 서버만 실제 결과를 확정한다."""

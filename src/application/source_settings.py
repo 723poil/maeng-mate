@@ -28,7 +28,7 @@ from src.application.work_settings import (
 from src.domain.category_event_alerts import EVENT_ALERT_TRIGGERS, EventAlertSelection
 from src.domain.display_columns import TITLE_COLUMN_TYPES
 from src.domain.models import SourceKind, SourceMapping, WorkItem
-from src.domain.source_alerts import is_source_alert_kind
+from src.domain.source_alerts import AlertDelivery, is_source_alert_kind
 from src.domain.source_display import SourceCategory, SourceDisplay
 
 
@@ -219,7 +219,14 @@ def mapping_signature(settings: Settings | None) -> object:
         )
         for value in settings.display
     )
-    return settings.sources, settings.completed_statuses, presentation
+    # 전달 문구와 채널은 큐가 저장 시점의 규칙을 읽는다. 수집 매핑에는 영향을 주지 않는다.
+    sources = tuple(
+        replace(
+            source, alert_rules=tuple(replace(rule, delivery=None) for rule in source.alert_rules)
+        )
+        for source in settings.sources
+    )
+    return sources, settings.completed_statuses, presentation
 
 
 def validate_columns(mapping: SourceMapping, schema: SourceSchema) -> None:
@@ -323,7 +330,14 @@ class SourceSettingsService:
         current, existing = stored
         stored_sources = canonical_sources(source_documents(current.payload))
         if isinstance(value, CategoryDraft):
-            categories = allow_enabled_events(value.categories, value.event_selections)
+            previous_categories = {item.id: item for item in existing.categories}
+            categories = allow_enabled_events(
+                tuple(
+                    preserve_rule_delivery(item, previous_categories.get(item.id))
+                    for item in value.categories
+                ),
+                value.event_selections,
+            )
             validate_category_names(categories, existing.categories)
             sources = stored_sources
             removed = {item.id for item in existing.categories} - {item.id for item in categories}
@@ -397,6 +411,38 @@ class SourceSettingsService:
                 raise SourceSettingsError("수집할 데이터 소스를 다시 선택하세요.")
             validate_columns(source, schema)
         return self._state(*self._store.save_document(value.revision, payload))
+
+
+def preserve_rule_delivery(
+    category: SourceCategory, previous: SourceCategory | None
+) -> SourceCategory:
+    """이전 클라이언트가 생략한 전달 설정은 보존하고 새 규칙은 채널 없이 시작한다."""
+    config = category.configuration
+    if config is None:
+        return category
+    old = previous.configuration if previous else None
+    saved: dict[str, AlertDelivery | None] = {}
+    if old is not None:
+        saved.update((item.rule.id, item.rule.delivery) for item in old.alerts)
+        saved.update((event.trigger, event.delivery) for event in old.event_alerts or ())
+    empty = AlertDelivery("", ())
+    alerts = tuple(
+        replace(item, rule=replace(item.rule, delivery=saved.get(item.rule.id, empty)))
+        if item.rule.delivery is None
+        else item
+        for item in config.alerts
+    )
+    events = (
+        tuple(
+            replace(event, delivery=saved.get(event.trigger, empty))
+            if event.delivery is None
+            else event
+            for event in config.event_alerts or ()
+        )
+        if config.event_alerts is not None
+        else None
+    )
+    return replace(category, configuration=replace(config, alerts=alerts, event_alerts=events))
 
 
 def allow_enabled_events(

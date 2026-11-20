@@ -26,6 +26,7 @@ from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.field_alerts import retire_changed_rules
 from src.infrastructure.sqlite.preference_document import read_preferences, write_preferences
 from src.infrastructure.sqlite.preferences import revoke_muted_deliveries
+from src.infrastructure.sqlite.rule_delivery import category_rules, channel_messages
 
 
 def read_work_settings_row(connection: sqlite3.Connection) -> tuple[int, str | bytes] | None:
@@ -210,11 +211,45 @@ class SQLiteWorkSettings:
                     }
                 after = _write(connection, revision + 1, payload)
                 retire_changed_rules(connection, before, after)
+                revoke_changed_deliveries(connection, before, after, self._notification_groups)
                 save_event_subscriptions(
                     connection, before, after, event_selections, self._notification_groups
                 )
                 return WorkSettingsDocument(revision + 1, payload), after
         raise WorkSettingsError("conflict")
+
+
+def revoke_changed_deliveries(
+    connection: sqlite3.Connection, before: Settings, after: Settings, groups: Mapping[str, str]
+) -> None:
+    """문구·채널이 달라진 기존 실행권으로 이전 문구가 발송되지 않게 한다."""
+    updated = {item.key: item for item in after.categories}
+    for previous in before.categories:
+        current = updated.get(previous.key)
+        if previous == current:
+            continue
+        rules = category_rules(current) if current else {}
+        scopes = [scope for scope, key in groups.items() if key == previous.key]
+        if not scopes:
+            continue
+        previous_rules = category_rules(previous)
+        for channel in SOURCE_CHANNELS:
+            old = channel_messages(previous_rules, channel)
+            new = channel_messages(rules, channel)
+            changed = [kind for kind, message in old.items() if new.get(kind) != message]
+            if not changed:
+                continue
+            # 아직 실행권이 없는 논리 예약은 실제 발송 시점에 최신 규칙으로 배정한다.
+            connection.execute(
+                """UPDATE notification_deliveries AS d SET revoked=1,
+                state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END
+                WHERE channel=? AND state IN ('pending','delivering') AND revoked=0
+                AND job_id IN (SELECT id FROM notification_jobs
+                    WHERE source_key IN (SELECT value FROM json_each(?)))
+                AND EXISTS (SELECT 1 FROM json_each(d.kinds)
+                    WHERE value IN (SELECT value FROM json_each(?)))""",
+                (channel, json.dumps(scopes), json.dumps(changed)),
+            )
 
 
 def registered_events(settings: Settings) -> set[tuple[str, str]]:

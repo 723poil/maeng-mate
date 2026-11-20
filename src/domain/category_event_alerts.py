@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from src.domain.source_alerts import AlertDelivery
+
 
 @dataclass(frozen=True)
 class EventAlertOption:
@@ -30,6 +32,7 @@ class CategoryEventAlert:
 
     trigger: str
     name: str
+    delivery: AlertDelivery | None = None
 
 
 @dataclass(frozen=True)

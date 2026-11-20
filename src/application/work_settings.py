@@ -23,7 +23,7 @@ from src.domain.daily_work import WorkRules, parse_rules
 from src.domain.display_columns import DISPLAY_COLUMN_TYPES, MAX_DISPLAY_COLUMNS, DisplayColumn
 from src.domain.main_list import FIELD_KINDS, ListFilter, ListSort, MainListRules
 from src.domain.models import EventType, SourceMapping
-from src.domain.source_alerts import MAX_SOURCE_ALERT_RULES, SourceAlertRule
+from src.domain.source_alerts import MAX_SOURCE_ALERT_RULES, AlertDelivery, SourceAlertRule
 from src.domain.source_display import (
     SOURCE_CHANNELS,
     SOURCE_COLORS,
@@ -326,6 +326,24 @@ def display_columns_payload(columns: tuple[DisplayColumn, ...]) -> list[dict[str
     return [{"id": item.id, "label": item.label, "kind": item.kind} for item in columns]
 
 
+def parse_alert_delivery(value: object) -> AlertDelivery:
+    """명시적인 빈 채널을 보존하고 알림 발신에 사용할 값만 허용한다."""
+    if not isinstance(value, dict) or set(value) != {"message", "channels"}:
+        raise ValueError
+    channels = category_channels(value["channels"])
+    message = value["message"]
+    if channels is None or not isinstance(message, str):
+        raise ValueError
+    return AlertDelivery(message.strip(), channels)
+
+
+def alert_delivery_payload(delivery: AlertDelivery | None) -> dict[str, object]:
+    """기존 문서는 전달 설정을 생략해 원래 본문과 채널 선택을 유지한다."""
+    if delivery is None:
+        return {}
+    return {"delivery": {"message": delivery.message, "channels": list(delivery.channels)}}
+
+
 def parse_alert_rules(
     raw: object, kinds: tuple[str, ...] = DISPLAY_COLUMN_TYPES
 ) -> tuple[SourceAlertRule, ...]:
@@ -334,7 +352,7 @@ def parse_alert_rules(
         raise ValueError
     rules = []
     for item in raw:
-        if not isinstance(item, dict) or set(item) != {
+        if not isinstance(item, dict) or set(item) - {"delivery"} != {
             "id",
             "name",
             "columnId",
@@ -355,7 +373,15 @@ def parse_alert_rules(
             raise ValueError
         value = None if target is None else " ".join(target.split())
         rules.append(
-            SourceAlertRule(str(UUID(nonblank(item["id"]))), name, column, kind, value, enabled)
+            SourceAlertRule(
+                str(UUID(nonblank(item["id"]))),
+                name,
+                column,
+                kind,
+                value,
+                enabled,
+                delivery=parse_alert_delivery(item["delivery"]) if "delivery" in item else None,
+            )
         )
     if len({rule.id for rule in rules}) != len(rules):
         raise ValueError
@@ -372,6 +398,7 @@ def alert_rules_payload(rules: tuple[SourceAlertRule, ...]) -> list[dict[str, ob
             "columnKind": rule.column_kind,
             "target": rule.target,
             "enabled": rule.enabled,
+            **alert_delivery_payload(rule.delivery),
         }
         for rule in rules
     ]
@@ -705,7 +732,7 @@ def parse_category_event_alerts(raw: object) -> tuple[CategoryEventAlert, ...]:
         raise ValueError
     rules = []
     for item in raw:
-        if not isinstance(item, dict) or set(item) != {"trigger", "name"}:
+        if not isinstance(item, dict) or set(item) - {"delivery"} != {"trigger", "name"}:
             raise ValueError
         trigger, name = map(nonblank, (item["trigger"], item["name"]))
         if (
@@ -714,7 +741,13 @@ def parse_category_event_alerts(raw: object) -> tuple[CategoryEventAlert, ...]:
             or any(ord(char) < 32 for char in name)
         ):
             raise ValueError
-        rules.append(CategoryEventAlert(trigger, name))
+        rules.append(
+            CategoryEventAlert(
+                trigger,
+                name,
+                parse_alert_delivery(item["delivery"]) if "delivery" in item else None,
+            )
+        )
     if len({item.trigger for item in rules}) != len(rules):
         raise ValueError
     return tuple(rules)
@@ -749,7 +782,12 @@ def category_configuration_payload(value: CategoryConfiguration) -> dict[str, ob
         **(
             {
                 "eventAlerts": [
-                    {"trigger": item.trigger, "name": item.name} for item in value.event_alerts
+                    {
+                        "trigger": item.trigger,
+                        "name": item.name,
+                        **alert_delivery_payload(item.delivery),
+                    }
+                    for item in value.event_alerts
                 ]
             }
             if value.event_alerts is not None

@@ -13,6 +13,7 @@ from src.infrastructure.sqlite.notification_keys import (
     task_scope,
 )
 from src.infrastructure.sqlite.notifications import SQLiteNotifications
+from src.infrastructure.sqlite.rule_delivery import category_rules
 from src.infrastructure.sqlite.serialization import source_fingerprint
 
 
@@ -71,6 +72,9 @@ def build_notifications(
         source_types=source_types,
         source_titles=source_titles,
         notification_groups=groups,
+        rules_by_group={item.key: category_rules(item) for item in settings.categories}
+        if settings
+        else {},
         qa_scopes=tuple(qa_scopes),
     )
     return store, groups

@@ -60,3 +60,9 @@ mise run check
 - [사용 및 운영 가이드](docs/usage.md) — 메뉴바·캘린더 설정, 알림, 서비스 명령, MCP 도구
 - [아키텍처 결정 기록](docs/adr/README.md) — Notion 수집, 로컬 저장소, API와 메뉴바 앱의 역할
 - [개발 작업 지침](AGENTS.md) · [릴리스 절차](docs/adr/0010-macos-distribution.md#릴리스-브랜치와-github-actions)
+
+## 라이선스
+
+Maeng Mate의 코드와 문서는 [MIT 라이선스](LICENSE)로 배포합니다. 복사본이나 코드의 상당 부분을 재배포할 때는 저작권 표시와 라이선스 문구를 함께 제공하세요.
+
+외부 구성요소에는 각각의 라이선스가 적용됩니다. 배포 앱의 Sparkle 고지는 앱 번들의 `Contents/Resources/Sparkle-LICENSE`에, 웹사이트의 Pretendard 글꼴 고지는 [OFL.txt](site/assets/fonts/OFL.txt)에 있습니다.

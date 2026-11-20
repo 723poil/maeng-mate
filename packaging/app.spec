@@ -12,6 +12,7 @@ a = Analysis(
     pathex=[str(root)],
     binaries=[],
     datas=[
+        (str(root / 'LICENSE'), '.'),
         (str(root / 'src/assets/app-icon.svg'), 'src/assets'),
         (str(root / 'src/presentation/assets'), 'src/presentation/assets'),
         (str(root / 'src/infrastructure/skill_resources'), 'src/infrastructure/skill_resources'),

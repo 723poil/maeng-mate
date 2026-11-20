@@ -144,7 +144,10 @@ def main() -> None:
     try:
         application = NSApplication.sharedApplication()
         application.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-        if NSBundle.mainBundle().bundleIdentifier() != "local.maeng-mate.notifications":
+        if NSBundle.mainBundle().bundleIdentifier() not in {
+            "local.maeng-mate.notifications",
+            "local.maeng-mate.dev.notifications",
+        }:
             raise ValueError
         delegate = NotificationDelegate.alloc().init()
         center = UNUserNotificationCenter.currentNotificationCenter()

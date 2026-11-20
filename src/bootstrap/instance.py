@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
+from src.bootstrap.build_profile import current_profile
 from src.bootstrap.environment import ConfigError
 from src.bootstrap.executable import bundle_contents, packaged
 from src.infrastructure.private_files import write_private_file
@@ -26,7 +27,7 @@ def project_root() -> Path:
 
 def application_directory() -> Path:
     """로그인 서비스가 접근 가능한 사용자 전용 저장 위치다."""
-    return Path.home() / "Library/Application Support/MaengMate"
+    return Path.home() / "Library/Application Support" / current_profile().support_folder
 
 
 def runtime_root() -> Path:

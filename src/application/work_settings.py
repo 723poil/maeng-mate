@@ -85,6 +85,7 @@ def parse_settings(value: object) -> Settings:
             "sources",
             "categories",
             "categoryAssignmentVersion",
+            "classificationVersion",
             "mainListRulesVersion",
             "retention",
             "workRules",
@@ -97,6 +98,8 @@ def parse_settings(value: object) -> Settings:
             value.get("version") != 1
             or value.get("timezone") != "Asia/Seoul"
             or value.get("categoryAssignmentVersion") not in (None, 1)
+            or type(value.get("classificationVersion", 1)) is not int
+            or value.get("classificationVersion", 1) != 1
             or type(rules_version) is not int
             or rules_version != 1
         ):
@@ -785,12 +788,18 @@ def parse_category_configuration(raw: object) -> CategoryConfiguration:
         and (not isinstance(day, str) or day not in by_id or by_id[day].kind != "date")
     ) or type(raw["calendarVisible"]) is not bool:
         raise ValueError
+    classification_default = None
     classification_column = None
     classification_values: dict[str, str] = {}
     if "classification" in raw:
         classification = raw["classification"]
-        if not isinstance(classification, dict) or set(classification) != {"column", "values"}:
+        if not isinstance(classification, dict) or set(classification) - {"default"} != {
+            "column",
+            "values",
+        }:
             raise ValueError
+        if "default" in classification:
+            classification_default = nonblank(classification["default"])
         classification_column = nonblank(classification["column"])
         column = by_id.get(classification_column)
         values = classification["values"]
@@ -813,6 +822,7 @@ def parse_category_configuration(raw: object) -> CategoryConfiguration:
         parse_main_list(raw["mainList"], columns) if "mainList" in raw else None,
         classification_column,
         tuple(classification_values.items()),
+        classification_default,
     )
 
 
@@ -962,6 +972,11 @@ def category_configuration_payload(value: CategoryConfiguration) -> dict[str, ob
                 "classification": {
                     "column": value.classification_column,
                     "values": dict(value.classification_values),
+                    **(
+                        {"default": value.classification_default}
+                        if value.classification_default
+                        else {}
+                    ),
                 }
             }
             if value.classification_column
@@ -1086,7 +1101,10 @@ def resolve_category_mapping(
         if (origin := links.get(item.id)) is None:
             continue
         source_kind = origin.kind or item.legacy_kind or item.kind
-        if not accepts_column_type(source.provider, item.kind, source_kind):
+        # 실제 선택·상태 타입을 저장하지 않았던 이전 연결은 행의 메타데이터로 판별한다.
+        if not (
+            item.kind == "text" and source_kind == "status_or_select"
+        ) and not accepts_column_type(source.provider, item.kind, source_kind):
             raise ValueError
         columns[item.id] = DisplayColumn(
             item.id,
@@ -1149,6 +1167,7 @@ def resolve_category_mapping(
         if config.classification_column
         else None,
         classification_values=dict(config.classification_values),
+        classification_default=config.classification_default,
         stored_columns=storage,
         display_columns=shown if custom_display else None,
         calendar_column=columns.get(config.calendar_date) if config.calendar_date else None,
@@ -1325,13 +1344,19 @@ class WorkSettingsDocument:
 
 def empty_work_settings() -> dict[str, object]:
     """새 설치에서만 사용하는 미설정 문서를 매번 새 값으로 만든다."""
-    return {"version": 1, "timezone": "Asia/Seoul", "sources": [], "mainListRulesVersion": 1}
+    return {
+        "version": 1,
+        "timezone": "Asia/Seoul",
+        "sources": [],
+        "mainListRulesVersion": 1,
+        "classificationVersion": 1,
+    }
 
 
 def is_initial_document(document: WorkSettingsDocument) -> bool:
     """새 설치의 빈 문서만 최초 가져오기 대상으로 구분한다."""
     # 표시 규칙 버전만 없던 초기 문서도 한 번의 파일 가져오기를 허용한다.
-    normalized = {"mainListRulesVersion": 1, **document.payload}
+    normalized = {"mainListRulesVersion": 1, "classificationVersion": 1, **document.payload}
     return document.revision == 1 and normalized == empty_work_settings()
 
 

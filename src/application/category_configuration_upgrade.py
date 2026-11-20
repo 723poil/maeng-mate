@@ -1,6 +1,7 @@
 """이전 소스의 표시와 규칙을 소속 카테고리로 옮긴다."""
 
 from dataclasses import replace
+from urllib.parse import unquote
 from uuid import UUID, uuid5
 
 from src.application.category_column_types import LEGACY_CATEGORY_TYPES
@@ -181,6 +182,9 @@ def merge_members(
             (*untouched, *previous),
             base.event_alerts if base is not None else None,
             base.main_list if base is not None else None,
+            base.classification_column if base else None,
+            base.classification_values if base else (),
+            base.classification_default if base else None,
         ),
     )
 
@@ -272,3 +276,102 @@ def attribute_name(raw: dict[str, object], mapping: SourceMapping, property_id: 
         if identifier == property_id and isinstance(name := labels.get(role), str):
             return name
     return None
+
+
+def upgrade_classification(payload: dict[str, object]) -> dict[str, object] | None:
+    """일정 유형으로 명시한 원본 속성을 카테고리의 편집 가능한 기준으로 한 번 옮긴다."""
+    if payload.get("classificationVersion") == 1:
+        return None
+    settings = parse_settings(payload)
+    sources = source_documents(payload)
+    categories = []
+    for category in settings.categories:
+        config = category.configuration
+        members = [
+            (source, raw)
+            for source, raw in zip(settings.sources, sources, strict=True)
+            if raw.get("categoryId") == category.id
+            and source.kind == "meeting"
+            and "category" in source.properties
+        ]
+        if not members or config is None or config.classification_column:
+            categories.append(category)
+            continue
+        # 서로 다른 의미를 하나의 공유 규칙으로 덮지 않고 기존 소스별 설정을 유지한다.
+        if any(source.event_types != members[0][0].event_types for source, _ in members):
+            categories.append(category)
+            continue
+        matches = [
+            {
+                key
+                for key, binding in category_bindings(raw).items()
+                if unquote(binding.property_id) == unquote(source.properties["category"])
+            }
+            for source, raw in members
+        ]
+        shared = set.intersection(*matches)
+        # 기존 기준이 없던 소스에 우연히 같은 저장 칼럼이 연결돼 있으면 별도 칼럼을 쓴다.
+        other_links = {
+            key
+            for source, raw in zip(settings.sources, sources, strict=True)
+            if raw.get("categoryId") == category.id
+            and not (source.kind == "meeting" and "category" in source.properties)
+            for key in category_bindings(raw)
+        }
+        columns = config.columns
+        key = next(
+            (col.id for col in columns if col.kind == "text" and col.id in shared - other_links),
+            None,
+        )
+        inherited = list(config.inherited)
+        if key is None:
+            first, raw = members[0]
+            name = attribute_name(raw, first, first.properties["category"]) or "일정 유형"
+            key = str(uuid5(UUID(category.id), "migrated-event-classification"))
+            columns = (*columns, CategoryColumn(key, name[:80], "text", visible=False))
+            for source, raw in members:
+                links = category_bindings(raw)
+                source_id = source.properties["category"]
+                binding = next(
+                    (
+                        value
+                        for value in links.values()
+                        if unquote(value.property_id) == unquote(source_id)
+                    ),
+                    ColumnBinding(source_id, "status_or_select"),
+                )
+                links[key] = (
+                    binding if binding.kind else ColumnBinding(source_id, "status_or_select")
+                )
+                raw["columnMappings"] = column_bindings_payload(links)
+                # 숨은 이전용 칼럼을 추가해도 기존 목록의 기본 표시 모드는 유지한다.
+                option = next(
+                    (item for item in inherited if item.source_id == source.source_id), None
+                )
+                if option is None:
+                    inherited.append(CategorySourceOptions(source.source_id, hidden_columns=(key,)))
+                else:
+                    inherited[inherited.index(option)] = replace(
+                        option, hidden_columns=(*option.hidden_columns, key)
+                    )
+        names = {"meeting": "회의", "leave": "휴가", "other": "기타"}
+        rules = tuple((value, names[result]) for value, result in members[0][0].event_types.items())
+        categories.append(
+            replace(
+                category,
+                configuration=replace(
+                    config,
+                    columns=columns,
+                    classification_column=key,
+                    classification_values=rules,
+                    classification_default="기타",
+                    inherited=tuple(inherited),
+                ),
+            )
+        )
+    return {
+        **payload,
+        "classificationVersion": 1,
+        "sources": sources,
+        **({"categories": category_documents(tuple(categories))} if categories else {}),
+    }

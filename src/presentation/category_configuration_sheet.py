@@ -202,7 +202,11 @@ class CategoryConfigurationSheet:
         self._add_classification = button(
             classification, "+ 규칙 추가", 510, 325, 116, self._actions, "addClassification:"
         )
-        self._classification_list = scroll(classification, 0, 0, 642, 310)
+        self._classification_default_label = label(classification, "그 밖의 값", 10, 8, 115)
+        self._classification_default = field(
+            classification, self._original.classification_default or "", 125, 5, 490, "원본 값 유지"
+        )
+        self._classification_list = scroll(classification, 0, 38, 642, 272)
         self._source_rule_list = scroll(classification, 0, 0, 642, 310)
         rows: list[tuple[str, str]] = []
         for source, column, rules in source_rules:
@@ -481,7 +485,7 @@ class CategoryConfigurationSheet:
         self, rules: tuple[tuple[str, str], ...], *, bottom: bool = False
     ) -> None:
         """원본 값과 사용자가 정한 결과 이름을 같은 행에서 편집한다."""
-        height = max(310, len(rules) * 36 + 8)
+        height = max(272, len(rules) * 36 + 8)
         body = NSView.alloc().initWithFrame_(frame(0, 0, 622, height))
         self._classification_rows.clear()
         for index, (name, result) in enumerate(rules):
@@ -491,7 +495,7 @@ class CategoryConfigurationSheet:
             self._classification_rows.append((origin, target))
             button(body, "삭제", 532, y, 78, self._actions, "removeClassification:").setTag_(index)
         self._classification_list.setDocumentView_(body)
-        body.scrollPoint_((0, 0 if bottom else max(0, height - 310)))
+        body.scrollPoint_((0, 0 if bottom else max(0, height - 272)))
 
     def show_classification(self) -> None:
         """카테고리 기준이 비어 있으면 연결한 소스의 기존 분류를 보여 준다."""
@@ -499,6 +503,8 @@ class CategoryConfigurationSheet:
         self._source_rule_list.setHidden_(not inherited)
         self._classification_list.setHidden_(inherited)
         self._add_classification.setHidden_(inherited)
+        self._classification_default.setHidden_(inherited)
+        self._classification_default_label.setHidden_(inherited)
         self._classification_help.setStringValue_(
             "현재 소스별 일정 유형을 사용합니다. 저장 칼럼을 선택하면 공통 분류를 편집할 수 있습니다."
             if inherited
@@ -636,6 +642,9 @@ class CategoryConfigurationSheet:
             main_list=main_list,
             classification_column=self._classification_id,
             classification_values=tuple(classification_values.items()),
+            classification_default=(self._classification_default.stringValue().strip() or None)
+            if self._classification_id
+            else None,
         )
         name = self.name.stringValue().strip()
         if not name or len(name) > 80:

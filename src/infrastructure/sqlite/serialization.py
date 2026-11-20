@@ -35,6 +35,7 @@ def source_fingerprint(source: SourceMapping) -> str:
             column.value_key,
             column.kind,
             dict(source.classification_values),
+            *((source.classification_default,) if source.classification_default else ()),
         )
     if source.event_types:
         payload["event_types"] = dict(source.event_types)

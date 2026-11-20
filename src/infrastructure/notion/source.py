@@ -146,6 +146,8 @@ class NotionSource:
         fetched: set[str] = set()
         for property_id, kind in selected.items():
             prop = properties.by_id(property_id)
+            if kind == "status_or_select" and prop.get("type") in ("status", "select"):
+                continue
             if prop.get("type") != kind:
                 raise SourceError("mapping_invalid")
             if kind not in {"title", "rich_text", "people"}:

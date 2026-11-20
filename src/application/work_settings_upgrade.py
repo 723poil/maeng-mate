@@ -6,6 +6,7 @@ from src.application.alert_schema_upgrade import upgrade_alert_schema
 from src.application.category_configuration_upgrade import (
     upgrade_category_configuration,
     upgrade_category_event_alerts,
+    upgrade_classification,
 )
 from src.application.category_upgrade import upgrade_category_preferences, upgrade_legacy_categories
 from src.application.main_list_upgrade import upgrade_main_list_rules
@@ -32,6 +33,7 @@ def settings_up_to_date(document: WorkSettingsDocument, settings: Settings) -> b
     categories_ready = payload.get("categoryAssignmentVersion") == 1 or not payload.get("sources")
     return (
         categories_ready
+        and payload.get("classificationVersion") == 1
         and payload.get("mainListRulesVersion") == 1
         and all(
             item.configuration is not None
@@ -66,8 +68,12 @@ def upgrade_work_settings(
     schema = upgrade_alert_schema(payload, selected)
     if schema is not None:
         payload = schema
+    classification = upgrade_classification(payload)
+    if classification is not None:
+        payload = classification
     if (
-        assignment is None
+        classification is None
+        and assignment is None
         and columns is None
         and events is None
         and main_list is None

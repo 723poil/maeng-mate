@@ -276,14 +276,9 @@ class SQLiteWorkSettings:
             if stored is not None and stored[0].revision == revision:
                 current, before = stored
                 # 빈 초기 문서의 revision은 유지되므로 이전 직전에 읽은 편집도 완료 표식을 보존한다.
-                if (
-                    "mainListRulesVersion" not in payload
-                    and "mainListRulesVersion" in current.payload
-                ):
-                    payload = {
-                        **payload,
-                        "mainListRulesVersion": current.payload["mainListRulesVersion"],
-                    }
+                for marker in ("mainListRulesVersion", "classificationVersion"):
+                    if marker not in payload and marker in current.payload:
+                        payload = {**payload, marker: current.payload[marker]}
                 after = _write(connection, revision + 1, payload)
                 retire_changed_rules(connection, before, after)
                 retire_legacy_deliveries(

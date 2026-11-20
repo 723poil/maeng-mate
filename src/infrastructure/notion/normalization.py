@@ -142,6 +142,8 @@ def local_date(value: str) -> str:
 
 def column_text(prop: dict[str, object], kind: str) -> str:
     """원본 타입을 확인하고 이름이 없는 사람 ID는 화면에 노출하지 않는다."""
+    if kind == "status_or_select":
+        return read_status(prop) or ""
     if prop.get("type") != kind or kind not in prop:
         raise SourceError("mapping_invalid")
     raw = prop[kind]
@@ -291,7 +293,9 @@ def normalize_page(
     if column := source.classification_column:
         # 분류되지 않은 값은 원문을 유지하고 알림의 원본 비교에도 원래 값을 쓴다.
         original = column_text(props.by_id(column.property_id), column.kind)
-        classification = source.classification_values.get(original, original)
+        classification = source.classification_values.get(
+            original, source.classification_default or original
+        )
         display[column.value_key] = (
             classification if column.full_text else classification[:DISPLAY_VALUE_LIMIT]
         )

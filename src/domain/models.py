@@ -36,6 +36,7 @@ class SourceMapping:
 
     classification_column: DisplayColumn | None = None
     classification_values: Mapping[str, str] = field(default_factory=dict)
+    classification_default: str | None = None
 
     @property
     def has_person_scope(self) -> bool:

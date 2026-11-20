@@ -17,6 +17,7 @@ def install_notification_bundle(source: Path, runtime: Path) -> None:
     marker = support / "notification-build.json"
     inputs = (
         source / "packaging/notification.spec",
+        source / "src/bootstrap/build_profile.py",
         source / "src/assets/app-icon.svg",
         source / "src/infrastructure/macos_icon.py",
         source / "src/infrastructure/notification_app/agent.py",

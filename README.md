@@ -44,6 +44,8 @@ mise exec -- uv sync --locked --extra menubar
 mise run check
 ```
 
+개발용 메뉴바(D 배지)와 배포용 메뉴바를 같은 Mac에서 함께 실행할 수 있습니다. 개발용은 전용 DB와 키체인으로 시작합니다. 기존 설치의 기록과 연동은 배포용에서 이어서 사용합니다.
+
 | 작업 | 프로젝트 루트에서 실행할 명령 |
 | --- | --- |
 | 로컬 DB 준비 | `mise exec -- uv run maeng-mate migrate` |

@@ -3,6 +3,7 @@
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from src.bootstrap.build_profile import current_profile
 from src.bootstrap.instance import state_directory
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ class KeychainAccount(Enum):
 
         return MacKeychain(
             state_directory() / f"{self.account}-keychain.lock",
+            service=f"{current_profile().identifier}.credentials",
             account=self.account,
             label=f"Maeng Mate · {self.label}",
         )

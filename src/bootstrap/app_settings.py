@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from src.application.credentials import CredentialError, CredentialSecret, CredentialStore
+from src.bootstrap.build_profile import current_profile
 from src.bootstrap.environment import ConfigError, database_path
 from src.bootstrap.instance import application_directory
 from src.bootstrap.keychain import KeychainAccount
@@ -24,7 +25,7 @@ def data_environment(env: Mapping[str, str], *, profile_path: Path | None = None
     support = application_directory()
     defaults = {
         "DATABASE_PATH": str(support / "data/maeng-mate.sqlite3"),
-        "LOCAL_API_PORT": "43127",
+        "LOCAL_API_PORT": str(current_profile().port),
     }
     path = profile_path or bootstrap_path()
     try:
@@ -69,7 +70,7 @@ def data_environment(env: Mapping[str, str], *, profile_path: Path | None = None
 
 def save_bootstrap(env: Mapping[str, str], *, profile_path: Path | None = None) -> None:
     """비밀값 없이 위치·포트만 보호된 파일로 저장한다."""
-    port = env.get("LOCAL_API_PORT", "43127")
+    port = env.get("LOCAL_API_PORT", str(current_profile().port))
     db = env.get("DATABASE_PATH")
     if not isinstance(db, str) or not re.fullmatch(r"[0-9]+", port) or not 1 <= int(port) <= 65535:
         raise ConfigError("앱 시작 설정을 확인하세요.")

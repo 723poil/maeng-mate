@@ -24,3 +24,8 @@ class AppUpdates:
     latest: Callable[[], str]
     open_release: Callable[[], None]
     native: NativeUpdater | None
+
+    @property
+    def build_label(self) -> str:
+        """공개키를 내장해 자체 업데이트하는 배포본과 개발 실행본을 구분한다."""
+        return "배포용" if self.native is not None else "개발용"

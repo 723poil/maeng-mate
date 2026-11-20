@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 
 from src.bootstrap.app_settings import application_environment
+from src.bootstrap.build_profile import current_profile
 from src.bootstrap.deployment import move_active_data, prepare_runtime
 from src.bootstrap.environment import (
     ConfigError,
@@ -38,8 +39,8 @@ from src.infrastructure.macos_launchd import AgentDefinition, LaunchdError, MacL
 from src.infrastructure.sqlite.connection import Database
 
 LABELS: dict[Role, str] = {
-    "resident": "local.maeng-mate.resident",
-    "menubar": "local.maeng-mate.menubar",
+    "resident": f"{current_profile().identifier}.resident",
+    "menubar": f"{current_profile().identifier}.menubar",
 }
 
 
@@ -70,6 +71,12 @@ def preflight(*, create_admin: bool = False) -> dict[str, str]:
             raise ConfigError("앱의 실행 파일을 확인하세요. 앱을 다시 설치하세요.")
         return values
     values = application_environment({}, create_admin=create_admin)
+    if create_admin and not Path(required(values, "DATABASE_PATH")).exists():
+        # 분리 후 첫 개발 설치는 자기 저장소에만 스키마를 준비한다.
+        from src.bootstrap.packaged_app import initialize_database
+
+        with instance_lock("resident"), coordination_lock("storage"):
+            initialize_database(required(values, "DATABASE_PATH"))
     app_environment(load_runtime_environment(values))
     sync_interval(values)
     database = Database(required(values, "DATABASE_PATH"))

@@ -3,15 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f3f4f5">
+  <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Mac 메뉴바에서 Notion 업무와 회의를 확인하고 출퇴근을 기록하세요. Apple Silicon Mac용 다운로드와 설치 안내.">
   <title>Maeng Mate — 메뉴바 업무 수첩</title>
   <link rel="icon" href="assets/app-icon.svg">
   <link rel="preload" href="assets/fonts/PretendardVariable.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
+  <script src="download.js" defer></script>
 </head>
 <body id="top">
   <svg class="symbols" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="book" viewBox="0 0 24 24"><path d="M2.5 5.3c3-.4 6.2.2 9.5 2.1 3.3-1.9 6.5-2.5 9.5-2.1v13.1c-3.2-.3-6.1.3-9.5 2.2-3.4-1.9-6.3-2.5-9.5-2.2zM12 7.4v13" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="download" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-4-4 4 4 4-4M4 16v4h16v-4"/></g></symbol>
     <symbol id="zoom" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5m-13-10.5h5m-2.5-2.5v5"/></g></symbol>
     <symbol id="wifi" viewBox="0 0 24 24"><path d="M2 8q10-8 20 0M6 12q6-5 12 0m-8 4q2-2 4 0" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></symbol>
@@ -20,17 +22,28 @@
     <symbol id="chat" viewBox="0 0 24 24"><g stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round" fill="none"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-5 3v-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="M7 9h10M7 13h6"/></g></symbol>
   </svg>
   <a class="skip" href="#main">본문으로 이동</a>
-  <header class="wrap"><a class="brand" href="#top"><img src="assets/app-icon.svg" alt="">Maeng Mate</a><nav aria-label="주 메뉴"><a href="#features">사용 화면</a><a href="#install">설치 안내</a><a class="nav-download" href="https://github.com/723poil/maeng-mate/releases/download/v0.6.0/Maeng-Mate-0.6.0-macOS-arm64.dmg">다운로드</a></nav></header>
+  <header class="topbar">
+    <div class="wrap nav-inner"><a class="brand" href="#top"><svg aria-hidden="true"><use href="#book"/></svg>Maeng Mate</a>
+      <nav aria-label="주 메뉴">
+        <a class="section-link" href="#features">사용 화면</a>
+        <a class="section-link" href="#install">설치 안내</a>
+        <a class="button" data-release-download href="https://github.com/723poil/maeng-mate/releases/latest">Mac용 다운로드</a>
+        <button class="menu-toggle" popovertarget="mobile-menu" aria-label="탐색 메뉴"><span></span><span></span></button>
+      </nav>
+    </div>
+    <nav id="mobile-menu" popover aria-label="모바일 메뉴">
+      <a href="#features">사용 화면</a><a href="#install">설치 안내</a>
+    </nav>
+  </header>
   <main id="main">
-    <div class="hero-surface"><section class="hero wrap" aria-labelledby="hero-title">
+    <section class="hero" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <h1 id="hero-title">메뉴바 업무 수첩</h1>
-        <p>내 Notion 표에서 메뉴바에 표시할 열을 고르세요.<br>출퇴근도 메뉴바에서 기록합니다.</p>
-        <div class="actions"><a class="button" href="https://github.com/723poil/maeng-mate/releases/download/v0.6.0/Maeng-Mate-0.6.0-macOS-arm64.dmg"><svg aria-hidden="true"><use href="#download"/></svg>Mac용 다운로드</a></div>
+        <h1 id="hero-title">오늘의 업무를<br>Mac 메뉴바에서</h1>
+        <p>Notion 업무와 회의, 출퇴근 기록을 한곳에.</p>
+        <a class="button" data-release-download href="https://github.com/723poil/maeng-mate/releases/latest"><svg aria-hidden="true"><use href="#download"/></svg> Mac용 다운로드</a>
         <small>Apple Silicon · macOS 26 이상</small>
       </div>
-      <div class="hero-preview">
-        <div class="desktop">
+      <div class="hero-preview"><div class="desktop">
           <div class="menubar"><strong>Finder</strong><span>파일</span><span>편집</span><span>보기</span><i></i><svg aria-hidden="true"><use href="#wifi"/></svg><svg aria-hidden="true"><use href="#battery"/></svg><b>목 오후 2:30</b></div>
           <button class="behind-window" popovertarget="zoom-calendar" aria-label="뒤에 열린 캘린더 확대"><img class="glass-window" src="assets/calendar-ui.webp" width="1080" height="700" alt=""></button>
           <details class="demo" open>
@@ -38,32 +51,64 @@
             <button class="window menu-window" popovertarget="zoom-menu" aria-label="메뉴바 실제 화면 확대"><img class="glass-window" src="assets/menu-ui.webp" width="520" height="760" alt="수집 주기, 출근 시각과 퇴근 예정, 업무·QA·회의 목록이 표시된 메뉴바 패널"></button>
           </details>
           <span class="screen-caption">예시 화면</span>
+        </div></div>
+    </section>
+
+    <section class="features wrap" id="features" aria-labelledby="features-title">
+      <p class="eyebrow">사용 화면</p>
+      <h2 id="features-title">일정과 근무 기록을<br>날짜별로 살펴보세요.</h2>
+      <fieldset class="showcase">
+        <legend class="sr-only">미리 볼 화면 선택</legend>
+        <input type="radio" name="preview" id="show-calendar" checked>
+        <input type="radio" name="preview" id="show-attendance">
+        <div class="selector"><label for="show-calendar">업무 달력</label><label for="show-attendance">출퇴근 기록</label></div>
+        <figure class="calendar-pane">
+          <button class="screen" popovertarget="zoom-calendar" aria-label="업무 달력 확대">
+            <img class="glass-window" src="assets/calendar-ui.webp" width="1080" height="700" loading="lazy" alt="월간 달력과 선택한 날짜의 회의·업무 목록">
+            <span class="zoom-icon"><svg aria-hidden="true"><use href="#zoom"/></svg></span>
+          </button>
+          <figcaption>마감일이나 회의를 누르면 Notion 원본이 열립니다.</figcaption>
+        </figure>
+        <figure class="attendance-pane">
+          <button class="screen" popovertarget="zoom-attendance" aria-label="출퇴근 기록 확대">
+            <img class="glass-window" src="assets/attendance-ui.webp" width="900" height="660" loading="lazy" alt="월별 출퇴근 기록과 선택한 날짜의 근무 내역">
+            <span class="zoom-icon"><svg aria-hidden="true"><use href="#zoom"/></svg></span>
+          </button>
+          <figcaption>근무 규칙에 따라 퇴근 예정을 계산하고, 지난 기록도 날짜별로 수정할 수 있습니다.</figcaption>
+        </figure>
+      </fieldset>
+    </section>
+
+    <div class="dark-band">
+      <section class="connections wrap" aria-labelledby="connections-title">
+        <h2 id="connections-title">내가 쓰는 도구에서<br>업무를 확인하세요.</h2>
+        <div class="tiles">
+          <article><svg aria-hidden="true"><use href="#bell"/></svg><h3>Mac 알림 · Slack DM</h3><p>카테고리별로 알림 조건을 정하고 알림을 받을 곳을 고르세요.</p></article>
+          <article><svg aria-hidden="true"><use href="#chat"/></svg><h3>Codex · Claude Code</h3><p>읽기 전용 MCP로 내 업무와 회의 일정을 조회하세요.</p></article>
         </div>
-      </div>
-    </section></div>
-    <section class="features wrap" id="features" aria-label="사용 화면">
-      <div class="gallery">
-        <article><button class="screen calendar-screen" popovertarget="zoom-calendar" aria-label="캘린더 실제 화면 확대"><img class="glass-window" src="assets/calendar-ui.webp" width="1080" height="700" loading="lazy" alt="월간 달력 왼쪽에 표시할 항목, 오른쪽에 선택한 날짜의 회의와 업무가 표시된 캘린더"><span class="zoom-icon"><svg aria-hidden="true"><use href="#zoom"/></svg></span></button>
-          <h2>업무 달력</h2><p>마감일이나 회의를 누르면 Notion 원본이 열립니다.</p></article>
-        <article><button class="screen attendance-screen" popovertarget="zoom-attendance" aria-label="출퇴근 기록 실제 화면 확대"><img class="glass-window" src="assets/attendance-ui.webp" width="900" height="660" loading="lazy" alt="월별 출퇴근 기록과 선택한 날의 출근·휴가·퇴근 예정 및 수정 이력"><span class="zoom-icon"><svg aria-hidden="true"><use href="#zoom"/></svg></span></button>
-          <h2>출퇴근 기록</h2><p>설정한 근무 규칙에 따라 퇴근 예정 시각을 계산합니다. 지난 기록도 날짜별로 수정할 수 있습니다.</p></article>
-      </div>
-      <div class="integrations"><div><svg aria-hidden="true"><use href="#bell"/></svg><div><h3>알림 설정</h3><p>카테고리별로 알림 조건을 정하고, Mac 알림과 Slack DM 중 받을 곳을 고르세요.</p></div></div><div><svg aria-hidden="true"><use href="#chat"/></svg><div><h3>Codex · Claude Code</h3><p>읽기 전용 MCP로 내 업무와 회의 일정을 조회합니다.</p></div></div></div>
-    </section>
-    <section class="install wrap" id="install" aria-labelledby="install-title">
-      <div class="install-lead"><img src="assets/app-icon.svg" width="72" height="72" alt=""><h2 id="install-title">Mac에 설치하기</h2><p>Apple Silicon Mac · macOS 26 이상</p><a class="button" href="https://github.com/723poil/maeng-mate/releases/download/v0.6.0/Maeng-Mate-0.6.0-macOS-arm64.dmg"><svg aria-hidden="true"><use href="#download"/></svg>v0.6.0 DMG 다운로드</a></div>
-      <div><ol>
-        <li>DMG를 열고 <strong>Maeng Mate.app</strong>을 응용 프로그램 폴더로 옮기세요.</li>
-        <li>앱을 실행하고 메뉴바의 수첩 아이콘을 누르세요.</li>
-        <li><strong>설정 → 연동 → Notion</strong>에 토큰과 사용자 ID를 입력하세요. ‘카테고리’에서 카드를 만든 뒤 ‘수집 소스’에서 표와 열을 연결하세요.</li>
-      </ol>
-        <details class="install-note"><summary>처음 실행할 때 보안 경고가 뜬다면</summary><p>현재 버전은 Apple 공증을 받지 않았습니다. DMG와 체크섬은 <a href="https://github.com/723poil/maeng-mate/releases/tag/v0.6.0">공식 릴리스</a>에서 확인하세요. <a href="https://support.apple.com/ko-kr/102445">Apple의 보안 경고 안내</a></p></details>
-      </div>
-    </section>
+      </section>
+      <section class="install wrap" id="install" aria-labelledby="install-title">
+        <div class="section-heading"><h2 id="install-title">설치 안내</h2><a href="https://github.com/723poil/maeng-mate/blob/main/docs/usage.md">사용 가이드 보기</a></div>
+        <details name="install-steps" open><summary>어떤 Mac에 설치할 수 있나요?</summary><p>Apple Silicon을 탑재한 macOS 26 이상에서 사용할 수 있습니다.</p></details>
+        <details name="install-steps"><summary>앱을 어떻게 설치하나요?</summary><p>DMG를 열고 <strong>Maeng Mate.app</strong>을 응용 프로그램 폴더로 옮기세요. 앱을 실행하고 메뉴바의 수첩 아이콘을 누르세요.</p></details>
+        <details name="install-steps"><summary>내 Notion 표는 어떻게 연결하나요?</summary><p><strong>설정 → 연동 → Notion</strong>에 토큰과 사용자 ID를 입력하세요. ‘카테고리’에서 카드를 만든 뒤 ‘수집 소스’에서 표와 메뉴바에 표시할 열을 고르세요.</p></details>
+        <details name="install-steps"><summary>처음 실행할 때 보안 경고가 뜬다면?</summary><p>현재 버전은 Apple 공증을 받지 않았습니다. DMG와 체크섬은 <a data-release-notes href="https://github.com/723poil/maeng-mate/releases/latest">공식 릴리스</a>에서 확인하세요. <a href="https://support.apple.com/ko-kr/102445">Apple의 보안 경고 안내</a></p></details>
+      </section>
+    </div>
   </main>
-  <footer class="wrap"><a class="brand" href="#top"><img src="assets/app-icon.svg" alt="">Maeng Mate</a><div><a href="https://github.com/723poil/maeng-mate/blob/main/docs/usage.md">사용 가이드</a><a href="https://github.com/723poil/maeng-mate/releases/latest">최신 릴리스</a><a href="https://github.com/723poil/maeng-mate">GitHub</a></div></footer>
+  <footer>
+    <div class="footer-cta"><h2>Mac에 설치하기</h2><a class="button" data-release-download href="https://github.com/723poil/maeng-mate/releases/latest"><svg aria-hidden="true"><use href="#download"/></svg> <span data-release-label>DMG 다운로드</span></a></div>
+    <div class="footer-links wrap"><a class="brand" href="#top"><svg aria-hidden="true"><use href="#book"/></svg>Maeng Mate</a><nav aria-label="관련 링크"><a href="https://github.com/723poil/maeng-mate/blob/main/docs/usage.md">사용 가이드</a><a href="https://github.com/723poil/maeng-mate/releases/latest">최신 릴리스</a><a href="https://github.com/723poil/maeng-mate">GitHub</a></nav></div>
+  </footer>
   <section class="lightbox" id="zoom-menu" popover aria-labelledby="menu-title"><div class="lightbox-head"><h2 id="menu-title">메뉴바</h2><span>예시 데이터</span><button popovertarget="zoom-menu" popovertargetaction="hide" aria-label="닫기">×</button></div><div class="lightbox-stage menu-stage"><img width="520" height="760" class="glass-window" src="assets/menu-ui.webp" alt="가상 데이터로 실행한 Maeng Mate 메뉴바의 전체 화면"></div><a href="assets/menu.webp">원본 크기로 보기</a></section>
   <section class="lightbox" id="zoom-calendar" popover aria-labelledby="calendar-title"><div class="lightbox-head"><h2 id="calendar-title">캘린더</h2><span>예시 데이터</span><button popovertarget="zoom-calendar" popovertargetaction="hide" aria-label="닫기">×</button></div><div class="lightbox-stage calendar-stage"><img width="1080" height="700" class="glass-window" src="assets/calendar-ui.webp" alt="가상 일정과 출퇴근 기록을 표시한 월간 캘린더 전체 화면"></div><a href="assets/calendar.webp">원본 크기로 보기</a></section>
   <section class="lightbox" id="zoom-attendance" popover aria-labelledby="attendance-title"><div class="lightbox-head"><h2 id="attendance-title">출퇴근 기록</h2><span>예시 데이터</span><button popovertarget="zoom-attendance" popovertargetaction="hide" aria-label="닫기">×</button></div><div class="lightbox-stage attendance-stage"><img width="900" height="660" class="glass-window" src="assets/attendance-ui.webp" alt="가상 근무 내역과 선택 날짜 상세를 표시한 출퇴근 기록 전체 화면"></div><a href="assets/attendance.webp">원본 크기로 보기</a></section>
+  <script>
+    // 같은 페이지의 구역으로 이동하면 목적지를 볼 수 있도록 메뉴를 닫는다.
+    const mobileMenu = document.querySelector("#mobile-menu");
+    mobileMenu.addEventListener("click", (event) => {
+      if (event.target.closest("a")) mobileMenu.hidePopover();
+    });
+  </script>
 </body>
 </html>

@@ -30,4 +30,6 @@ Notion 표의 속성 구성과 일정 분류는 소스마다 다르다. 도중�
 
 ## 결과와 검증
 
+저장 호환성은 `tests/integration/sqlite/test_snapshots.py::test_stored_json_and_hash_remain_compatible`에서 업무·일정·휴가의 기본값과 선택 칼럼을 실제 SQLite에 저장한 뒤 JSON 바이트와 의미 해시로 확인한다. #29의 `dc5847e`에서 추가한 빈 `parent_label`·`parent_order`는 직전 저장 형식에 없으므로 검사 기대값에서도 생략한다. 모델의 `asdict` 결과를 맞추려고 저장 구현에 두 null 필드를 추가하면 기존 JSON과 해시가 달라진다. 예약 계산값 `alert_due_at` 역시 스냅샷에 포함하지 않는다.
+
 사용자는 실패 후에도 마지막 정상 자료와 지연 근거를 볼 수 있다. 보관 확인값은 수집 차단 조건으로 쓰지 않는다. `src/infrastructure/notion/`, `src/infrastructure/sqlite/snapshots.py`, `src/infrastructure/sqlite/schedules.py`, `src/application/periodic.py`에서 구현한다. 실행권 갱신과 원천 작업 회수는 `src/application/use_cases/synchronize.py`와 `SnapshotStore.renew_run` 계약으로 연결한다. 임시 저장소에서 차시 일부 실패·실행 중단·정상 복구와 재시도 예산을 확인한다. `tests/integration/sqlite/test_collection_lease.py`는 가상 원천과 주입한 시계로 수동·예약 장시간 수집, 경쟁 획득 차단, 만료 경계 인계, 이전 세대 거부, 부분 실패 보존, 갱신 저장 오류와 취소 정리를 확인한다. 실제 회사 연동과 배포 앱 검증은 별도로 수행한다.

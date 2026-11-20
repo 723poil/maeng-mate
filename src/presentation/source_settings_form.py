@@ -460,6 +460,8 @@ class SourceSettingsForm:
             return
         self._lookup_reference = self._pending_reference
         prior_id = self._schema.id if self._schema else self._original.get("dataSourceId")
+        # 조회 결과로 표 목록을 교체하기 전에 현재 폼이 저장된 표를 편집 중인지 확인한다.
+        first_saved_lookup = self._schema is None and self._uses_saved_layout()
         self._profiles = profiles
         self._set_schema_choices()
         match = next(
@@ -472,9 +474,9 @@ class SourceSettingsForm:
             0,
         )
         self.schemas.selectItemAtIndex_(1 if len(profiles) == 1 else match)
-        self.choose_schema()
+        self.choose_schema(first_saved_lookup=first_saved_lookup)
 
-    def choose_schema(self) -> None:
+    def choose_schema(self, *, first_saved_lookup: bool = False) -> None:
         """선택 표와 기존에 연결된 필드를 대조한다."""
         index = self.schemas.indexOfSelectedItem() - 1
         schema = self._profiles[index] if 0 <= index < len(self._profiles) else None
@@ -520,7 +522,7 @@ class SourceSettingsForm:
             if self._round_title is not None and previous_round is not None:
                 self._round_title.selectItemAtIndex_(previous_round)
         else:
-            self._draw_mapping()
+            self._draw_mapping(preserve_parent=first_saved_lookup and self._uses_saved_layout())
         if self._schema is not None and self._open_after_inspect:
             self._open_after_inspect = False
             self.open_column_setup()
@@ -586,7 +588,7 @@ class SourceSettingsForm:
                 return {str(name): 1 for name in values}
         return {}
 
-    def _draw_mapping(self) -> None:
+    def _draw_mapping(self, *, preserve_parent: bool = False) -> None:
         """기존 매핑에 맞는 칼럼이나 조회 안내를 표시한다."""
         restore = self._uses_saved_layout() and self._mode() == self._original.get("kind")
         raw = self._original.get("properties") if restore else None
@@ -599,7 +601,7 @@ class SourceSettingsForm:
             ):
                 selected["title"] = self._column_value(title)
         self._choices = self._default_choices() if restore else {}
-        self._draw(selected)
+        self._draw(selected, preserve_parent=preserve_parent)
 
     def _sync_parent_controls(self, preserve: bool) -> None:
         """부모 표의 숫자 칼럼을 표시하고 누락된 현재 연결도 보존한다."""
@@ -643,7 +645,13 @@ class SourceSettingsForm:
             self._parent_orders.index(selected) if selected in self._parent_orders else 0
         )
 
-    def _draw(self, selected: dict[str, str], *, preserve_scroll: bool = False) -> None:
+    def _draw(
+        self,
+        selected: dict[str, str],
+        *,
+        preserve_scroll: bool = False,
+        preserve_parent: bool = False,
+    ) -> None:
         """칼럼 종류와 상태 행 수에 맞춰 카드 높이를 계산한다."""
         offset = 0.0
         if preserve_scroll:
@@ -656,7 +664,7 @@ class SourceSettingsForm:
         self._mapping.clear()
         self._options.clear()
         self._round_title = None
-        self._sync_parent_controls(preserve_scroll)
+        self._sync_parent_controls(preserve_scroll or preserve_parent)
         self._summary(offset)
         schema = self._schema
         if schema is None:

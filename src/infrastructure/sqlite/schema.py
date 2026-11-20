@@ -3,6 +3,7 @@
 import asyncio
 import sqlite3
 
+from src.application.errors import SnapshotError
 from src.infrastructure.sqlite.connection import Database
 
 SCHEMA_VERSION = 18
@@ -122,6 +123,14 @@ def _migrate(database: Database) -> None:
     """전체 DDL을 한 쓰기 트랜잭션으로 적용한다."""
     database.prepare()
     with database.transaction() as connection:
+        # 신규 DB에는 버전 테이블이 없다. 기존 DB는 DDL 전에 같은 쓰기 잠금에서 검사한다.
+        has_versions = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_versions'"
+        ).fetchone()
+        if has_versions is not None:
+            version = connection.execute("SELECT MAX(version) FROM schema_versions").fetchone()[0]
+            if version is not None and version > SCHEMA_VERSION:
+                raise SnapshotError("database_version_newer")
         for statement in TABLES:
             connection.execute(statement)
         upgrade_notification_jobs(connection)

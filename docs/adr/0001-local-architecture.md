@@ -14,10 +14,12 @@
 - 메뉴바의 동기 로컬 HTTP 어댑터는 `src/infrastructure/local_http.py`에서 인증 헤더·프록시·리다이렉트 정책을 공유한다. 각 경로에서 제한 시간, 응답 크기와 오류 변환을 정한다. 공통 JSON 값과 하루 근무 응답은 메뉴바·MCP에서 같은 디코더로 검증한다.
 - 업무 날짜는 Asia/Seoul, 시각은 UTC로 저장한다. 날짜 전용 값은 날짜 그대로 보존한다. 알림·수집·근무 기록의 실행과 조회를 분리한다. 초기 스키마 준비와 개발용 이전은 `migrate`에서 수행한다. 테이블 생성·이전, 인덱스 생성, 버전 기록을 이 순서로 하나의 트랜잭션에서 확정한다. 설치 앱의 갱신은 [ADR 0010](0010-macos-distribution.md)을 따른다.
 
+- DB 준비 검사는 누적 `schema_versions`의 최고 버전이 현재 `SCHEMA_VERSION`과 같을 때만 업무 실행을 허용한다. 상위 버전은 최신 앱 실행을 안내하고, 미생성·빈 이력·구버전은 `migrate`를 안내한다. 명시적 마이그레이션도 쓰기 트랜잭션의 잠금을 잡은 뒤 모든 DDL보다 먼저 최고 버전을 확인해 상위 버전을 거부한다. 신규·구버전의 기존 이전 경로는 유지하며 상위 버전을 낮추지 않는다. 구현은 `src/bootstrap/storage.py`, `src/infrastructure/sqlite/schema.py`다.
+
 - SQLite v18은 목록 소스의 마지막 정상 수집에서 확인한 원본 상태 선택값을 `source_status_options`에 저장한다. 수집 행과 같은 트랜잭션에서 교체하며, 매핑이 일치할 때만 읽는다. 이전 DB의 업무 행은 그대로 두고 다음 정상 수집에서 선택값을 채운다.
 
 ## 결과와 검증
 
 별도 DB 서버와 메시지 브로커가 필요 없다. 앱·PC가 꺼졌거나 절전 상태인 동안 정시 수집과 전달은 보장되지 않는다. Notion 원본 편집·공식 근태 등록·AI 보고·보관 기간 자동 정리는 제공하지 않는다.
 
-`mise run check`로 Ruff·포맷·mypy를 검사하고 필요한 동작은 임시 DB·가상 원천과 실제 앱에서 확인한다. 기존 통합·계층 검사는 필요할 때 참고한다. 근거 구현은 `src/bootstrap/cli.py`, `src/bootstrap/resident.py`, `src/infrastructure/sqlite/connection.py`다.
+`mise run check`로 Ruff·포맷·mypy를 검사하고 필요한 동작은 임시 DB·가상 원천과 실제 앱에서 확인한다. 기존 통합·계층 검사는 필요할 때 참고한다. 버전 경계는 운영 DB와 분리한 임시 SQLite 파일에서 준비 검사·마이그레이션 거부 전후의 스키마·버전 이력·사용자 행 보존과 신규·구버전 이전을 확인한다. 근거 구현은 `src/bootstrap/cli.py`, `src/bootstrap/resident.py`, `src/infrastructure/sqlite/connection.py`다.

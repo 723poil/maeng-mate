@@ -197,6 +197,18 @@ def project_item(
     )
 
 
+def calendar_item_order(item: CalendarItem) -> tuple[date, bool, str, str, str, str]:
+    """종류별 한도를 적용한 뒤에도 월 응답을 같은 날짜·시각·종류 순서로 제공한다."""
+    return (
+        item.first,
+        not item.all_day,
+        item.start_at.isoformat() if item.start_at else "",
+        item.kind,
+        item.title,
+        item.key,
+    )
+
+
 class CalendarService:
     """스냅샷·근무를 각각 한 번 읽고 조회만으로 월 달력을 구성한다."""
 
@@ -279,16 +291,7 @@ class CalendarService:
             # 카테고리 필터를 바꿀 때 원래 색상과 상세를 복원할 수 있도록 모든 후보를 보관한다.
             variants.sort(key=lambda item: (item.category_key or "", item.key))
             projected.append(replace(variants[0], alternatives=tuple(variants[1:])))
-        projected.sort(
-            key=lambda item: (
-                item.first,
-                not item.all_day,
-                item.start_at.isoformat() if item.start_at else "",
-                item.kind,
-                item.title,
-                item.key,
-            )
-        )
+        projected.sort(key=calendar_item_order)
         return _CalendarProjection(revision, tuple(projected), tuple(metadata))
 
     async def month(self, month: str | None) -> CalendarMonth:
@@ -321,11 +324,22 @@ class CalendarService:
                 break  # 시작 날짜순이므로 이 뒤의 일정도 격자 밖이다.
             if item.last < first:
                 continue
-            counts[item.kind] = counts.get(item.kind, 0) + 1
-            if counts[item.kind] <= 300:
+            variants = (item, *item.alternatives)
+            kinds = {variant.kind for variant in variants}
+            # 같은 일정·종류는 카테고리가 여럿이어도 한 자리만 차지한다.
+            allowed = {kind for kind in kinds if counts.get(kind, 0) < 300}
+            for kind in allowed:
+                counts[kind] = counts.get(kind, 0) + 1
+            if allowed == kinds:
                 limited.append(item)
-            else:
-                truncated = True
+                continue
+            truncated = True
+            if allowed:
+                # 대표 종류의 한도가 찼어도 다른 종류의 표시·색상은 월 응답에 남긴다.
+                remaining = [variant for variant in variants if variant.kind in allowed]
+                limited.append(replace(remaining[0], alternatives=tuple(remaining[1:])))
+        if truncated:
+            limited.sort(key=calendar_item_order)
         attendance = tuple(
             CalendarAttendance(
                 record.day,

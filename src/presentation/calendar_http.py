@@ -32,7 +32,7 @@ def detail_size_within_budget(
 
 def calendar_payload(value: CalendarMonth) -> dict[str, object]:
     """원문 근무 규칙·사용자 ID·소스 매핑 없이 필요한 달력 값만 전달한다."""
-    items = []
+    items: list[dict[str, object]] = []
     detail_budget = 900_000
     truncated = value.truncated
 
@@ -59,12 +59,7 @@ def calendar_payload(value: CalendarMonth) -> dict[str, object]:
                 truncated = True  # 월 격자와 제목은 보존하고 긴 상세만 한도를 둔다.
         return row
 
-    for item in value.items:
-        row = serialize(item)
-        if item.alternatives:
-            row["alternatives"] = [serialize(variant) for variant in item.alternatives]
-        items.append(row)
-    return {
+    result: dict[str, object] = {
         "month": value.month,
         "today": value.today.isoformat(),
         "first": value.first.isoformat(),
@@ -85,6 +80,42 @@ def calendar_payload(value: CalendarMonth) -> dict[str, object]:
             for item in value.attendance
         ],
     }
+    # ASCII 이스케이프와 공백까지 포함해 실제 HTTP 응답보다 보수적인 크기를 센다.
+    remaining = 2 * 1024 * 1024 - len(json.dumps(result)) - 1
+    for item in value.items:
+        prior_budget = detail_budget
+        row = serialize(item)
+        variants: list[dict[str, object]] = []
+        for variant in item.alternatives:
+            # 같은 상세를 다시 예산에 넣지 않고 기본 일정에서 상속한다.
+            same_fields = (variant.display_fields, variant.badge_field_indices) == (
+                item.display_fields,
+                item.badge_field_indices,
+            )
+            candidate = calendar_item_payload(variant) if same_fields else serialize(variant)
+            delta = {
+                key: val for key, val in candidate.items() if key == "key" or val != row.get(key)
+            }
+            for optional in ("category", "displayFields"):
+                if (
+                    optional in row
+                    and optional not in candidate
+                    and not (same_fields and optional == "displayFields")
+                ):
+                    delta[optional] = None
+            variants.append(delta)
+        if variants:
+            row["variantOverrides"] = variants
+        cost = len(json.dumps(row)) + (2 if items else 0)
+        if cost > remaining:
+            # 일부 카테고리만 남기면 필터가 틀리므로 한 일정 전체를 제외한다.
+            detail_budget = prior_budget
+            truncated = True
+            continue
+        remaining -= cost
+        items.append(row)
+    result["truncated"] = truncated
+    return result
 
 
 def calendar_item_payload(item: CalendarItem) -> dict[str, object]:
@@ -118,10 +149,7 @@ def create_calendar_router(service: CalendarService | None) -> APIRouter:
         if service is None:
             raise HTTPException(503, "캘린더 DB가 필요합니다.")
         try:
-            result = calendar_payload(await service.month(month))
-            if len(json.dumps(result, ensure_ascii=True)) > 2 * 1024 * 1024:
-                raise QueryReadError()
-            return result
+            return calendar_payload(await service.month(month))
         except (QueryReadError, SnapshotError):
             raise HTTPException(503, "저장된 캘린더 자료를 읽지 못했습니다.") from None
         except (ValueError, OverflowError):

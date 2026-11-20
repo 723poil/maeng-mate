@@ -102,9 +102,25 @@ def parse_calendar(value: object) -> CalendarMonth:
 
     for event in events:
         primary = parse_item(event)
-        variants = json_object(event).get("alternatives", [])
+        base = json_object(event)
+        compact = "variantOverrides" in base
+        variants = base.get("variantOverrides" if compact else "alternatives", [])
         if not isinstance(variants, list):
             raise ValueError
+        if compact:
+            # 각 후보의 고유 키는 항상 명시하고 누락한 표시 속성만 기본 행에서 상속한다.
+            if "alternatives" in base:
+                raise ValueError
+            inherited = {key: val for key, val in base.items() if key != "variantOverrides"}
+            expanded = []
+            for variant in variants:
+                override = json_object(variant)
+                if "key" not in override or override.keys() - (
+                    inherited.keys() | {"category", "displayFields"}
+                ):
+                    raise ValueError
+                expanded.append(inherited | override)
+            variants = expanded
         alternatives = tuple(parse_item(variant) for variant in variants)
         for variant in alternatives:
             if (variant.first, variant.last, variant.start_at, variant.end_at) != (

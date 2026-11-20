@@ -1,6 +1,5 @@
 """현재 본인 업무를 제한 전에 검색하고 조회 근거를 함께 반환한다."""
 
-from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import datetime
@@ -11,6 +10,7 @@ from src.application.personal_work import (
     raw_task_sort_key,
     read_personal_sources,
     relevant_items,
+    shared_source_origins,
 )
 from src.application.ports import SnapshotReader
 from src.application.task_search import TaskSearch
@@ -102,17 +102,15 @@ async def search_my_tasks(
     selection = await read_personal_sources(
         None, reader, selected, policy, now, task_filter=search.criteria.matches
     )
-    origins = {source.source_id: source.origin for source in selected.sources}
-    shared = {origin for origin, count in Counter(origins.values()).items() if count > 1}
+    shared = shared_source_origins(selected.sources)
 
     def matching_rows() -> Iterator[dict[str, object]]:
         """사람·카테고리·검색 조건을 통과한 행만 원본 표와 페이지 ID로 합친다."""
         seen: set[tuple[str, str]] = set()
         for source_id, _, row in selection.rows(selected):
-            origin = origins[source_id]
             # 한 설정에서만 조회하는 원본은 페이지 밖의 행 식별자까지 보관할 필요가 없다.
-            if origin in shared:
-                key = origin, str(row["id"])
+            if source_id in shared:
+                key = shared[source_id], str(row["id"])
                 if key in seen:
                     continue
                 seen.add(key)

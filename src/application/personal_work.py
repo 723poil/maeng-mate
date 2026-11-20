@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime
@@ -250,6 +251,13 @@ def scoped_rows(
         else:
             continue
         yield group, item, selected
+
+
+def shared_source_origins(sources: Iterable[SourceMapping]) -> dict[str, str]:
+    """같은 원본을 여러 번 읽는 경우에만 행 식별자를 보관하도록 표시 설정을 추린다."""
+    origins = {source.source_id: source.origin for source in sources}
+    counts = Counter(origins.values())
+    return {source_id: origin for source_id, origin in origins.items() if counts[origin] > 1}
 
 
 def raw_task_sort_key(row: dict[str, object]) -> tuple[bool, str, str, str]:
@@ -580,11 +588,22 @@ async def read_personal_work(
     groups = empty_groups()
     areas: dict[str, list[dict[str, object]]] = {key: [] for key in context.desktop_areas}
     preview_values: PreviewValues = {}
+    shared = shared_source_origins(batch.source for batch in selection.batches)
+    seen: set[tuple[str, str, str]] = set()
     for source_id, name, row in selection.rows(context, preview_values=preview_values):
         if event_classification is not None and row.get("category") != event_classification:
             continue
         area = areas.get(source_id)
-        (groups[name] if area is None else area).append(row)
+        if area is not None:
+            area.append(row)
+            continue
+        # 개인 목록은 필터를 통과한 원본 행을 그룹마다 한 번만 표시한다.
+        if source_id in shared:
+            key = name, shared[source_id], str(row["id"])
+            if key in seen:
+                continue
+            seen.add(key)
+        groups[name].append(row)
     for name, values in groups.items():
         if name in {"tasks", "qa"}:
             values.sort(key=raw_task_sort_key)

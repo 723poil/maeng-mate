@@ -1065,9 +1065,11 @@ class SourceSettingsForm:
             )
             if not stays_legacy:
                 value["flexible"] = True
-                if kind == "meeting":
-                    if old.get("defaultEventType") in ("meeting", "leave", "other"):
-                        value["defaultEventType"] = old["defaultEventType"]
+            if kind == "meeting":
+                # 기존 표의 기본 유형을 보존하고 새 표는 명시적으로 연결한 값만 회의로 본다.
+                value["defaultEventType"] = old.get(
+                    "defaultEventType", "meeting" if old.get("kind") == "meeting" else "other"
+                )
             choices = self._selected_options()
             if kind == "meeting" and "category" in values:
                 value["eventTypes"] = {

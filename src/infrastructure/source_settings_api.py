@@ -16,6 +16,7 @@ from src.application.source_settings import (
     parse_source_draft,
 )
 from src.application.work_settings import parse_categories
+from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.infrastructure.api_decoding import json_object, strings
 from src.infrastructure.local_http import local_client, response_json
 
@@ -69,7 +70,10 @@ class SourceSettingsApi:
         try:
             path = f"{PATH}/categories/{UUID(category_id)}/observed-choices"
             raw = json_object(self._request("GET", path))
-            return {str(UUID(key)): strings(values) for key, values in raw.items()}
+            return {
+                (key if key == EVENT_CLASSIFICATION else str(UUID(key))): strings(values)
+                for key, values in raw.items()
+            }
         except SourceSettingsError:
             raise
         except ValueError:

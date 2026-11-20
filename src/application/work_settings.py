@@ -22,6 +22,7 @@ from src.domain.category_event_alerts import (
 )
 from src.domain.daily_work import WorkRules, parse_rules
 from src.domain.display_columns import DISPLAY_COLUMN_TYPES, MAX_DISPLAY_COLUMNS, DisplayColumn
+from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.domain.main_list import FIELD_KINDS, ListFilter, ListSort, MainListRules
 from src.domain.models import ClassificationCondition, ClassificationRule, EventType, SourceMapping
 from src.domain.source_alerts import (
@@ -229,7 +230,7 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
     if event_default not in ("meeting", "other", "leave"):
         raise ValueError
     if "defaultEventType" in item:
-        if not flexible or kind != "meeting":
+        if kind != "meeting":
             raise ValueError
         allowed.add("defaultEventType")
     if "name" in item:
@@ -489,7 +490,9 @@ def parse_alert_scope(
         parse_list_filters(raw["filters"]),
         exclusions=parse_list_filters(raw.get("exclusions", [])),
     )
-    rules.validate({key: col.kind for key, col in columns.items()})
+    rules.validate(
+        {EVENT_CLASSIFICATION: "text", **{key: col.kind for key, col in columns.items()}}
+    )
     return rules if rules.fields else None
 
 
@@ -1232,13 +1235,13 @@ def resolve_category_mapping(
     shown = tuple(columns[key] for key in order if key in visible and key in columns)
     # 연결한 칼럼을 모두 숨긴 선택은 빈 표시다. 이전 알림 전용 칼럼만 있는 소스는 기본 표시를 유지한다.
     custom_display = previous.custom_display or bool(columns.keys() - previous.hidden_columns)
+    bindings = {key: (key, col.value_key, column_kinds[key]) for key, col in columns.items()}
+    if source.kind == "meeting":
+        bindings[EVENT_CLASSIFICATION] = (EVENT_CLASSIFICATION, EVENT_CLASSIFICATION, "text")
     alerts = tuple(
         replace(
             rule,
-            scope_bindings=tuple(
-                (key, columns[key].value_key, column_kinds[key])
-                for key in sorted(rule.scope.fields)
-            )
+            scope_bindings=tuple(bindings[key] for key in sorted(rule.scope.fields))
             if rule.scope
             else (),
             column_id=matched.property_id,
@@ -1249,7 +1252,7 @@ def resolve_category_mapping(
         if (matched := columns.get(rule.column_id)) is not None
         and (rule.member is None or matched.kind == "people")
         # 연결되지 않은 비교 칼럼을 빈 값으로 해석하면 적용 범위가 넓어진다.
-        and (rule.scope is None or rule.scope.fields <= columns.keys())
+        and (rule.scope is None or rule.scope.fields <= bindings.keys())
     )
     required = {rule.column_id for rule in applicable_alerts if rule.enabled}
     # 이전 표시 설정에서 숨긴 칼럼도 현재 목록 규칙이 참조하면 수집한다.

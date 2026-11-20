@@ -8,6 +8,7 @@ from datetime import datetime
 from src.application.models import SyncRun
 from src.application.notion_links import notion_link
 from src.application.work_settings import Settings, parse_settings
+from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
 from src.domain.notification_timing import calendar_alert_expiry
 from src.domain.source_alerts import (
@@ -284,6 +285,9 @@ def record_field_alerts(
                     for field, key, _ in rule.scope_bindings
                     if key in item.display_values
                 }
+                # 일정의 최종 분류는 숨긴 칼럼과 무관하게 스냅샷에 저장된다.
+                if EVENT_CLASSIFICATION in kinds and isinstance(item, CalendarEvent):
+                    values[EVENT_CLASSIFICATION] = item.category or ""
                 if values.keys() != kinds.keys() or not rule.scope.includes(
                     values, kinds, basis.astimezone(SEOUL).date()
                 ):

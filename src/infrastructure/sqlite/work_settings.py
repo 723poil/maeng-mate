@@ -20,6 +20,7 @@ from src.application.work_settings import (
 )
 from src.application.work_settings_upgrade import settings_up_to_date, upgrade_work_settings
 from src.domain.category_event_alerts import EVENT_ALERT_TRIGGERS, EventAlertSelection
+from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.domain.preferences import (
     NOTIFICATION_TYPES,
 )
@@ -160,6 +161,25 @@ class SQLiteWorkSettings:
                 header = snapshot_header(source, version)
                 if version is None or source_metadata(header, now, max_age_seconds)["stale"]:
                     continue
+                if source.kind == "meeting":
+                    # 표시용 칼럼이 없어도 수집 시 확정된 일정 분류를 조건 후보로 제공한다.
+                    labels = connection.execute(
+                        """SELECT DISTINCT json_extract(payload, '$.category') AS label
+                           FROM item_snapshots WHERE source_id=? AND mapping_hash=?
+                           AND availability='present' AND json_type(payload, '$.category')='text'
+                           AND length(trim(json_extract(payload, '$.category'))) BETWEEN 1 AND 200
+                           ORDER BY label LIMIT 100""",
+                        (source.source_id, version["mapping_hash"]),
+                    )
+                    choices = result.setdefault(EVENT_CLASSIFICATION, set())
+                    for row in labels:
+                        if len(choices) >= 100 or count >= 1000:
+                            break
+                        if row["label"] not in choices:
+                            choices.add(row["label"])
+                            count += 1
+                    if count >= 1000:
+                        break
                 columns = tuple(
                     column
                     for column in source.storage_layout

@@ -541,6 +541,7 @@ async def read_personal_work(
     context: TodayContext,
     policy: RelevancePolicy,
     now: Callable[[], datetime],
+    event_classification: str | None = None,
 ) -> PersonalWorkRows:
     """오늘 목록과 메인 카드는 소스별 표시 자료를 모두 모아 각 화면 순서로 정렬한다."""
     selection = await read_personal_sources(requested_date, reader, context, policy, now)
@@ -548,6 +549,8 @@ async def read_personal_work(
     areas: dict[str, list[dict[str, object]]] = {key: [] for key in context.desktop_areas}
     preview_values: PreviewValues = {}
     for source_id, name, row in selection.rows(context, preview_values=preview_values):
+        if event_classification is not None and row.get("category") != event_classification:
+            continue
         area = areas.get(source_id)
         (groups[name] if area is None else area).append(row)
     for name, values in groups.items():

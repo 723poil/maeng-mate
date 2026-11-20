@@ -16,6 +16,7 @@ from src.application.work_settings import (
     WorkSettingsDocument,
     is_initial_document,
     parse_settings,
+    source_documents,
 )
 from src.domain.preferences import Preferences
 
@@ -34,6 +35,9 @@ def settings_up_to_date(document: WorkSettingsDocument, settings: Settings) -> b
     categories_ready = payload.get("categoryAssignmentVersion") == 1 or not payload.get("sources")
     return (
         categories_ready
+        and all(
+            s.get("kind") != "meeting" or "defaultEventType" in s for s in source_documents(payload)
+        )
         and payload.get("classificationVersion") == 4
         and payload.get("mainListRulesVersion") == 1
         and all(
@@ -74,8 +78,16 @@ def upgrade_work_settings(
     classification = upgrade_classification(payload, status_options)
     if classification is not None:
         payload = classification
+    sources = source_documents(payload)
+    implicit = [s for s in sources if s.get("kind") == "meeting" and "defaultEventType" not in s]
+    for source in implicit:
+        # 종전 회의 예약과 휴가 연결을 유지하면서 암묵적인 기본값만 문서에 기록한다.
+        source["defaultEventType"] = "meeting"
+    if implicit:
+        payload = {**payload, "sources": sources}
     if (
-        classification is None
+        not implicit
+        and classification is None
         and assignment is None
         and columns is None
         and events is None

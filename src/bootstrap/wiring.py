@@ -231,10 +231,10 @@ def build_today_query(
     )
     policy = select_policy(environment.relevance_policy)
 
-    async def query(date: str | None) -> dict[str, object]:
+    async def query(date: str | None, event_classification: str | None = None) -> dict[str, object]:
         """같은 조회 유스케이스에 현재 시계와 저장 어댑터를 주입한다."""
         current = await with_page_links(context, page_links)
-        return await get_my_today(date, reader, current, policy, now)
+        return await get_my_today(date, reader, current, policy, now, event_classification)
 
     return query
 

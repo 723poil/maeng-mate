@@ -15,9 +15,12 @@ async def get_my_today(
     context: TodayContext,
     policy: RelevancePolicy,
     now: Callable[[], datetime],
+    event_classification: str | None = None,
 ) -> dict[str, object]:
     """오늘 조회에는 목록별 미리보기 한도와 최신 보드 주소를 적용한다."""
-    rows = await read_personal_work(requested_date, reader, context, policy, now)
+    rows = await read_personal_work(
+        requested_date, reader, context, policy, now, event_classification
+    )
     result: dict[str, object] = {
         **rows.metadata,
         "sourcePagesRevision": context.page_links_revision,

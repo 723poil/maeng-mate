@@ -12,6 +12,7 @@ from Foundation import NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
 from src.application.category_column_types import LEGACY_CATEGORY_TYPES
 from src.application.source_settings import SourceSchema, SourceSettingsClient, SourceSettingsError
 from src.domain.category_configuration import CategoryColumn
+from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.domain.main_list import MainListRules
 from src.domain.source_scope import SourceScope, field_parts
 from src.domain.work_dates import canonical_identity
@@ -116,6 +117,11 @@ class AlertSourceScopeEditor:
         self._retry = button(view, "속성 조회", 533, height - 64, 108, self._actions, "refresh:")
         self._common_page = NSView.alloc().initWithFrame_(frame(0, 0, 642, height - 36))
         view.addSubview_(self._common_page)
+        if any(EVENT_CLASSIFICATION in source.columns for source in sources):
+            columns = (
+                *columns,
+                CategoryColumn(EVENT_CLASSIFICATION, "일정 분류 (수집 소스)", "text"),
+            )
         self.common = MainListEditor(self._common_page, columns, common, changed, alert_scope=True)
         label(self._common_page, "공통 저장 칼럼 조건", 0, height - 67, 390, bold=True)
         self._observed_note = label(self._common_page, "", 150, height - 67, 317, secondary=True)

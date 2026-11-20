@@ -28,6 +28,7 @@ from src.application.work_settings import (
     parse_source,
 )
 from src.domain.category_configuration import CategoryConfiguration
+from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.domain.source_display import SourceCategory
 from src.presentation.alert_source_scope_editor import AlertSource
 from src.presentation.category_configuration_sheet import CategoryConfigurationSheet
@@ -271,7 +272,8 @@ class CategorySettingsForm:
                         str(raw.get("name") or f"소스 {len(sources) + 1}"),
                         mapping.provider,
                         mapping.round_title_property is not None,
-                        frozenset(bindings),
+                        frozenset(bindings)
+                        | ({EVENT_CLASSIFICATION} if mapping.kind == "meeting" else set()),
                         {
                             unquote(identifier): name
                             for role, identifier in mapping.properties.items()

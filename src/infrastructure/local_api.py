@@ -21,9 +21,13 @@ class LocalStatusReader:
         """리다이렉트와 프록시 환경을 사용하지 않고 원본 HTTP 오류를 숨긴다."""
         return await self._read("/v1/status")
 
-    async def read_today(self, requested_date: str | None = None) -> dict[str, object]:
+    async def read_today(
+        self, requested_date: str | None = None, event_classification: str | None = None
+    ) -> dict[str, object]:
         """사용자 ID나 소스 선택 없이 날짜만 로컬 API에 전달한다."""
-        parameters = {"date": requested_date} if requested_date is not None else None
+        parameters = {"date": requested_date} if requested_date is not None else {}
+        if event_classification is not None:
+            parameters["event_classification"] = event_classification
         return await self._read("/v1/today", parameters)
 
     async def read_workday(self) -> dict[str, object]:

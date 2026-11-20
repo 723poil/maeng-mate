@@ -34,12 +34,14 @@ def create_server(reader: McpQueryReader) -> FastMCP:
             raise ToolError("로컬 업무 앱 조회에 실패했습니다.") from None
 
     @server.tool(annotations=read_only)
-    async def get_my_today(date: str | None = None) -> dict[str, object]:
-        """본인의 업무·QA를 모든 원본 상태로 읽고, 해당일 회의·휴가·기타 일정은 취소 건을 제외한다. 날짜 생략 시 서울의 오늘이다. 휴가는 approvalState와 유형을 구별한다. 현재 저장된 자료의 stale·warnings·truncated를 확인한다."""
+    async def get_my_today(
+        date: str | None = None, event_classification: str | None = None
+    ) -> dict[str, object]:
+        """본인의 업무·QA를 모든 원본 상태로 읽고, 해당일 회의·휴가·기타 일정은 취소 건을 제외한다. event_classification을 지정하면 해당 사용자 분류의 일정만 반환한다. 날짜 생략 시 서울의 오늘이다. 휴가는 approvalState와 유형을 구별한다. 현재 저장된 자료의 stale·warnings·truncated를 확인한다."""
         try:
             if date is not None:
                 parse_day(date)
-            return await reader.read_today(date)
+            return await reader.read_today(date, event_classification)
         except InvalidDateError:
             raise ToolError("날짜는 유효한 YYYY-MM-DD 형식이어야 합니다.") from None
         except StatusReadError:

@@ -10,7 +10,7 @@ description: Maeng Mate MCP로 본인의 업무·QA·회의·휴가·출퇴근 �
 | 요청 | 도구 |
 | --- | --- |
 | 연결·수집 상태 확인 | `get_my_system_status` |
-| 해당 날짜의 업무·QA·회의·휴가·기타 일정 | `get_my_today(date?)` |
+| 해당 날짜의 업무·QA·회의·휴가·기타 일정 | `get_my_today(date?, event_classification?)` |
 | 오늘 출근·휴가·퇴근 예상 | `get_my_workday` |
 | 목록 소스의 카테고리와 상태 선택지 확인 | `list_my_task_statuses` |
 | 카테고리·제목·상태·기한으로 업무 검색 | `search_my_tasks` |

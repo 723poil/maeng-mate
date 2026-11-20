@@ -10,7 +10,7 @@ from src.domain.models import SourceMapping, WorkItem
 
 # HTTP는 구체 저장소 대신 날짜를 받는 조회 함수만 주입받는다.
 type PeriodicStatusQuery = Callable[[], Awaitable[dict[str, object]]]
-type TodayQuery = Callable[[str | None], Awaitable[dict[str, object]]]
+type TodayQuery = Callable[[str | None, str | None], Awaitable[dict[str, object]]]
 
 
 class WorkSource(Protocol):
@@ -61,7 +61,9 @@ class McpQueryReader(Protocol):
         """인증된 조회 결과만 반환하고 원문 오류는 공개하지 않는다."""
         ...
 
-    async def read_today(self, requested_date: str | None = None) -> dict[str, object]:
+    async def read_today(
+        self, requested_date: str | None = None, event_classification: str | None = None
+    ) -> dict[str, object]:
         """날짜만 전달하며 사용자·소스·권한을 입력으로 받지 않는다."""
         ...
 

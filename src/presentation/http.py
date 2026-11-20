@@ -161,7 +161,10 @@ def create_app(
 
     @app.get("/v1/today")
     async def today(
-        request: Request, date: str | None = None, desktop: bool = False
+        request: Request,
+        date: str | None = None,
+        desktop: bool = False,
+        event_classification: str | None = None,
     ) -> dict[str, object]:
         """날짜만 조회에 전달하고 설정·저장 오류를 안전하게 알린다."""
         try:
@@ -172,7 +175,7 @@ def create_app(
                 query = query_desktop_today or query
             if query is None:
                 raise HTTPException(503, detail="개인 업무 조회 설정이 필요합니다.")
-            return await query(date)
+            return await query(date, event_classification)
         except InvalidDateError:
             raise HTTPException(400, detail="날짜는 유효한 YYYY-MM-DD 형식이어야 합니다.") from None
         except QueryReadError:

@@ -36,6 +36,7 @@ def task_view(
         **({"tracksStatus": False} if not tracks_status else {}),
         "section": source.section,
         "qaRound": item.qa_round,
+        **({"parentLabel": item.parent_label} if item.parent_label is not None else {}),
         "url": item.url,
         "due": item.due.payload() if item.due else None,
         "dueToday": due_today,
@@ -139,11 +140,16 @@ def main_list_values(
             values["statusGroup"] = item.display_values.get(column.value_key, "")
         values.update(
             status=item.status or "",
+            parentLabel=item.parent_label or item.qa_round or "",
             qaRound=item.qa_round or "",
             overdue="예" if row["overdue"] else "아니요",
             dueToday="예" if row["dueToday"] else "아니요",
         )
-        if "roundNumber" in fields:
+        if item.parent_order:
+            values["parentOrder"] = item.parent_order
+        if item.parent_order and "roundNumber" in fields:
+            values["roundNumber"] = item.parent_order
+        elif "roundNumber" in fields and source.parent_order == "legacy":
             values["roundNumber"] = str(round_number(item.qa_round))
         # 완료 판정이 없는 소스는 미완료와 구별한다.
         if row["completionState"] in ("completed", "not_completed"):

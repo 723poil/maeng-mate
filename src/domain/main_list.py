@@ -13,6 +13,8 @@ FIELD_KINDS = {
     "title": "text",
     "status": "text",
     "qaRound": "text",
+    "parentLabel": "text",
+    "parentOrder": "number",
     "date": "date",
     "sourceDate": "date",
     "edited": "date",

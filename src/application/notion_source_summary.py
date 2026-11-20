@@ -19,7 +19,9 @@ def source_summary(source: SourceMapping) -> str:
     lines = [f"{category} 수집 속성"]
     if source.round_title_property is not None:
         column = " ".join(source.round_title_property.split())
-        lines.append(f"차시 ({column}): 차시별 하위 QA 표를 모아 표시")
+        lines.append("부모 항목 안의 하위 표에서 수집")
+        if source.parent_label:
+            lines.append(f"부모 제목 표시 ({column})")
     for key, label, purpose in roles:
         if key in source.properties:
             column = " ".join(source.properties[key].split())

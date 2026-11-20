@@ -245,9 +245,24 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         allowed.add("section")
     if section not in {"tasks", "qa"} or (section == "qa" and kind != "task"):
         raise ValueError
-    if "roundTitleProperty" in item:
-        allowed.add("roundTitleProperty")
-        if kind != "task" or (section != "qa" and not flexible):
+    legacy = "roundTitleProperty" in item
+    parent_key = "roundTitleProperty" if legacy else "parentTitleProperty"
+    nested = parent_key in item
+    # 이전 하위 표는 기존 제목 표시와 첫 숫자 정렬을 그대로 복원한다.
+    parent_label = item.get("parentLabel", legacy)
+    parent_order = item.get("parentOrder", "legacy" if legacy else "none")
+    number_property = item.get("parentNumberProperty")
+    if type(parent_label) is not bool or parent_order not in ("none", "legacy", "suffix", "column"):
+        raise ValueError
+    if (parent_order == "column") != ("parentNumberProperty" in item):
+        raise ValueError
+    if nested:
+        allowed.update(
+            key for key in ("parentLabel", "parentOrder", "parentNumberProperty") if key in item
+        )
+    if nested:
+        allowed.add(parent_key)
+        if kind != "task":
             raise ValueError
     allowed.update(
         key
@@ -357,7 +372,7 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         approved,
         event_types,
         "qa" if section == "qa" else "tasks",
-        nonblank(item["roundTitleProperty"]) if "roundTitleProperty" in item else None,
+        nonblank(item[parent_key]) if nested else None,
         provider,
         flexible,
         "other" if event_default == "other" else "leave" if event_default == "leave" else "meeting",
@@ -365,6 +380,9 @@ def parse_source(item: dict[str, object]) -> SourceMapping:
         if "displayColumns" in item
         else None,
         parse_alert_rules(item["alertRules"]) if "alertRules" in item else (),
+        parent_label=parent_label,
+        parent_order=str(parent_order),
+        parent_number_property=nonblank(number_property) if parent_order == "column" else None,
         classification_column=column,
         classification_values=classes,
         classification_rules=rules,

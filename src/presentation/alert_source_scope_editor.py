@@ -317,7 +317,11 @@ class AlertSourceScopeEditor:
                 )
         self._editors[key].update_columns(tuple(columns), options)
         self._notes[key] = (
-            ("차시별 하위 표의 공통 속성" if source.rounds else "연결한 표의 원본 속성")
+            (
+                "부모 항목 안에 있는 하위 표의 공통 속성"
+                if source.rounds
+                else "연결한 표의 원본 속성"
+            )
             if columns
             else "조건에 사용할 수 있는 원본 속성이 없습니다."
         )

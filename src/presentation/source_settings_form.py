@@ -30,7 +30,7 @@ from src.presentation.runtime_settings_controller import SettingsEditor
 
 type SourceEditor = SettingsEditor[CollectionDraft, SourceSettingsState]
 HEADER_HEIGHT = 232
-OPTION_HEIGHT = 155
+OPTION_HEIGHT = 221
 COLLAPSED_OPTIONS = 44
 EVENT_CHOICES = ("other", "meeting", "leave")
 COLLECTION_MODES: tuple[SourceKind, ...] = ("task", "meeting", "leave")
@@ -199,7 +199,13 @@ class SourceSettingsForm:
         self.sort = self._popup(
             self._advanced, 102, 37, 170, ["정렬 없음", "날짜순", "제목순"], "changed:"
         )
-        self.rounds = self._check("차시별 하위 표", 310, 36, 215, "structure:")
+        self.rounds = self._check("부모 항목 안의 하위 표", 310, 36, 215, "structure:")
+        self.qa = self._check("QA로 조회", 12, 7, 160, "changed:")
+        self.parent_display = self._check("부모 제목 표시", 12, 139, 185, "changed:")
+        self.parent_sort = self._popup(
+            self._advanced, 202, 137, 336, ["부모 정렬 없음"], "changed:"
+        )
+        self._parent_orders: list[tuple[str, str | None]] = []
         self._remove = button(self._advanced, "소스 제거", 425, 5, 113, self._actions, "remove:")
         self._round_title: NSPopUpButton | None = None
         self._fill({})
@@ -274,7 +280,7 @@ class SourceSettingsForm:
 
     def _section(self) -> str:
         """기존 QA 필터는 같은 목록 소스에서 계속 사용한다."""
-        return "qa" if self._mode() == "task" and self._original.get("section") == "qa" else "tasks"
+        return "qa" if self._mode() == "task" and self.qa.state() == 1 else "tasks"
 
     def _fill(self, raw: dict[str, object]) -> None:
         """저장된 건 또는 새 소스의 기본 입력으로 바꾼다."""
@@ -300,7 +306,9 @@ class SourceSettingsForm:
             titles.append("휴가 승인 조회")
         set_titles(self.mode, titles)
         self.mode.selectItemAtIndex_(1 if mode == "meeting" else 2 if mode == "leave" else 0)
-        self.rounds.setState_(int("roundTitleProperty" in raw))
+        self.rounds.setState_(int("parentTitleProperty" in raw or "roundTitleProperty" in raw))
+        self.qa.setState_(int(raw.get("section") == "qa"))
+        self._parent_orders = []
         sort = raw.get("sort", "default")
         self.sort.selectItemAtIndex_(
             SOURCE_SORTS.index(sort) if sort in SOURCE_SORTS and isinstance(sort, str) else 0
@@ -507,7 +515,7 @@ class SourceSettingsForm:
                 self.url.setStringValue_(reference)
         if same_table:
             self._choices = options
-            self._draw(roles)
+            self._draw(roles, preserve_scroll=True)
             if self._round_title is not None and previous_round is not None:
                 self._round_title.selectItemAtIndex_(previous_round)
         else:
@@ -524,7 +532,7 @@ class SourceSettingsForm:
         """저장한 표와 차시 모드가 같을 때만 이전 속성 연결을 복원한다."""
         original = self._original.get("dataSourceId")
         if not isinstance(original, str) or self._uses_rounds() != (
-            "roundTitleProperty" in self._original
+            "parentTitleProperty" in self._original or "roundTitleProperty" in self._original
         ):
             return False
         # 아직 조회하지 않은 기존 표는 그대로 편집할 수 있고, 조회 후에는 선택이 필요하다.
@@ -592,6 +600,41 @@ class SourceSettingsForm:
         self._choices = self._default_choices() if restore else {}
         self._draw(selected)
 
+    def _sync_parent_controls(self, preserve: bool) -> None:
+        """부모 표에서 실제로 읽을 수 있는 정렬 칼럼만 선택지로 제공한다."""
+        nested = self._uses_rounds()
+        self.parent_display.setHidden_(not nested)
+        self.parent_sort.setHidden_(not nested)
+        self.qa.setHidden_(self._mode() != "task")
+        if not nested:
+            return
+        saved = self._original if self._uses_saved_layout() else {}
+        number = saved.get("parentNumberProperty")
+        legacy = "roundTitleProperty" in saved
+        order = saved.get("parentOrder", "legacy" if legacy else "none")
+        selected = (str(order), number if isinstance(number, str) else None)
+        if preserve and self._parent_orders:
+            selected = self._parent_orders[self.parent_sort.indexOfSelectedItem()]
+        else:
+            self.parent_display.setState_(int(saved.get("parentLabel", legacy) is True))
+        numbers = (
+            self._schema.parent_numbers
+            if self._schema
+            else ((number,) if isinstance(number, str) else ())
+        )
+        titles = ["부모 정렬 없음", "제목에서 ‘차’ 앞 숫자 읽기"]
+        self._parent_orders = [("none", None), ("suffix", None)]
+        if order == "legacy":
+            titles.append("제목의 첫 숫자 (기존 설정)")
+            self._parent_orders.append(("legacy", None))
+        for name in numbers:
+            titles.append(f"숫자 칼럼 · {name}")
+            self._parent_orders.append(("column", name))
+        set_titles(self.parent_sort, titles)
+        self.parent_sort.selectItemAtIndex_(
+            self._parent_orders.index(selected) if selected in self._parent_orders else 0
+        )
+
     def _draw(self, selected: dict[str, str], *, preserve_scroll: bool = False) -> None:
         """칼럼 종류와 상태 행 수에 맞춰 카드 높이를 계산한다."""
         offset = 0.0
@@ -605,6 +648,7 @@ class SourceSettingsForm:
         self._mapping.clear()
         self._options.clear()
         self._round_title = None
+        self._sync_parent_controls(preserve_scroll)
         self._summary(offset)
         schema = self._schema
         if schema is None:
@@ -645,11 +689,15 @@ class SourceSettingsForm:
         label(body, "원본 칼럼 선택", 12, height - 32, 360, bold=True)
         y: float = height - 63
         if schema.round_titles:
-            label(body, "차시 제목", 12, y + 4, 108)
+            label(body, "부모 제목", 12, y + 4, 108)
             self._round_title = self._popup(
                 body, 160, y, 446, list(schema.round_titles), "changed:"
             )
-            saved = self._original.get("roundTitleProperty") if self._uses_saved_layout() else None
+            saved = (
+                self._original.get("parentTitleProperty", self._original.get("roundTitleProperty"))
+                if self._uses_saved_layout()
+                else None
+            )
             self._round_title.selectItemAtIndex_(
                 schema.round_titles.index(str(saved)) if saved in schema.round_titles else 0
             )
@@ -927,7 +975,7 @@ class SourceSettingsForm:
             if section == "qa":
                 value["section"] = section
             if self._round_title is not None:
-                value["roundTitleProperty"] = schema.round_titles[
+                value["parentTitleProperty"] = schema.round_titles[
                     self._round_title.indexOfSelectedItem()
                 ]
             # 새 표에는 이전 표의 완료·일정 분류나 레거시 필수 역할을 넘기지 않는다.
@@ -957,6 +1005,19 @@ class SourceSettingsForm:
                 completed = [name for name, index in choices.items() if index]
                 if completed or "completedStatuses" in old:
                     value["completedStatuses"] = completed
+        if section == "qa":
+            value["section"] = section
+        else:
+            value.pop("section", None)
+        if self._uses_rounds():
+            if "roundTitleProperty" in value:
+                value["parentTitleProperty"] = value.pop("roundTitleProperty")
+            mode, number = self._parent_orders[self.parent_sort.indexOfSelectedItem()]
+            value["parentOrder"] = mode
+            value["parentLabel"] = bool(self.parent_display.state())
+            value.pop("parentNumberProperty", None)
+            if number is not None:
+                value["parentNumberProperty"] = number
         value.pop("classification", None)
         if self._classification:
             value["classification"] = dict(self._classification)
@@ -1016,6 +1077,9 @@ class SourceSettingsForm:
             self.url,
             self.mode,
             self.rounds,
+            self.qa,
+            self.parent_display,
+            self.parent_sort,
             self.sort,
             *self._options.values(),
         ):

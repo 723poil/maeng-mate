@@ -56,6 +56,13 @@ def source_fingerprint(source: SourceMapping) -> str:
         payload["section"] = source.section
     if source.round_title_property is not None:
         payload["round_title_property"] = source.round_title_property
+        # 기존 소스의 매핑 해시는 유지해 이전 스냅샷도 읽을 수 있다.
+        if (source.parent_label, source.parent_order) != (True, "legacy"):
+            payload["parentMetadata"] = (
+                source.parent_label,
+                source.parent_order,
+                source.parent_number_property,
+            )
     if source.flexible:
         payload["flexible"] = True
     if source.default_event_type != "meeting":
@@ -173,6 +180,10 @@ def snapshot_payload(item: WorkItem) -> dict[str, object]:
             key: period.payload() for key, period in item.calendar_periods.items()
         }
     if isinstance(item, Task):
+        if item.parent_label is not None and item.qa_round is None:
+            payload["parent_label"] = item.parent_label
+        if item.parent_order is not None:
+            payload["parent_order"] = item.parent_order
         payload.update(
             title=item.title,
             assignee_ids=item.assignee_ids,

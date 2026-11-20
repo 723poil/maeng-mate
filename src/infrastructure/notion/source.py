@@ -1,6 +1,7 @@
 """일반 표와 차시별 하위 표의 Notion 행을 수집해 업무 모델로 변환한다."""
 
 import asyncio
+import re
 from dataclasses import replace
 from urllib.parse import quote, unquote
 
@@ -96,7 +97,7 @@ class NotionSource:
         try:
             async with asyncio.timeout(120):
                 if source.round_title_property is not None:
-                    return await self._collect_qa_rounds(source, observed_at)
+                    return await self._collect_child_tables(source, observed_at)
                 options = None
                 if source.kind == "task" and (status_id := source.properties.get("status")):
                     schema = await self._api.data_schema(source.source_id)
@@ -169,7 +170,7 @@ class NotionSource:
             prop[kind] = values
             fetched.add(key)
 
-    async def _collect_qa_rounds(self, source: SourceMapping, observed_at: str) -> CollectedWork:
+    async def _collect_child_tables(self, source: SourceMapping, observed_at: str) -> CollectedWork:
         """모든 차시의 항목을 읽은 뒤 한 부모 소스의 완전한 결과로 반환한다."""
         if source.kind != "task" or source.round_title_property is None:
             raise SourceError("mapping_invalid")
@@ -179,6 +180,12 @@ class NotionSource:
             raise SourceError("mapping_invalid")
         round_property_id = text(round_property.get("id"))
         parent = SourceMapping("task", source.source_id, {"title": round_property_id})
+        number_id = None
+        if source.parent_number_property:
+            number = record(record(schema.get("properties")).get(source.parent_number_property))
+            if number.get("type") != "number":
+                raise SourceError("mapping_invalid")
+            number_id = text(number.get("id"))
         result: list[WorkItem] = []
         seen: set[str] = set()
         seen_rounds: set[str] = set()
@@ -195,8 +202,19 @@ class NotionSource:
             seen_rounds.add(page_id)
             # 자식 행에 붙일 차시 제목도 참조·페이지네이션을 끝낸 값만 확정한다.
             parent_props = PageProperties(record(page.get("properties")))
-            await self._fill_columns(page_id, parent, parent_props)
-            round_name = column_text(parent_props.by_id(round_property_id), "title")
+            round_name = ""
+            if source.parent_label or source.parent_order in ("suffix", "legacy"):
+                await self._fill_columns(page_id, parent, parent_props)
+                round_name = column_text(parent_props.by_id(round_property_id), "title")
+            order = None
+            if number_id is not None:
+                order = column_text(parent_props.by_id(number_id), "number")
+            elif source.parent_order == "legacy" and not source.parent_label:
+                match = re.search(r"\d+", round_name)
+                order = match.group() if match else "0"
+            elif source.parent_order == "suffix":
+                match = re.search(r"(\d+)\s*차(?:시)?(?:\b|$)", round_name)
+                order = match.group(1) if match else None
             async for child_id in self._api.child_source_ids(page_id):
                 # 빈 표라도 둘 이상의 차시에 귀속된 원천으로 부모 스냅샷을 교체할 수 없다.
                 if child_id in seen_children:
@@ -275,7 +293,11 @@ class NotionSource:
                         replace(
                             item,
                             source_id=source.source_id,
-                            qa_round=round_name,
+                            qa_round=round_name
+                            if source.parent_order == "legacy" and source.parent_label
+                            else None,
+                            parent_label=round_name if source.parent_label else None,
+                            parent_order=order,
                             display_values=values,
                             calendar_periods={
                                 names[key]: period for key, period in item.calendar_periods.items()

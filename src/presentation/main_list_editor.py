@@ -29,6 +29,8 @@ FIELD_NAMES = {
     "title": "제목",
     "status": "상태",
     "qaRound": "QA 차시",
+    "parentLabel": "부모 제목",
+    "parentOrder": "부모 정렬값",
     "date": "마감일·일정 시작일",
     "sourceDate": "마감일·일정 시작일 (원본 순서)",
     "edited": "최종 수정일",

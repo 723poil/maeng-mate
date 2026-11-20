@@ -62,6 +62,10 @@ class SourceMapping:
     classification_rules: tuple[ClassificationRule, ...] = ()
     classification_default: str | None = None
 
+    parent_label: bool = False
+    parent_order: str = "none"
+    parent_number_property: str | None = None
+
     @property
     def has_person_scope(self) -> bool:
         """사람 칼럼을 비워 둔 사용자 정의 소스만 표 전체를 사용한다."""
@@ -129,6 +133,8 @@ class Task(ItemBase):
     status: str | None
     due: Period | None
     qa_round: str | None = None
+    parent_label: str | None = None
+    parent_order: str | None = None
     kind: Literal["task"] = field(default="task", init=False)
 
 

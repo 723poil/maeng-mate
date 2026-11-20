@@ -67,10 +67,10 @@ def _legacy_sorts(members: list[tuple[SourceMapping, str]]) -> tuple[ListSort, .
     tasks = [source for source in default if source.kind == "task"]
     if tasks:
         sorts.append(ListSort("statusGroup", values=STATUS_GROUP_NAMES))
-        if any(
-            source.section == "qa" or source.round_title_property is not None for source in tasks
-        ):
+        if any(source.parent_order == "legacy" for source in tasks):
             sorts.append(ListSort("roundNumber", descending=True))
+        if any(source.parent_order in ("suffix", "column") for source in tasks):
+            sorts.append(ListSort("parentOrder", descending=True))
         sorts.extend((ListSort("overdue", descending=True), ListSort("dueToday", descending=True)))
     if default:
         sorts.append(ListSort("sourceDate"))

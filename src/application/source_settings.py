@@ -105,6 +105,7 @@ class SourceSchema:
     name: str
     columns: tuple[SourceColumn, ...]
     round_titles: tuple[str, ...] = ()
+    parent_numbers: tuple[str, ...] = ()
 
 
 class SourceCatalog(Protocol):
@@ -263,7 +264,12 @@ def validate_columns(mapping: SourceMapping, schema: SourceSchema) -> None:
     """실제 스키마에 맞는 타입과 차시 속성만 저장한다."""
     rounds = mapping.round_title_property is not None
     if rounds and mapping.round_title_property not in schema.round_titles:
-        raise SourceSettingsError("차시의 제목으로 쓸 칼럼을 다시 선택하세요.")
+        raise SourceSettingsError("부모 제목 칼럼을 다시 선택하세요.")
+    if (
+        mapping.parent_number_property
+        and mapping.parent_number_property not in schema.parent_numbers
+    ):
+        raise SourceSettingsError("부모 표의 숫자 칼럼을 다시 선택하세요.")
     columns = {column.name if rounds else unquote(column.id): column for column in schema.columns}
     for role in ROLES[mapping.kind]:
         value = mapping.properties.get(role.key)
@@ -512,6 +518,10 @@ def same_source_bindings(before: SourceMapping | None, after: SourceMapping) -> 
         and before.provider == after.provider
         and before.kind == after.kind
         and before.round_title_property == after.round_title_property
+        and (
+            after.parent_number_property is None
+            or before.parent_number_property == after.parent_number_property
+        )
         and after.properties.items() <= before.properties.items()
         and source_attribute_types(after) <= source_attribute_types(before)
     )
@@ -659,6 +669,7 @@ def schema_payload(schema: SourceSchema) -> dict[str, object]:
             for item in schema.columns
         ],
         "roundTitles": list(schema.round_titles),
+        "parentNumbers": list(schema.parent_numbers),
     }
 
 
@@ -672,6 +683,9 @@ def parse_schemas(value: object) -> tuple[SourceSchema, ...]:
             raise ValueError
         columns, rounds = schema.get("columns"), schema.get("roundTitles")
         if not isinstance(columns, list) or not isinstance(rounds, list):
+            raise ValueError
+        numbers = schema.get("parentNumbers", [])
+        if not isinstance(numbers, list):
             raise ValueError
         parsed = []
         for column in columns:
@@ -695,6 +709,7 @@ def parse_schemas(value: object) -> tuple[SourceSchema, ...]:
                 nonblank(schema["name"]),
                 tuple(parsed),
                 tuple(nonblank(name) for name in rounds),
+                tuple(nonblank(name) for name in numbers),
             )
         )
     return tuple(result)

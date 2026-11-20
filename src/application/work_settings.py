@@ -99,7 +99,7 @@ def parse_settings(value: object) -> Settings:
             or value.get("timezone") != "Asia/Seoul"
             or value.get("categoryAssignmentVersion") not in (None, 1)
             or type(value.get("classificationVersion", 1)) is not int
-            or value.get("classificationVersion", 1) not in (1, 2)
+            or value.get("classificationVersion", 1) not in (1, 2, 3)
             or type(rules_version) is not int
             or rules_version != 1
         ):
@@ -1125,6 +1125,14 @@ def resolve_category_mapping(
     if links.keys() - {item.id for item in config.columns}:
         raise ValueError
     rule_fields = config.main_list.fields if config.main_list is not None else set()
+    # 업무 분류가 비교 대상이면 화면에 보이지 않는 긴 분류 이름도 전체 값으로 비교한다.
+    classification_rule = source.kind == "task" and "statusGroup" in rule_fields
+    if classification_rule and source.classification_column:
+        rule_fields.update(
+            key
+            for key, binding in links.items()
+            if binding.property_id == source.classification_column.property_id
+        )
     applicable_alerts = tuple(
         bound
         for entry in config.alerts
@@ -1204,7 +1212,7 @@ def resolve_category_mapping(
             ),
             next(
                 (col for col in columns.values() if col.property_id == classified.property_id),
-                classified,
+                replace(classified, full_text=True) if classification_rule else classified,
             ),
         )
         required.add(classified.id)
@@ -1406,16 +1414,16 @@ def empty_work_settings() -> dict[str, object]:
         "timezone": "Asia/Seoul",
         "sources": [],
         "mainListRulesVersion": 1,
-        "classificationVersion": 2,
+        "classificationVersion": 3,
     }
 
 
 def is_initial_document(document: WorkSettingsDocument) -> bool:
     """새 설치의 빈 문서만 최초 가져오기 대상으로 구분한다."""
     # 표시 규칙 버전만 없던 초기 문서도 한 번의 파일 가져오기를 허용한다.
-    normalized = {"mainListRulesVersion": 1, "classificationVersion": 2, **document.payload}
-    if normalized["classificationVersion"] == 1:
-        normalized["classificationVersion"] = 2
+    normalized = {"mainListRulesVersion": 1, "classificationVersion": 3, **document.payload}
+    if normalized["classificationVersion"] in (1, 2):
+        normalized["classificationVersion"] = 3
     return document.revision == 1 and normalized == empty_work_settings()
 
 

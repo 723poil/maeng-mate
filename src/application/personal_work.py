@@ -13,10 +13,8 @@ from src.application.ports import SnapshotReader
 from src.application.today_metadata import source_metadata, utc_string
 from src.application.today_models import MainListCard, SourceSnapshot, TodayContext
 from src.domain.display_columns import DisplayColumn, labelled_values
-from src.domain.main_list import STATUS_GROUP_NAMES
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
 from src.domain.policies import RelevancePolicy
-from src.domain.task_display import TaskDisplayGroup, TaskDisplayPolicy, display_group
 from src.domain.work_dates import SEOUL, canonical_identity, deadline_flags, meeting_on_day
 
 
@@ -96,8 +94,15 @@ def main_list_projection(source: SourceMapping, card: MainListCard | None) -> So
         return source
     fields = card.rules.fields
     visible = source.display_columns or ()
+    # 카드의 업무 분류는 표시 칼럼을 끈 소스에서도 수집된 분류값을 읽는다.
     hidden = tuple(
-        column for column in source.storage_layout if column.id in fields and column not in visible
+        column
+        for column in source.storage_layout
+        if column not in visible
+        and (
+            column.id in fields
+            or ("statusGroup" in fields and column == source.classification_column)
+        )
     )
     return replace(source, display_columns=(*visible, *hidden)) if hidden else source
 
@@ -129,11 +134,12 @@ def main_list_values(
         )
     if isinstance(item, Task):
         completed = row["completionState"] == "completed"
-        group = TaskDisplayGroup.COMPLETED if completed else display_group(item.status)
+        # 완료 판정은 완료 관련 조건에 쓰고 정렬·필터의 분류값은 소스 설정을 따른다.
+        if column := source.classification_column:
+            values["statusGroup"] = item.display_values.get(column.value_key, "")
         values.update(
             status=item.status or "",
             qaRound=item.qa_round or "",
-            statusGroup=STATUS_GROUP_NAMES[group],
             overdue="예" if row["overdue"] else "아니요",
             dueToday="예" if row["dueToday"] else "아니요",
         )
@@ -233,26 +239,6 @@ def scoped_rows(
         yield group, item, selected
 
 
-def task_sort_key(
-    item: dict[str, object], *, display_policy: TaskDisplayPolicy
-) -> tuple[int, int, bool, bool, str, str, str]:
-    """상태·최근 QA 차시를 먼저 적용하고 같은 그룹은 기한·식별자로 정렬한다."""
-    due = item["due"]
-    deadline = str(due.get("end") or due.get("start")) if isinstance(due, dict) else "9999-12-31"
-    return (
-        display_policy.priority(
-            item["status"] if isinstance(item["status"], str) else None,
-            completed=item["completionState"] == "completed",
-        ),
-        -round_number(item.get("qaRound")),
-        not bool(item["overdue"]),
-        not bool(item["dueToday"]),
-        deadline,
-        str(item["id"]),
-        str(item["sourceId"]),
-    )
-
-
 def raw_task_sort_key(row: dict[str, object]) -> tuple[bool, str, str, str]:
     """업무 의미를 추측하지 않고 마감과 안정적인 원본 키로 페이지 순서를 정한다."""
     due = row["due"]
@@ -284,15 +270,12 @@ def main_card_rows(
     positions: dict[str, int] = {}
     order = context.desktop_areas.get(source.source_id)
     if "sourceRowOrder" in fields and order in ("date", "title"):
-        # 이전 표의 순번을 요청했을 때만 당시 동률 기준을 재현하고 원본 읽기 순서는 보존한다.
+        # 업무는 날짜·제목이 같으면 읽은 순서를 유지한다. 일정은 기존 그룹 순번을 보존한다.
         rows = list(rows)
-        if source.kind == "task":
-            ordered = sorted(
-                rows, key=lambda r: task_sort_key(r[2], display_policy=context.task_display_policy)
-            )
-        else:
+        ordered = list(rows)
+        if source.kind != "task":
             groups = {name: rank for rank, name in enumerate(empty_groups())}
-            ordered = sorted(rows, key=lambda r: (groups[r[0]], event_sort_key(r[2])))
+            ordered.sort(key=lambda r: (groups[r[0]], event_sort_key(r[2])))
         if order == "title":
             ordered.sort(key=lambda r: str(r[2]["title"]).casefold())
         else:

@@ -30,6 +30,7 @@ from src.infrastructure.sqlite.legacy_delivery import legacy_bindings, retire_le
 from src.infrastructure.sqlite.preference_document import read_preferences, write_preferences
 from src.infrastructure.sqlite.preferences import revoke_muted_deliveries
 from src.infrastructure.sqlite.rule_delivery import category_rules, channel_messages
+from src.infrastructure.sqlite.serialization import source_fingerprint
 from src.infrastructure.sqlite.work_reader import snapshot_header, source_versions
 
 _OBSERVED_CHOICES_QUERY = """
@@ -42,6 +43,28 @@ WHERE item.source_id=? AND item.mapping_hash=? AND item.availability='present'
        OR value.key IN (SELECT value FROM json_each(?)))
 ORDER BY item.item_id
 """
+
+
+def _migration_status_options(
+    connection: sqlite3.Connection, settings: Settings
+) -> dict[str, tuple[str, ...]]:
+    """같은 상태 칼럼으로 수집한 실제 원본 이름과 저장된 선택지를 이전에 사용한다."""
+    result = {}
+    for source in settings.sources:
+        if source.kind != "task" or "status" not in source.properties:
+            continue
+        # 구버전 DB는 스키마 선택지 없이 행에 쓰인 상태만 남아 있을 수 있다.
+        rows = connection.execute(
+            """SELECT json_extract(payload, '$.status') AS name FROM item_snapshots
+               WHERE source_id=?1 AND mapping_hash=?2 AND json_type(payload,'$.status')='text'
+               UNION SELECT option.value FROM source_status_options AS options
+               JOIN work_source_state AS state USING(source_id), json_each(options.options_json) AS option
+               WHERE options.source_id=?1 AND state.mapping_hash=?2 AND option.type='text'
+               ORDER BY 1""",
+            (source.source_id, source_fingerprint(source)),
+        )
+        result[source.source_id] = tuple(row[0] for row in rows if row[0].strip())
+    return result
 
 
 def read_work_settings_row(connection: sqlite3.Connection) -> tuple[int, str | bytes] | None:
@@ -222,9 +245,14 @@ class SQLiteWorkSettings:
             if latest is None:
                 return None
             # 읽기 잠금을 놓은 뒤 다른 창이 저장했을 수 있어 방금 읽은 버전을 이전한다.
-            current, _ = latest
+            current, settings = latest
             preferences = read_preferences(connection, SOURCE_CHANNELS)
-            upgrade = upgrade_work_settings(current, preferences)
+            statuses = (
+                _migration_status_options(connection, settings)
+                if current.payload.get("classificationVersion") != 3
+                else {}
+            )
+            upgrade = upgrade_work_settings(current, preferences, statuses)
             if upgrade is None:
                 return latest
             document = upgrade.document

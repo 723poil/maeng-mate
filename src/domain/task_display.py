@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Protocol
 
 
 class TaskDisplayGroup(IntEnum):
@@ -42,23 +41,11 @@ def display_group(status: str | None) -> TaskDisplayGroup:
     return TaskDisplayGroup.OTHER
 
 
-class TaskDisplayPolicy(Protocol):
-    """업무 표시·정렬 규칙을 교체할 수 있는 순수 계약이다."""
-
-    def priority(self, status: str | None, *, completed: bool) -> int:
-        """동일 그룹 안의 기한 정렬보다 먼저 적용할 순서를 반환한다."""
-        ...
-
-
 @dataclass(frozen=True)
 class StatusTaskDisplayPolicy:
-    """카드의 상태 정렬과 예전 완료 업무의 보존 일수를 제공한다."""
+    """이전 메인 카드에서 사용한 완료 업무의 기본 보존 일수다."""
 
     completed_retention_days: int = 7
-
-    def priority(self, status: str | None, *, completed: bool) -> int:
-        """완료가 확인된 사용자 정의 상태도 완료 그룹에 둔다."""
-        return int(TaskDisplayGroup.COMPLETED if completed else display_group(status))
 
 
 @dataclass(frozen=True)

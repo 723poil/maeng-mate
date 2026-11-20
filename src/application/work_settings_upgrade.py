@@ -1,5 +1,6 @@
 """업무 설정 이전 순서와 이전 후 문서 버전을 결정한다."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from src.application.alert_schema_upgrade import upgrade_alert_schema
@@ -33,7 +34,7 @@ def settings_up_to_date(document: WorkSettingsDocument, settings: Settings) -> b
     categories_ready = payload.get("categoryAssignmentVersion") == 1 or not payload.get("sources")
     return (
         categories_ready
-        and payload.get("classificationVersion") == 2
+        and payload.get("classificationVersion") == 3
         and payload.get("mainListRulesVersion") == 1
         and all(
             item.configuration is not None
@@ -45,7 +46,9 @@ def settings_up_to_date(document: WorkSettingsDocument, settings: Settings) -> b
 
 
 def upgrade_work_settings(
-    current: WorkSettingsDocument, preferences: Preferences
+    current: WorkSettingsDocument,
+    preferences: Preferences,
+    status_options: Mapping[str, tuple[str, ...]],
 ) -> WorkSettingsUpgrade | None:
     """카테고리 배정·칼럼·이벤트·메인 목록 순서로 한 버전의 결과를 만든다."""
     assignment = upgrade_legacy_categories(current.payload)
@@ -68,7 +71,7 @@ def upgrade_work_settings(
     schema = upgrade_alert_schema(payload, selected)
     if schema is not None:
         payload = schema
-    classification = upgrade_classification(payload)
+    classification = upgrade_classification(payload, status_options)
     if classification is not None:
         payload = classification
     if (

@@ -1,5 +1,6 @@
 """이전 소스의 표시와 규칙을 소속 카테고리로 옮긴다."""
 
+from collections.abc import Mapping
 from dataclasses import replace
 from uuid import UUID, uuid5
 
@@ -22,8 +23,10 @@ from src.domain.category_configuration import (
 )
 from src.domain.category_event_alerts import EVENT_ALERT_KINDS, CategoryEventAlert
 from src.domain.display_columns import DisplayColumn
+from src.domain.main_list import STATUS_GROUP_NAMES
 from src.domain.models import SourceMapping
 from src.domain.source_display import SourceCategory, SourceDisplay
+from src.domain.task_display import TaskDisplayGroup, display_group
 
 FORMER_CATEGORY_KEYS = (
     "displayColumns",
@@ -277,10 +280,8 @@ def attribute_name(raw: dict[str, object], mapping: SourceMapping, property_id: 
     return None
 
 
-def upgrade_classification(payload: dict[str, object]) -> dict[str, object] | None:
+def _upgrade_classification_v2(payload: dict[str, object]) -> dict[str, object]:
     """카테고리 공통 규칙과 기존 역할별 분류를 실제 원본에 연결된 소스 규칙으로 옮긴다."""
-    if payload.get("classificationVersion") == 2:
-        return None
     settings = parse_settings(payload)
     sources = source_documents(payload)
     for source, raw in zip(settings.sources, sources, strict=True):
@@ -340,3 +341,45 @@ def upgrade_classification(payload: dict[str, object]) -> dict[str, object] | No
         "sources": sources,
         **({"categories": category_documents(categories)} if categories else {}),
     }
+
+
+def upgrade_classification(
+    payload: dict[str, object], status_options: Mapping[str, tuple[str, ...]]
+) -> dict[str, object] | None:
+    """기존 카드의 암묵적인 상태 분류를 수집 소스의 편집 가능한 값으로 이전한다."""
+    if payload.get("classificationVersion") == 3:
+        return None
+    if payload.get("classificationVersion") != 2:
+        payload = _upgrade_classification_v2(payload)
+    settings = parse_settings(payload)
+    sources = source_documents(payload)
+    for source, style, raw in zip(settings.sources, settings.display, sources, strict=True):
+        config = style.category.configuration if style.category else None
+        if not (
+            source.kind == "task"
+            and config
+            and config.main_list
+            and "statusGroup" in config.main_list.fields
+        ):
+            continue
+        prop = source.properties.get("status")
+        if not prop:
+            continue
+        completed = settings.completed_statuses.get(source.source_id, ())
+        rule = raw.get("classification")
+        # v2의 자동 이전 형식만 식별한다. 직접 선택한 칼럼·이름·기본값과 해제한 연결을 보존한다.
+        if not isinstance(rule, dict) or rule != {
+            "property": prop,
+            "name": attribute_name(raw, source, prop) or "상태",
+            "kind": "status_or_select",
+            "values": dict.fromkeys(completed, "완료"),
+        }:
+            continue
+        values = dict.fromkeys(completed, "완료")
+        for name in dict.fromkeys((*completed, *status_options.get(source.source_id, ()))):
+            group = display_group(name)
+            # 완료 체크는 숨김 조건에 보존하고, 알려진 상태의 정렬 그룹은 독립시킨다.
+            if group != TaskDisplayGroup.OTHER or name not in values:
+                values[name] = STATUS_GROUP_NAMES[group]
+        raw["classification"] = {**rule, "values": values}
+    return {**payload, "classificationVersion": 3, "sources": sources}

@@ -128,7 +128,7 @@ class EntryList:
                 label(view, "-", badge_width + 7, 5.5, 9, size=11, secondary=True)
                 title_x = badge_width + 21
             # 상태를 사용하지 않는 소스도 독립적으로 연결한 기한·차시를 표시한다.
-            middle = item.deadline or (None if item.parent_label else item.round_name)
+            middle = item.deadline or item.round_name
             if middle is not None:
                 middle_label = label(
                     view,
@@ -157,7 +157,17 @@ class EntryList:
         # 부모 제목은 표시 칼럼과 독립적으로 선택하며 긴 값은 도움말에도 남긴다.
         tooltip = [item.title]
         if item.parent_label:
-            title = f"{item.parent_label} · {title}"
+            # 배지와 기한 뒤에 남은 폭의 일부만 써서 업무 제목을 읽을 공간을 남긴다.
+            available = max(0.0, self._width - title_x - 12)
+            parent_width = min(120.0, available / 3)
+            parent = label(
+                view, item.parent_label, title_x, 5.5, parent_width, size=11, secondary=True
+            )
+            parent.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
+            parent_width = min(parent_width, parent.fittingSize()[0] + 2)
+            place_label(parent, title_x, 5.5, parent_width, 18)
+            parent.setToolTip_(item.parent_label)
+            title_x += parent_width + 6
             tooltip.append(item.parent_label)
         if fields:
             tooltip.extend(f"{name}  {value or '—'}" for name, value in fields)

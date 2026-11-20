@@ -37,7 +37,8 @@ def task_view(
         "section": source.section,
         **context.category_fields(source),
         "qaRound": item.qa_round,
-        **({"parentLabel": item.parent_label} if item.parent_label is not None else {}),
+        # 이전 스냅샷은 부모 제목을 QA 차시에만 저장하므로 현재 표시 설정을 먼저 적용한다.
+        "parentLabel": (item.parent_label or item.qa_round) if source.parent_label else None,
         "url": item.url,
         "due": item.due.payload() if item.due else None,
         "dueToday": due_today,

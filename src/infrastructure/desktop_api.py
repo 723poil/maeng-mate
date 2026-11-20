@@ -107,7 +107,10 @@ def entries(
                 notion_link(raw.get("url")),
                 task_status,
                 deadline,
-                text(raw["qaRound"]) if raw.get("qaRound") is not None else None,
+                # 구버전 응답만 기존 차시 표시를 사용한다. 새 응답의 null은 명시적인 숨김이다.
+                text(raw["qaRound"])
+                if "parentLabel" not in raw and raw.get("qaRound") is not None
+                else None,
                 text(raw["sourceId"]) if raw.get("sourceId") is not None else None,
                 display_fields,
                 badge_indices,

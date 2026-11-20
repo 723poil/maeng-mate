@@ -206,6 +206,14 @@ class NotionSource:
             if source.parent_label or source.parent_order in ("suffix", "legacy"):
                 await self._fill_columns(page_id, parent, parent_props)
                 round_name = column_text(parent_props.by_id(round_property_id), "title")
+            # QA 필터는 부모 제목을 차시 이름으로 비교하므로 정렬값과 따로 보존한다.
+            # 일반 목록으로 이전한 기존 연결도 종전 차시 값을 유지한다.
+            qa_round = (
+                round_name
+                if source.parent_label
+                and (source.section == "qa" or source.parent_order == "legacy")
+                else None
+            )
             order = None
             if number_id is not None:
                 order = column_text(parent_props.by_id(number_id), "number")
@@ -293,9 +301,7 @@ class NotionSource:
                         replace(
                             item,
                             source_id=source.source_id,
-                            qa_round=round_name
-                            if source.parent_order == "legacy" and source.parent_label
-                            else None,
+                            qa_round=qa_round,
                             parent_label=round_name if source.parent_label else None,
                             parent_order=order,
                             display_values=values,

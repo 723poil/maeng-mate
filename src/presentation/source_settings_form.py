@@ -602,7 +602,7 @@ class SourceSettingsForm:
         self._draw(selected)
 
     def _sync_parent_controls(self, preserve: bool) -> None:
-        """부모 표에서 실제로 읽을 수 있는 정렬 칼럼만 선택지로 제공한다."""
+        """부모 표의 숫자 칼럼을 표시하고 누락된 현재 연결도 보존한다."""
         nested = self._uses_rounds()
         self.parent_display.setHidden_(not nested)
         self.parent_sort.setHidden_(not nested)
@@ -630,6 +630,14 @@ class SourceSettingsForm:
         for name in numbers:
             titles.append(f"숫자 칼럼 · {name}")
             self._parent_orders.append(("column", name))
+        # 숫자 칼럼이 개명되거나 타입이 바뀌어도 다른 설정을 저장할 때 연결을 잃지 않는다.
+        if (
+            selected[0] == "column"
+            and selected[1] is not None
+            and selected not in self._parent_orders
+        ):
+            titles.append(f"누락된 숫자 칼럼 · {selected[1]}")
+            self._parent_orders.append(selected)
         set_titles(self.parent_sort, titles)
         self.parent_sort.selectItemAtIndex_(
             self._parent_orders.index(selected) if selected in self._parent_orders else 0

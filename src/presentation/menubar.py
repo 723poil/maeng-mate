@@ -318,7 +318,7 @@ class MenuBarApp:
         status_button = self._status_item.button()
         # 템플릿의 투명 영역을 살려 메뉴바 배경과 선택 상태에 맞게 시스템이 채색한다.
         mark_file = (
-            "MenuMarkDev.svg" if app_updates and app_updates.native is None else "MenuMark.svg"
+            "MenuMarkDev.svg" if app_updates and app_updates.is_development else "MenuMark.svg"
         )
         mark = NSImage.alloc().initWithContentsOfFile_(
             str(Path(__file__).with_name("assets") / mark_file)
@@ -904,8 +904,8 @@ class MenuBarApp:
     def _set_status_description(self, state: str) -> None:
         """메뉴바 아이콘의 도움말과 VoiceOver에 같은 수집 상태를 제공한다."""
         name = "Maeng Mate"
-        if self._app_updates:
-            name += f" {self._app_updates.actions.build_label}"
+        if self._app_updates and self._app_updates.actions.is_development:
+            name += " 개발용"
         description = f"{name} · {state}"
         status_button = self._status_item.button()
         status_button.setToolTip_(description)

@@ -187,6 +187,7 @@ def project_item(
         labelled_values(mapping.display_columns, item.display_values)
         if mapping.display_columns is not None
         else None,
+        category=item.category if isinstance(item, CalendarEvent) else None,
     )
 
 

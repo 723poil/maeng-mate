@@ -75,6 +75,7 @@ def calendar_item_payload(item: CalendarItem) -> dict[str, object]:
         "kind": item.kind,
         "color": item.color,
         "categoryKey": item.category_key,
+        **({"category": item.category} if item.category is not None else {}),
         "title": item.title,
         "first": item.first.isoformat(),
         "last": item.last.isoformat(),

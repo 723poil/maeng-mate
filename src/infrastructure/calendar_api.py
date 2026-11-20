@@ -94,6 +94,7 @@ def parse_calendar(value: object) -> CalendarMonth:
                 else None,
                 color=color,
                 category_key=category_key,
+                category=text(item["category"]) if item.get("category") is not None else None,
                 display_fields=parse_display_fields(item.get("displayFields")),
             )
         )

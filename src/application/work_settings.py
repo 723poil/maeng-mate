@@ -1004,6 +1004,8 @@ def resolve_category_mapping(
     }
     order = tuple(dict.fromkeys((*(previous.column_order or ()), *columns)))
     shown = tuple(columns[key] for key in order if key in visible and key in columns)
+    # 연결한 칼럼을 모두 숨긴 선택은 빈 표시다. 이전 알림 전용 칼럼만 있는 소스는 기본 표시를 유지한다.
+    custom_display = previous.custom_display or bool(columns.keys() - previous.hidden_columns)
     alerts = tuple(
         replace(
             rule,
@@ -1034,7 +1036,7 @@ def resolve_category_mapping(
     return replace(
         source,
         stored_columns=storage,
-        display_columns=shown if shown or previous.custom_display else None,
+        display_columns=shown if custom_display else None,
         calendar_column=columns.get(config.calendar_date) if config.calendar_date else None,
         calendar_date_override=config.calendar_date is not None,
         alert_rules=alerts,

@@ -6,7 +6,12 @@ import sqlite3
 from src.application.errors import SnapshotError
 from src.infrastructure.sqlite.connection import Database
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
+
+MCP_LIST_TOKENS_TABLE = """CREATE TABLE IF NOT EXISTS mcp_list_tokens(
+      id TEXT PRIMARY KEY,name TEXT NOT NULL,digest TEXT NOT NULL UNIQUE,
+      created_at REAL NOT NULL,expires_at REAL,revoked_at REAL,last_used_at REAL,
+      grants TEXT NOT NULL CHECK(json_valid(grants) AND json_type(grants)='array'))"""
 
 SOURCE_STATUS_OPTIONS_TABLE = """CREATE TABLE IF NOT EXISTS source_status_options(
       source_id TEXT PRIMARY KEY REFERENCES work_source_state(source_id),
@@ -85,6 +90,7 @@ TABLES = (
     """CREATE TABLE IF NOT EXISTS mcp_access_tokens(
       id TEXT PRIMARY KEY,name TEXT NOT NULL,digest TEXT NOT NULL UNIQUE,
       created_at REAL NOT NULL,expires_at REAL,revoked_at REAL,last_used_at REAL)""",
+    MCP_LIST_TOKENS_TABLE,
     """CREATE TABLE IF NOT EXISTS notion_page_link_preferences(
       id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL CHECK(revision>0),payload TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS work_settings(

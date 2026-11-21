@@ -160,7 +160,7 @@ async def test_stored_json_and_hash_remain_compatible(db: Database) -> None:
                 assert row.parent_label is None and row.parent_order is None
                 del expected["parent_label"]
                 del expected["parent_order"]
-            for name in ("alert_values", "display_values", "calendar_periods"):
+            for name in ("alert_values", "display_values", "raw_fields", "calendar_periods"):
                 if not expected[name]:
                     del expected[name]
             facts = {

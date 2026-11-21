@@ -116,6 +116,9 @@ def alert_scope_fingerprint(rule: SourceAlertRule) -> str | None:
 def collection_fingerprint(source: SourceMapping) -> str:
     """읽어야 할 표시 속성이 바뀌면 정기 수집만 앞당긴다."""
     digest = source_fingerprint(source)
+    # 이전 문자열 미리보기는 원형 자료로 추정하지 않고 다음 정상 수집을 요청한다.
+    if source.kind == "task" and source.storage_layout:
+        digest = fingerprint((digest, "raw_fields_v1"))
     columns = source.collected_columns()
     if not columns and not any(rule.enabled and rule.source_scopes for rule in source.alert_rules):
         return digest
@@ -175,6 +178,8 @@ def snapshot_payload(item: WorkItem) -> dict[str, object]:
     # 선택 칼럼이 없는 기존 소스는 빈 필드를 생략한 동일한 해시를 유지한다.
     if item.display_values:
         payload["display_values"] = dict(item.display_values)
+    if item.raw_fields:
+        payload["raw_fields"] = dict(item.raw_fields)
     if item.alert_values:
         payload["alert_values"] = dict(item.alert_values)
     if item.calendar_periods:

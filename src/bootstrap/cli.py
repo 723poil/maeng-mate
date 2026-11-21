@@ -31,8 +31,11 @@ def main() -> None:
     args = parser.parse_args()
     if args.command not in {"service", "agent", "settings", "restore"} and args.action is not None:
         parser.error("이 명령은 하위 동작을 받지 않습니다.")
-    if args.file is not None and (args.command, args.action) != ("settings", "import-work"):
-        parser.error("--file은 settings import-work에서만 사용합니다.")
+    if args.file is not None and (args.command, args.action) not in {
+        ("settings", "import-work"),
+        ("settings", "mcp-lists"),
+    }:
+        parser.error("--file은 settings import-work 또는 settings mcp-lists에서 사용합니다.")
     try:
         if args.command == "restore":
             from src.bootstrap.backup_restore import run_restore
@@ -44,6 +47,12 @@ def main() -> None:
 
             guard_startup(allow_trial=args.command in {"menubar", "run", "agent"})
         if args.command == "settings":
+            if args.action == "mcp-lists":
+                from src.bootstrap.app_settings import application_environment
+                from src.bootstrap.mcp_list_commands import run_list_access
+
+                run_list_access(application_environment(os.environ), args.file)
+                return
             from src.bootstrap.runtime_settings import import_runtime_settings
 
             if args.action == "import-work":

@@ -34,3 +34,4 @@ class SystemStatusContext:
     sources_configured: bool
     retention_confirmed: bool
     relevance_policy: str
+    personal_identity_configured: bool = False

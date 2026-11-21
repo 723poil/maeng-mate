@@ -1,4 +1,4 @@
 interface:
   display_name: "Maeng Mate"
-  short_description: "업무·QA를 표별 상태로 검색하고 오늘 회의와 근무 기록을 조회합니다"
-  default_prompt: "$maeng-mate로 각 표의 상태를 확인하고 진행 중인 내 업무를 찾아줘."
+  short_description: "개인 업무·근무 또는 허용한 사용자 정의 목록의 구조화된 자료를 조회합니다"
+  default_prompt: "$maeng-mate로 연결된 도구와 허용된 목록을 확인하고 요청에 관련된 항목을 찾아줘."

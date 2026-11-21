@@ -11,6 +11,7 @@ from src.domain.event_classification import classify_event
 from src.domain.main_list import ListFilter
 from src.domain.models import CalendarEvent, Leave, Period, SourceMapping, Task, WorkItem
 from src.domain.notification_timing import calendar_alert_expiry
+from src.domain.raw_fields import checked_raw_field
 from src.domain.source_alerts import SourceAlertRule, alert_value_key
 from src.domain.source_scope import SourceScope, field_parts
 from src.domain.work_dates import SEOUL, canonical_identity
@@ -172,6 +173,33 @@ def column_text(prop: dict[str, object], kind: str) -> str:
     return text(raw)
 
 
+def raw_column(prop: dict[str, object], kind: str) -> dict[str, object]:
+    """이미 수집한 칼럼만 표시 생략·공백 축약·분류 변환 전에 보존한다."""
+    value: object
+    if kind in {"status", "select", "status_or_select"}:
+        value = read_status(prop)
+    elif kind == "people":
+        # 사람 전체 객체의 이메일·사진 등은 원형 칼럼에도 저장하지 않는다.
+        value = list(read_people(prop))
+    elif kind == "multi_select":
+        value = [text(record(item).get("name")) for item in array(prop.get(kind))]
+    elif kind == "date":
+        period = read_period(prop)
+        value = period.payload() if period else None
+    elif kind == "checkbox":
+        value = read_checkbox(prop)
+    elif kind == "number":
+        value = prop.get(kind)
+    elif kind in {"created_time", "last_edited_time"}:
+        value = instant(text(prop[kind])) if prop.get(kind) is not None else None
+    else:
+        value = column_text(prop, kind) if prop.get(kind) is not None else None
+    try:
+        return checked_raw_field({"type": kind, "value": value})
+    except ValueError:
+        raise SourceError("mapping_invalid") from None
+
+
 def alert_comparison(prop: dict[str, object], rule: SourceAlertRule, visible: str) -> str:
     """비교값에는 화면에서 생략한 초와 사람 식별자를 보존한다."""
     kind = rule.column_kind
@@ -270,6 +298,14 @@ def normalize_page(
     }
 
     props = properties if properties is not None else PageProperties(record(page.get("properties")))
+    raw_fields = (
+        {
+            column.value_key: raw_column(props.by_id(column.property_id), column.kind)
+            for column in source.storage_layout
+        }
+        if source.kind == "task"
+        else {}
+    )
 
     def get(name: str) -> dict[str, object]:
         """회사별 매핑을 통해 원천 속성을 선택한다."""
@@ -354,6 +390,7 @@ def normalize_page(
         return Leave(
             **base,
             display_values=display,
+            raw_fields=raw_fields,
             alert_values=alerts,
             alert_due_at=due_at,
             calendar_periods=dates,
@@ -372,6 +409,7 @@ def normalize_page(
         return CalendarEvent(
             **base,
             display_values=display,
+            raw_fields=raw_fields,
             alert_values=alerts,
             alert_due_at=due_at,
             calendar_periods=dates,
@@ -391,6 +429,7 @@ def normalize_page(
     return Task(
         **base,
         display_values=display,
+        raw_fields=raw_fields,
         alert_values=alerts,
         alert_due_at=due_at,
         calendar_periods=dates,

@@ -14,6 +14,7 @@ def get_system_status(context: SystemStatusContext) -> dict[str, object]:
             "notion": context.notion_configured,
             "sources": context.sources_configured,
             "retention": context.retention_confirmed,
+            "personalIdentity": context.personal_identity_configured,
         },
         "workRelevancePolicy": context.relevance_policy,
         "unimplemented": ["slack", "ai_summary"],

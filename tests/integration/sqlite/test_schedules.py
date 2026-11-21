@@ -24,6 +24,49 @@ async def configure(db: Database, clock: Clock, interval: int = 300) -> SQLiteSc
     return store
 
 
+@pytest.mark.parametrize("expired_after", [300, 301])
+async def test_status_counts_only_current_unexpired_lease(db: Database, expired_after: int) -> None:
+    """만료 경계와 다음 세대의 진행 집계를 확인하며 조회의 저장 부작용을 막는다."""
+    clock = Clock()
+    schedules = await configure(db, clock)
+    store = SQLiteSnapshots(db, scheduled=True, clock=clock)
+    first = await store.begin_run(SOURCE, clock.now().isoformat())
+    clock.value += 299
+    assert (await schedules.read_status((SOURCE,)))["runningSources"] == 1
+    assert await schedules.due_sources_and_delay((SOURCE,)) == ((), 1)
+
+    clock.value += expired_after - 299
+    tables = ("sync_runs", "work_source_state", "sync_schedules")
+    before = {table: await db.fetch(f"SELECT * FROM {table}") for table in tables}
+    status = await schedules.read_status((SOURCE,))
+    assert await schedules.due_sources_and_delay((SOURCE,)) == ((SOURCE,), 0)
+    assert {table: await db.fetch(f"SELECT * FROM {table}") for table in tables} == before
+    # 조회는 만료 이력을 실패로 바꾸지 않고 실제 유효 실행권만 진행 중으로 센다.
+    assert status["runningSources"] == 0
+    assert status["failedSources"] == 0
+    assert status["succeededSources"] == 0
+    assert status["nextRunAt"] == clock.now().isoformat()
+
+    second = await store.begin_run(SOURCE, clock.now().isoformat())
+    assert second.generation == first.generation + 1
+    assert (await schedules.read_status((SOURCE,)))["runningSources"] == 1
+    assert await schedules.due_sources_and_delay((SOURCE,)) == ((), 300)
+    assert await db.fetch("SELECT status FROM sync_runs ORDER BY id") == [
+        {"status": "abandoned"},
+        {"status": "running"},
+    ]
+    await store.complete_run(second, [], clock.now().isoformat())
+    status = await schedules.read_status((SOURCE,))
+    assert status["runningSources"] == 0
+    assert status["succeededSources"] == 1
+    clock.value += 300
+    third = await store.begin_run(SOURCE, clock.now().isoformat())
+    await store.fail_run(third, "source_failed")
+    status = await schedules.read_status((SOURCE,))
+    assert status["runningSources"] == 0
+    assert status["failedSources"] == 1
+
+
 async def test_idle_collector_can_wait_while_another_writer_holds_db(db: Database) -> None:
     """예약까지 대기하는 실행기는 다른 쓰기 트랜잭션의 종료를 기다리지 않는다."""
     clock = Clock()

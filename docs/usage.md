@@ -6,13 +6,40 @@
 
 사용자 정의 목록을 AI에 제공할 때는 개인 업무 MCP와 다른 목록 전용 연결을 사용한다. 앱의 `내 항목만 보기`나 카드 숨김 조건은 이 연결의 필터가 아니다. 허용한 소스의 전체 행을 제공하며, 본인 Notion ID나 담당자 연결이 없어도 조회한다. 소스·칼럼을 선택할 때 AI에 보여도 되는 범위인지 확인한다.
 
-첫 버전의 접근 관리는 소유자 CLI로 제공한다. 앱의 관리자 인증은 시작 경계에서 읽으며 직접 복사하거나 명령행에 넣지 않는다. 실행 중인 앱의 선택 가능한 목록과 칼럼을 확인한다.
+### 실행본과 연결 대상 선택
+
+이 절의 명령은 **목록 전용 MCP 기능을 포함한 실행본**에 적용된다. 이 기능이 없는 기존 배포 앱에서는 동작하지 않는다. 아직 배포 바이너리 자체의 발급·stdio 실행 검증은 완료하지 않았으며, 아래 배포 명령은 동봉 CLI 진입점과 임시 배포 프로필에서 확인한 경로다.
+
+| 실행본 | 기본 API 포트 | 지원 폴더 | 관리자 Keychain 서비스 |
+| --- | --- | --- | --- |
+| 업데이트 공개키를 동봉한 배포 앱 | 43127 | `~/Library/Application Support/MaengMate/` | `local.maeng-mate.credentials` |
+| 소스의 `uv run` 또는 공개키 없는 로컬 앱 | 43128 | `~/Library/Application Support/MaengMateDev/` | `local.maeng-mate.dev.credentials` |
+
+`uv run`은 개발용 실행이다. 배포 앱을 실행 중이어도 배포용 설정이나 관리 인증을 선택하지 않는다. 포트만 43127로 바꿔도 Keychain·프로필은 배포용으로 바뀌지 않는다. 앱 파일 이름이나 설치 위치만으로 프로필이 정해지는 것도 아니다.
+
+관리 CLI는 해당 실행본의 `bootstrap.json`에 저장된 포트와 관리 인증을 시작 경계에서 읽는다. 관리자 키를 조회·복사하거나 환경변수·명령행에 직접 넣지 않는다. 배포 앱에서는 `open -a` 대신 동봉 실행 파일을 직접 호출한다. 인수가 있으면 CLI로 진입하므로 이 명령은 앱 설치·서비스 재등록을 수행하지 않는다.
+
+### 목록 접근 발급·확인·폐기
+
+첫 버전의 접근 관리는 소유자 CLI로 제공한다. 대상 앱의 API가 실행 중이어야 한다. **배포 앱의 목록**을 관리할 때는 다음 실행 파일을 사용한다. 앱을 다른 위치에 설치했다면 실행 파일 경로도 그 위치로 바꾼다.
+
+```sh
+"/Applications/Maeng Mate.app/Contents/MacOS/MaengMate" settings mcp-lists
+"/Applications/Maeng Mate.app/Contents/MacOS/MaengMate" settings mcp-lists --file list-access.json
+"/Applications/Maeng Mate.app/Contents/MacOS/MaengMate" settings mcp-lists --file list-tokens.json
+"/Applications/Maeng Mate.app/Contents/MacOS/MaengMate" settings mcp-lists --file list-revoke.json
+```
+
+위 명령은 차례로 선택지 조회, 새 발급, 원문 없는 토큰 목록, 폐기다. **개발용 목록**은 해당 소스 프로젝트에서 다음 명령을 사용한다.
 
 ```sh
 uv run maeng-mate settings mcp-lists
+uv run maeng-mate settings mcp-lists --file list-access.json
+uv run maeng-mate settings mcp-lists --file list-tokens.json
+uv run maeng-mate settings mcp-lists --file list-revoke.json
 ```
 
-조회한 식별자로 요청 파일을 만든다. 다음은 가상 식별자를 사용한 형식 예다. `allRows`는 담당자·상태에 관계없이 해당 목록의 전체 행을 허용한다는 동의다. `fields`에 없는 URL·담당자·사용자 칼럼은 반환하지 않는다. 사용자 정의 칼럼은 목록에 표시된 `column:` 식별자로 선택한다.
+예시 요청 파일은 Git 저장소 밖의 비공개 위치에 만들고 `--file`에 그 경로를 전달한다. 요청 파일에는 인증 원문을 넣지 않는다. 선택지 조회에서 확인한 소스·칼럼 식별자로 `list-access.json`을 만든다. 다음은 가상 식별자를 사용한 형식 예다. `allRows`는 담당자·상태에 관계없이 해당 목록의 전체 행을 허용한다는 동의다. `fields`에 없는 URL·담당자·사용자 칼럼은 반환하지 않는다. 사용자 정의 칼럼은 목록에 표시된 `column:` 식별자로 선택한다.
 
 ```json
 {
@@ -24,15 +51,31 @@ uv run maeng-mate settings mcp-lists
 }
 ```
 
+`list-tokens.json`의 내용은 `{"action":"tokens"}`다. `list-revoke.json`은 `{"action":"revoke","id":"발급 목록의 토큰 ID"}`로 작성한다. 범위를 확대하려면 기존 토큰을 폐기하고 다시 발급한다. 네이티브 선택 화면은 후속 범위다.
+
+발급 응답의 `token`은 한 번만 출력된다. AI 클라이언트의 인증·비밀 환경값 설정에만 입력하고 채팅·공개 파일·명령행 인수에 넣지 않는다. 발급 출력을 로그로 수집하거나 공유 터미널에 남기지 않는다. 토큰 확인 목록은 원문을 다시 반환하지 않으며, 원문을 잃으면 해당 토큰을 폐기한 뒤 새로 발급한다. **관리자 인증을 MCP 클라이언트에 복사하지 않는다.**
+
+### HTTP와 stdio 연결
+
+HTTP 연결은 같은 실행본의 MCP 주소에서 경로를 `/mcp-lists/`로 바꾸고 **목록 전용 발급 토큰**으로 인증한다. 기본 배포 주소는 `http://127.0.0.1:43127/mcp-lists/`, 개발 주소는 `http://127.0.0.1:43128/mcp-lists/`다. 사용자 지정 포트를 쓰면 해당 앱에 표시된 실제 포트를 사용한다.
+
+stdio는 AI 클라이언트가 실행하는 명령을 다음처럼 설정한다. `MCP_ACCESS_TOKEN`은 같은 실행본에서 발급한 목록 토큰을 클라이언트의 비밀 환경값 기능으로 별도 주입한다. 아래 명령에 토큰 문자열을 덧붙이지 않는다.
+
+배포 앱:
+
 ```sh
-uv run maeng-mate settings mcp-lists --file list-access.json
+MCP_QUERY_MODE=lists LOCAL_API_PORT=43127 "/Applications/Maeng Mate.app/Contents/MacOS/MaengMate" mcp
 ```
 
-발급 응답의 `token`은 한 번만 출력된다. AI 연결의 인증 설정에만 입력하고 채팅·로그·공개 파일에 남기지 않는다. HTTP는 앱의 기존 주소에서 경로를 `/mcp-lists/`로 바꾼다. stdio는 기존 실행 명령에 환경 `MCP_QUERY_MODE=lists`, `MCP_ACCESS_TOKEN`을 설정한다. 기존 개인 토큰으로는 목록 전용 도구를 사용할 수 없으며 목록 토큰으로도 근무·휴가·개인·관리 API에 접근할 수 없다.
+개발 소스(작업 디렉터리는 해당 프로젝트):
 
-`{"action":"tokens"}` 요청 파일로 원문 없는 발급 목록을 보고, `{"action":"revoke","id":"발급 목록의 토큰 ID"}` 요청 파일로 폐기한다. 둘 다 같은 `settings mcp-lists --file` 명령을 사용한다. 범위를 확대하려면 기존 토큰을 폐기하고 다시 발급한다. 네이티브 선택 화면은 후속 범위다.
+```sh
+MCP_QUERY_MODE=lists LOCAL_API_PORT=43128 uv run maeng-mate mcp
+```
 
-AI는 `list_sources`로 허용 칼럼을 확인하고 `search_items`로 최대 100건씩 `nextOffset`을 이어 읽는다. 상태·기한·담당자는 연결·허용한 경우에만 선택 필터로 지정한다. 기본 조회는 이러한 조건을 적용하지 않는다. 사용자 정의 칼럼은 표시용 분류나 생략 전의 구조화된 값이며, 이전 수집본에 아직 원형이 없으면 `available=false`, `raw_field_not_collected`로 구별한다. 다음 정상 수집 뒤 채워지며 조회 자체가 수집을 시작하지 않는다. 저장·연결 실패는 빈 성공으로 바꾸지 않는다.
+클라이언트가 실행 파일·인수·환경을 나눠 받으면 실행 파일은 위 경로 또는 `uv`, 인수 배열은 각각 `["mcp"]` 또는 `["run", "maeng-mate", "mcp"]`, 비밀값 외 환경은 `MCP_QUERY_MODE=lists`와 `LOCAL_API_PORT`로 설정한다. stdio는 Keychain이나 `bootstrap.json`을 읽지 않는다. 포트를 생략하면 실행 프로필의 기본 포트를 쓰므로 **앱의 포트를 바꿨다면 `LOCAL_API_PORT`도 그 값으로 지정해야 한다.** 배포·개발 프로필의 토큰은 서로 바꿔 쓰지 않는다.
+
+기존 개인 토큰으로는 목록 전용 도구를 사용할 수 없으며 목록 토큰으로도 근무·휴가·개인·관리 API에 접근할 수 없다. AI는 `list_sources`로 허용 칼럼을 확인하고 `search_items`로 최대 100건씩 `nextOffset`을 이어 읽는다. 상태·기한·담당자는 연결·허용한 경우에만 선택 필터로 지정한다. 기본 조회는 이러한 조건을 적용하지 않는다. 사용자 정의 칼럼은 표시용 분류나 생략 전의 구조화된 값이며, 이전 수집본에 아직 원형이 없으면 `available=false`, `raw_field_not_collected`로 구별한다. 다음 정상 수집 뒤 채워지며 조회 자체가 수집을 시작하지 않는다. 저장·연결 실패는 빈 성공으로 바꾸지 않는다.
 
 ## 실행
 

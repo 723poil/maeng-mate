@@ -14,7 +14,7 @@ from src.bootstrap.app_settings import data_environment
 from src.bootstrap.environment import ConfigError
 from src.bootstrap.executable import executable_command, execution_environment
 from src.bootstrap.instance import application_directory, coordination_lock, project_root
-from src.infrastructure.data_backup import create_backup, unpack_backup
+from src.infrastructure.data_backup import BackupPublicationError, create_backup, unpack_backup
 
 
 def export_backup(path: str) -> None:
@@ -29,6 +29,11 @@ def export_backup(path: str) -> None:
             database = Path(data_environment({})["DATABASE_PATH"])
             # application에서 받은 경로 값은 파일을 다루는 시작 경계에서만 해석한다.
             create_backup(database, home / "work-rules.json", Path(path))
+    except BackupPublicationError:
+        raise DataBackupError(
+            "백업 파일은 생성됐지만 저장 완료를 확인하지 못했습니다. "
+            "선택한 위치의 파일을 확인하고, 다시 저장하려면 새 이름을 선택하세요."
+        ) from None
     except FileExistsError:
         raise DataBackupError("이미 있는 파일입니다. 새 이름을 선택하세요.") from None
     except (ValueError, OSError, ConfigError, sqlite3.Error):

@@ -126,6 +126,7 @@ class SQLiteSchedules:
     async def read_status(self, sources: Sequence[SourceMapping]) -> dict[str, object]:
         """인증 응답에 필요한 집계만 제공하고 식별자와 원문은 제외한다."""
         rows = await self._rows(SCHEDULE_STATUS, sources)
+        now = self._clock()
         due = min(collection_due_times(rows, sources).values(), default=None)
         return {
             "retryingSources": sum(row["retry_pending"] == 1 for row in rows),
@@ -136,12 +137,18 @@ class SQLiteSchedules:
                 {failure_reason(row["error_code"]) for row in rows if row["error_code"] is not None}
             ),
             "intervalSeconds": rows[0]["interval_seconds"] if rows else None,
-            "nextRunAt": datetime.fromtimestamp(max(self._clock(), due), UTC).isoformat()
+            "nextRunAt": datetime.fromtimestamp(max(now, due), UTC).isoformat()
             if due is not None
             else None,
             "succeededSources": sum(row["status"] == "succeeded" for row in rows),
             "failedSources": sum(row["status"] == "failed" for row in rows),
-            "runningSources": sum(row["status"] == "running" for row in rows),
+            # 이력 정리는 다음 획득 때 하므로 조회는 같은 시각의 유효 실행권만 집계한다.
+            "runningSources": sum(
+                row["status"] == "running"
+                and isinstance(lease := row["lease_until"], (float, int))
+                and lease > now
+                for row in rows
+            ),
             "configuredSources": len(sources),
         }
 

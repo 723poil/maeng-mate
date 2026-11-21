@@ -2,6 +2,38 @@
 
 [앱 설치와 첫 설정은 README에서 확인하세요.](../README.md#앱-설치)
 
+## 목록 전용 MCP
+
+사용자 정의 목록을 AI에 제공할 때는 개인 업무 MCP와 다른 목록 전용 연결을 사용한다. 앱의 `내 항목만 보기`나 카드 숨김 조건은 이 연결의 필터가 아니다. 허용한 소스의 전체 행을 제공하며, 본인 Notion ID나 담당자 연결이 없어도 조회한다. 소스·칼럼을 선택할 때 AI에 보여도 되는 범위인지 확인한다.
+
+첫 버전의 접근 관리는 소유자 CLI로 제공한다. 앱의 관리자 인증은 시작 경계에서 읽으며 직접 복사하거나 명령행에 넣지 않는다. 실행 중인 앱의 선택 가능한 목록과 칼럼을 확인한다.
+
+```sh
+uv run maeng-mate settings mcp-lists
+```
+
+조회한 식별자로 요청 파일을 만든다. 다음은 가상 식별자를 사용한 형식 예다. `allRows`는 담당자·상태에 관계없이 해당 목록의 전체 행을 허용한다는 동의다. `fields`에 없는 URL·담당자·사용자 칼럼은 반환하지 않는다. 사용자 정의 칼럼은 목록에 표시된 `column:` 식별자로 선택한다.
+
+```json
+{
+  "action": "issue",
+  "name": "목록 조회",
+  "expiresInDays": 30,
+  "allRows": true,
+  "sources": [{"sourceId": "source-a", "fields": ["title", "status", "due"]}]
+}
+```
+
+```sh
+uv run maeng-mate settings mcp-lists --file list-access.json
+```
+
+발급 응답의 `token`은 한 번만 출력된다. AI 연결의 인증 설정에만 입력하고 채팅·로그·공개 파일에 남기지 않는다. HTTP는 앱의 기존 주소에서 경로를 `/mcp-lists/`로 바꾼다. stdio는 기존 실행 명령에 환경 `MCP_QUERY_MODE=lists`, `MCP_ACCESS_TOKEN`을 설정한다. 기존 개인 토큰으로는 목록 전용 도구를 사용할 수 없으며 목록 토큰으로도 근무·휴가·개인·관리 API에 접근할 수 없다.
+
+`{"action":"tokens"}` 요청 파일로 원문 없는 발급 목록을 보고, `{"action":"revoke","id":"발급 목록의 토큰 ID"}` 요청 파일로 폐기한다. 둘 다 같은 `settings mcp-lists --file` 명령을 사용한다. 범위를 확대하려면 기존 토큰을 폐기하고 다시 발급한다. 네이티브 선택 화면은 후속 범위다.
+
+AI는 `list_sources`로 허용 칼럼을 확인하고 `search_items`로 최대 100건씩 `nextOffset`을 이어 읽는다. 상태·기한·담당자는 연결·허용한 경우에만 선택 필터로 지정한다. 기본 조회는 이러한 조건을 적용하지 않는다. 사용자 정의 칼럼은 표시용 분류나 생략 전의 구조화된 값이며, 이전 수집본에 아직 원형이 없으면 `available=false`, `raw_field_not_collected`로 구별한다. 다음 정상 수집 뒤 채워지며 조회 자체가 수집을 시작하지 않는다. 저장·연결 실패는 빈 성공으로 바꾸지 않는다.
+
 ## 실행
 
 ```sh

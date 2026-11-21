@@ -13,17 +13,18 @@ from src.bootstrap.instance import Role, identified_pid
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS ps와 lsof 확인이 필요하다")
 @pytest.mark.parametrize(
-    ("command", "role", "entrypoint", "foreign_cwd", "extra", "accepted"),
+    ("command", "role", "entrypoint", "foreign_cwd", "extra", "foreign_interpreter", "accepted"),
     [
-        ("run", "resident", False, False, False, True),
-        ("api", "resident", False, False, False, True),
-        ("menubar", "menubar", False, False, False, True),
-        ("run", "resident", True, False, False, True),
-        ("menubar", "menubar", True, False, False, True),
-        ("run", "menubar", False, False, False, False),
-        ("menubar", "resident", False, False, False, False),
-        ("run", "resident", False, True, False, False),
-        ("run", "resident", False, False, True, False),
+        ("run", "resident", False, False, False, False, True),
+        ("api", "resident", False, False, False, False, True),
+        ("menubar", "menubar", False, False, False, False, True),
+        ("run", "resident", True, False, False, False, True),
+        ("menubar", "menubar", True, False, False, False, True),
+        ("run", "menubar", False, False, False, False, False),
+        ("menubar", "resident", False, False, False, False, False),
+        ("run", "resident", False, True, False, False, False),
+        ("run", "resident", False, False, True, False, False),
+        ("run", "resident", False, False, False, True, False),
     ],
 )
 def test_identify_real_python_process(
@@ -33,6 +34,7 @@ def test_identify_real_python_process(
     entrypoint: bool,
     foreign_cwd: bool,
     extra: bool,
+    foreign_interpreter: bool,
     accepted: bool,
 ) -> None:
     """실제 인터프리터는 인정하되 역할·작업 폴더·추가 인수가 다르면 거부한다."""
@@ -40,7 +42,7 @@ def test_identify_real_python_process(
     binary = root / ".venv/bin"
     binary.mkdir(parents=True)
     interpreter = binary / "python"
-    interpreter.symlink_to(sys.executable)
+    interpreter.symlink_to("/usr/bin/false" if foreign_interpreter else sys.executable)
     fixture = Path(__file__).resolve().parents[2] / "fixtures/identity_process.py"
     source = root / "src"
     source.mkdir()
@@ -51,9 +53,12 @@ def test_identify_real_python_process(
     foreign = tmp_path / "foreign"
     foreign.mkdir()
     invocation = [str(script)] if entrypoint else ["-m", "src"]
+    # 일반 Python은 argv[0]에 가상환경 경로를 유지하므로 실행 후 링크 교체로
+    # 다른 실행 파일을 흉내 내지 않는다. 불일치 사례는 처음부터 별도 경로로 실행한다.
+    executable = sys.executable if foreign_interpreter else str(interpreter)
     # 환경은 원천 자격 정보 없이 가상 역할 모듈을 찾는 경로만 전달한다.
     process = subprocess.Popen(
-        [str(interpreter), *invocation, command, *(["extra"] if extra else [])],
+        [executable, *invocation, command, *(["extra"] if extra else [])],
         cwd=foreign if foreign_cwd else root,
         env={"PATH": os.defpath, "PYTHONPATH": str(root)},
         stdout=subprocess.PIPE,
@@ -67,10 +72,6 @@ def test_identify_real_python_process(
         pidfile = tmp_path / "role.pid"
         pidfile.write_text(str(process.pid))
         assert identified_pid(pidfile, (root,), role) == (process.pid if accepted else None)
-        # PID 재사용·엉뚱한 실행 환경은 같은 명령과 작업 폴더여도 소유하지 않는다.
-        interpreter.unlink()
-        interpreter.symlink_to("/usr/bin/false")
-        assert identified_pid(pidfile, (root,), role) is None
     finally:
         process.terminate()
         process.communicate(timeout=5)

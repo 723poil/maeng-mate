@@ -118,6 +118,26 @@ def owned_pid(root: Path, role: Role) -> int | None:
     return None
 
 
+def _interpreter_executables(interpreter: Path) -> set[str]:
+    """가상환경 실행 파일과 같은 버전의 macOS 프레임워크 실행 표현만 허용한다."""
+    resolved = interpreter.resolve()
+    executables = {str(interpreter), str(resolved), str(interpreter.with_name("python3"))}
+    version = resolved.parent.parent
+    # CPython의 macOS 프레임워크 런처는 같은 버전의 Python.app으로 argv[0]을 바꾼다.
+    # 임의의 인접 앱이나 다른 버전까지 허용하지 않도록 실제 링크 대상의 구조를 제한한다.
+    if (
+        sys.platform == "darwin"
+        and resolved.parent.name == "bin"
+        and version.parent.name == "Versions"
+        and version.parent.parent.name == "Python.framework"
+        and resolved.name == f"python{version.name}"
+    ):
+        application = version / "Resources/Python.app/Contents/MacOS/Python"
+        if application.is_file() and os.access(application, os.X_OK):
+            executables.add(str(application))
+    return executables
+
+
 def identified_pid(pidfile: Path, roots: tuple[Path, ...], role: Role) -> int | None:
     """오래된 PID나 다른 프로젝트를 종료 대상으로 삼지 않는다."""
     try:
@@ -136,13 +156,7 @@ def identified_pid(pidfile: Path, roots: tuple[Path, ...], role: Role) -> int | 
         commands = ("run", "api") if role == "resident" else ("menubar",)
         interpreters = tuple(root / ".venv/bin/python" for root in roots)
         executables = {
-            path
-            for interpreter in interpreters
-            for path in (
-                str(interpreter),
-                str(interpreter.resolve()),
-                str(interpreter.with_name("python3")),
-            )
+            path for interpreter in interpreters for path in _interpreter_executables(interpreter)
         }
         expected = {
             invocation

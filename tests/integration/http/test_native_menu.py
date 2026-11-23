@@ -109,10 +109,26 @@ def test_native_menu_renders_and_saves_attendance(
         ),
     )
     opened: list[str] = []
+
+    from src.application.calendar import calendar_span
+    from src.domain.calendar import CalendarMonth
+
+    class MonthClient:
+        """개인 원천 없이 메인 창의 실제 달력 조회와 선택을 확인한다."""
+
+        def month(self, month: str | None = None) -> CalendarMonth:
+            """요청한 월의 빈 격자를 만든다."""
+            selected = month or "2026-11"
+            first, last = calendar_span(selected)
+            return CalendarMonth(
+                selected, now().date(), first, last, (), (), False, False, False, now()
+            )
+
     app = MenuBarApp(
         Client(),
         partial(preview_departure, policy=FlexibleDeparturePolicy()),
         preferences_client=SQLitePreferences(db),
+        calendar_client=MonthClient(),
         open_url=opened.append,
         today=lambda: now().date().isoformat(),
     )
@@ -140,6 +156,61 @@ def test_native_menu_renders_and_saves_attendance(
         task_card = app._custom_sections[tasks_card.key]
         meeting_card = app._custom_sections[meetings_card.key]
         assert task_card.entries._scroll.frame().size.width == 466
+        # Finder만 메인 창을 열며, 사이드바와 본문은 숨긴 카테고리를 제외한다.
+        from dataclasses import replace
+
+        original = app._preferences
+        app._preferences = replace(
+            original,
+            sections=tuple(
+                SectionPreference(item.key, item.key == meetings_card.key)
+                for item in app._section_order
+            ),
+        )
+        app._resize_lists()
+        from AppKit import NSApplicationActivationPolicyRegular
+
+        assert app._application.activationPolicy() == NSApplicationActivationPolicyRegular
+        assert app._main_window is None
+        app._callbacks.applicationShouldHandleReopen_hasVisibleWindows_(None, False)
+        main = app._main_window
+        assert main is not None and main.window.isVisible()
+        assert [item.key for item in main.cards] == [meetings_card.key]
+        app.open_calendar()
+        assert app._main_window is main and main.calendar and main.page
+        main.fold()
+        assert main.folded and main.calendar
+        if main._slide_timer is not None:
+            main._slide_start -= 0.1
+            main.animate_sidebar()
+            assert 0 < main._side_width < 146
+        # 중간에 방향을 뒤집어도 마지막 상태와 본문의 오른쪽 끝이 일치한다.
+        main.fold()
+        if main._slide_timer is not None:
+            main._slide_start -= 1
+            main.animate_sidebar()
+        assert main._slide_timer is None and main._side_width == 146
+        assert sum((main.body.frame().origin.x, main.body.frame().size.width)) == main.width - 8
+        app.show_panel()
+        home_button = next(
+            control for control, _ in app._header_frames if control.toolTip() == "홈 열기"
+        )
+        home_button.performClick_(None)
+        assert app._main_window is main and main.window.isVisible() and not main.calendar
+        assert not app._panel.is_visible()
+        app._preferences = replace(
+            original,
+            sections=tuple(SectionPreference(item.key, False) for item in app._section_order),
+        )
+        app._resize_lists()
+        app._render_home()
+        assert main.cards == () and main.headers == []
+        app.open_settings(screen=True)
+        assert app._settings_window is not None
+        app._settings_window._window.close()
+        main.window.close()
+        app._preferences = original
+        app._resize_lists()
         app.open_source_board(0)
         app.open_source_board(1)
         assert opened == ["https://www.notion.so/fake-tasks", "https://www.notion.so/fake-meetings"]
@@ -199,8 +270,6 @@ def test_native_menu_renders_and_saves_attendance(
         # 앞 카드의 행 수와 링크가 달라져도 뒤 카드의 문서와 클릭 목적지는 유지한다.
         snapshot = app._controller.snapshot
         assert snapshot is not None
-        from dataclasses import replace
-
         # 한 행의 링크·배지가 바뀌어도 같은 카드의 다른 행은 기존 버튼을 계속 쓴다.
         existing = snapshot.category_areas[tasks_card.key].entries
         changed = replace(existing[1], status="완료", url="https://www.notion.so/changed")

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from AppKit import (
     NSApplication,
-    NSApplicationActivationPolicyAccessory,
+    NSApplicationActivationPolicyRegular,
     NSBezelStyleRounded,
     NSButton,
     NSColor,
@@ -17,6 +17,8 @@ from AppKit import (
     NSControlSizeSmall,
     NSFont,
     NSImage,
+    NSMenu,
+    NSMenuItem,
     NSNoBorder,
     NSPopUpButton,
     NSProgressIndicator,
@@ -35,7 +37,7 @@ from src.application.ai_skills import SkillInstaller
 from src.application.app_updates import AppUpdates
 from src.application.calendar import CalendarClient
 from src.application.data_backup import DataBackupActions
-from src.application.desktop import DayUpdate, DesktopClient, DesktopSnapshot
+from src.application.desktop import DayUpdate, DesktopClient, DesktopSnapshot, MenuEntry
 from src.application.mcp_access import McpSettingsClient
 from src.application.notification_identity import NotificationBranding
 from src.application.notifications import NotificationChannel
@@ -64,12 +66,13 @@ from src.presentation.calendar_controller import CalendarController
 from src.presentation.calendar_controls import CalendarFilterChoice, calendar_filter_choices
 from src.presentation.calendar_views import (
     COMPACT_CALENDAR_HEIGHT,
-    CalendarWindow,
+    CalendarPage,
     CompactCalendarView,
 )
 from src.presentation.desktop_controller import DesktopController
 from src.presentation.entry_section import EntrySection
 from src.presentation.glass_panel import GlassPanel
+from src.presentation.main_window import HomeCard, MainWindow
 from src.presentation.mcp_settings_controller import McpSettingsController
 from src.presentation.native_views import (
     button,
@@ -120,8 +123,16 @@ class Callbacks(NSObject):
 
     def applicationShouldHandleReopen_hasVisibleWindows_(self, app: object, visible: bool) -> bool:
         """Finder가 실행 중인 메뉴바로 직접 보낸 재열기를 처리한다."""
-        self.owner.show_panel()
+        self.owner.open_main()
         return False
+
+    def home_(self, sender: object) -> None:
+        """빠른 패널에서 메인 창의 홈으로 이동한다."""
+        self.owner.open_main()
+
+    def applicationShouldTerminate_(self, app: NSApplication) -> int:
+        """Dock과 단축키의 종료 요청에도 미완료 입력을 보호한다."""
+        return 0 if self.owner.termination_pending() else 1
 
     def calendar_(self, sender: object) -> None:
         """메인 표시와 별개로 캘린더 창을 연다."""
@@ -175,6 +186,10 @@ class Callbacks(NSObject):
     def expandSource_(self, sender: NSButton) -> None:
         """선택한 사용자 영역만 높이를 전환한다."""
         self.owner.expand_source(sender.tag())
+
+    def screenSettings_(self, sender: object) -> None:
+        """홈의 화면 설정 버튼은 해당 설정 페이지를 직접 연다."""
+        self.owner.open_settings(screen=True)
 
     def settings_(self, sender: object) -> None:
         """독립된 설정 창을 연다."""
@@ -297,7 +312,7 @@ class MenuBarApp:
             if calendar_client
             else None
         )
-        self._calendar_window: CalendarWindow | None = None
+        self._main_window: MainWindow | None = None
         self._calendar_view: CompactCalendarView | None = None
         self._today = today
         self._display_day = today()
@@ -307,10 +322,22 @@ class MenuBarApp:
         self._shutdown_requested = shutdown_requested
         self._notification_error: str | None = None
         self._application = NSApplication.sharedApplication()
-        self._application.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        self._application.setActivationPolicy_(NSApplicationActivationPolicyRegular)
         self._callbacks = Callbacks.alloc().init()
         self._callbacks.owner = self
         self._application.setDelegate_(self._callbacks)
+        # Dock·응용 프로그램 메뉴에서 같은 정식 종료 경로를 사용한다.
+        menu = NSMenu.alloc().init()
+        app_item = NSMenuItem.alloc().init()
+        menu.addItem_(app_item)
+        app_menu = NSMenu.alloc().init()
+        app_menu.addItem_(
+            NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "맹메이트 종료", "terminate:", "q"
+            )
+        )
+        app_item.setSubmenu_(app_menu)
+        self._application.setMainMenu_(menu)
         self._controller = DesktopController(client)
         self._dirty = False
         self._save_blocked = False
@@ -356,7 +383,15 @@ class MenuBarApp:
     def _build(self) -> None:
         """고정 기능을 배치하고 카테고리 카드는 확인한 소스로 따로 만든다."""
         view = self._view
-        self._date = label(view, "오늘", 22, 615, POPOVER_WIDTH - 170, size=17, bold=True)
+        self._date = label(view, "오늘", 22, 615, POPOVER_WIDTH - 202, size=17, bold=True)
+        home_button = button(
+            view, "", POPOVER_WIDTH - 170, 614, 26, self._callbacks, "home:", bordered=False
+        )
+        home_button.setImage_(
+            NSImage.imageWithSystemSymbolName_accessibilityDescription_("house", "홈 열기")
+        )
+        home_button.setAccessibilityLabel_("홈 열기")
+        home_button.setToolTip_("홈 열기")
         calendar_button = button(
             view, "", POPOVER_WIDTH - 138, 614, 26, self._callbacks, "calendar:", bordered=False
         )
@@ -723,11 +758,9 @@ class MenuBarApp:
     def tick(self) -> None:
         """저장 중 바뀐 선택은 이전 응답으로 되돌리지 않고 다음 버전으로 저장한다."""
         if self._panel_requested and self._panel_requested():
-            self.show_panel()
+            self.open_main()
         if self._calendar_controller is not None:
-            visible = self._compact_calendar_visible() or (
-                self._calendar_window is not None and self._calendar_window.is_visible()
-            )
+            visible = self._compact_calendar_visible() or (self._main_calendar_visible())
             self._calendar_controller.tick(visible=visible)
             self._render_calendars()
         if self._records_controller is not None:
@@ -853,6 +886,13 @@ class MenuBarApp:
                     "미기록" if self._base is None or self._base.attendance is None else "저장됨"
                 )
                 self._set_message(error or fallback)
+
+        if (
+            self._main_window
+            and self._main_window.window.isVisible()
+            and not self._main_window.calendar
+        ):
+            self._render_home()
 
         if self._shutdown_requested is not None and self._shutdown_requested():
             self.quit()
@@ -1097,22 +1137,28 @@ class MenuBarApp:
         )
         self._resize_lists(animated=True)
 
+    def _source_rows(
+        self, snapshot: DesktopSnapshot, key: str
+    ) -> tuple[int, tuple[MenuEntry, ...]]:
+        """홈과 메뉴바가 서버의 동일한 카테고리 순서를 사용한다."""
+        group = self._source_groups[key]
+        # 사용자 규칙을 적용한 카드는 서버가 소스 경계를 넘어 확정한 순서를 쓴다.
+        area = snapshot.category_areas.get(key)
+        areas = (
+            (area,)
+            if area is not None
+            else tuple(
+                snapshot.source_areas[item.id] for item in group if item.id in snapshot.source_areas
+            )
+        )
+        count = sum(area.count for area in areas)
+        rows = tuple(entry for area in areas for entry in area.entries)
+        return count, rows
+
     def _render_source_lists(self, snapshot: DesktopSnapshot) -> None:
         """카테고리에 연결한 소스들의 미리보기와 실제 개수를 합산한다."""
         for key, group in self._source_groups.items():
-            # 사용자 규칙을 적용한 카드는 서버가 소스 경계를 넘어 확정한 순서를 쓴다.
-            area = snapshot.category_areas.get(key)
-            areas = (
-                (area,)
-                if area is not None
-                else tuple(
-                    snapshot.source_areas[item.id]
-                    for item in group
-                    if item.id in snapshot.source_areas
-                )
-            )
-            count = sum(area.count for area in areas)
-            rows = tuple(entry for area in areas for entry in area.entries)
+            count, rows = self._source_rows(snapshot, key)
             view = self._custom_sections[key]
             suffix = "" if snapshot.work_error else f" {count}"
             view.title.setStringValue_(group[0].title + suffix)
@@ -1206,24 +1252,98 @@ class MenuBarApp:
         )
         if self._calendar_view is not None and self._compact_calendar_visible():
             self._calendar_view.render(enabled)
-        if self._calendar_window is not None and self._calendar_window.is_visible():
-            self._calendar_window.render(enabled)
+        window = self._main_window
+        if window is not None and window.window.isVisible():
+            if window.calendar and window.page:
+                window.page.render(enabled)
+            elif not window.calendar and window.compact:
+                window.compact.render(enabled)
+
+    def _main_calendar_visible(self) -> bool:
+        """홈 달력이나 월간 화면이 실제로 보이는 동안만 자동 조회한다."""
+        window = self._main_window
+        return bool(window and window.window.isVisible() and (window.calendar or window.compact))
+
+    def open_main(self, *, calendar: bool = False) -> None:
+        """명시적인 실행 요청에서만 유리 창을 생성하고 앞으로 가져온다."""
+        self._panel.hide()
+        if self._main_window is None:
+            controller = self._calendar_controller
+
+            def month(parent: NSView) -> CalendarPage:
+                """메뉴바와 같은 월 조회 및 필터를 연결한다."""
+                assert controller is not None
+                return CalendarPage(
+                    parent,
+                    controller,
+                    self._calendar_preferences,
+                    self._toggle_calendar_filter,
+                    self._open_notion,
+                    choices=self._calendar_filter_choices,
+                )
+
+            def compact(parent: NSView, width: float) -> CompactCalendarView:
+                """선택된 홈 달력 카드는 메뉴바와 같은 컨트롤을 쓴다."""
+                assert controller is not None
+                return CompactCalendarView(
+                    parent,
+                    width,
+                    controller,
+                    self._calendar_preferences,
+                    self._toggle_calendar_filter,
+                    self.open_calendar,
+                    inset=0,
+                    choices=self._calendar_filter_choices,
+                )
+
+            self._main_window = MainWindow(
+                self._callbacks, month if controller else None, compact if controller else None
+            )
+        self._render_home()
+        self._main_window.show(calendar)
+        self._next_refresh = 0
+        self._render_calendars()
+
+    def _render_home(self) -> None:
+        """확정 설정과 현재 스냅샷에서 홈에 선택된 카드만 전달한다."""
+        if self._main_window is None:
+            return
+        snapshot = self._controller.snapshot
+        cards: list[HomeCard] = []
+        if self._preferences_controller.confirmed is not None:
+            for section in self._section_order:
+                if not section.visible:
+                    continue
+                key = section.key
+                if key == "work":
+                    cards.append(
+                        HomeCard(
+                            key,
+                            "근무",
+                            message=f"{self._departure_title.stringValue()}  {self._departure.stringValue()}",
+                        )
+                    )
+                elif key == "calendar":
+                    if self._calendar_controller:
+                        cards.append(HomeCard(key, "캘린더"))
+                else:
+                    title = self._source_groups[key][0].title
+                    if snapshot is None or snapshot.work_error:
+                        message = (
+                            "연결 확인 필요"
+                            if self._controller.error or snapshot
+                            else "불러오는 중…"
+                        )
+                        cards.append(HomeCard(key, title, message=message))
+                    else:
+                        count, rows = self._source_rows(snapshot, key)
+                        cards.append(HomeCard(key, f"{title} {count}", rows))
+        self._main_window.update(tuple(cards), self._empty_view.stringValue())
 
     def open_calendar(self) -> None:
-        """메인 표시 선택과 무관하게 같은 날짜의 월 달력을 별도 창으로 연다."""
-        if self._calendar_controller is None:
-            return
-        self._panel.hide()
-        if self._calendar_window is None:
-            self._calendar_window = CalendarWindow(
-                self._calendar_controller,
-                self._calendar_preferences,
-                self._toggle_calendar_filter,
-                self._open_notion,
-                choices=self._calendar_filter_choices,
-            )
-        self._calendar_window.show()
-        self._render_calendars()
+        """같은 메인 창에서 선택 날짜의 큰 달력을 연다."""
+        if self._calendar_controller is not None:
+            self.open_main(calendar=True)
 
     def _records_saved(self, day: date) -> None:
         """오늘 정정은 다음 조회로 반영하고 메뉴바의 미저장 입력은 보존한다."""
@@ -1241,7 +1361,7 @@ class MenuBarApp:
             self._records_window = WorkRecordsWindow(self._records_controller)
         self._records_window.show()
 
-    def open_settings(self) -> None:
+    def open_settings(self, *, screen: bool = False) -> None:
         """메뉴바를 닫고 재사용 가능한 설정 창을 표시한다."""
         self._panel.hide()
         if self._settings_window is None:
@@ -1261,7 +1381,7 @@ class MenuBarApp:
                 self._data_backup,
                 self._app_updates,
             )
-        self._settings_window.show()
+        self._settings_window.show(screen=screen)
 
     def _update_pending(self) -> bool:
         """설정 창을 열기 전에도 메뉴바와 기록 창의 편집·저장을 보호한다."""
@@ -1292,8 +1412,8 @@ class MenuBarApp:
             self._timer.invalidate()
             self._timer = None
         self._controller.close()
-        if self._calendar_window is not None:
-            self._calendar_window.close()
+        if self._main_window is not None:
+            self._main_window.window.close()
         if self._calendar_controller is not None:
             self._calendar_controller.close()
         if self._records_window is not None:
@@ -1311,20 +1431,24 @@ class MenuBarApp:
             controller.close()
         NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
 
-    def quit(self) -> None:
-        """미완료 자동 저장이 있으면 완료를 기다린 뒤 종료한다."""
+    def termination_pending(self) -> bool:
+        """저장 작업 또는 미적용 입력이 있으면 종료를 보류한다."""
         if any(controller.busy for controller in self._settings_controllers):
-            return
+            return True
         if self._records_controller is not None and self._records_controller.saving:
-            return
+            return True
         if self._identity_controller is not None and self._identity_controller.busy:
-            return
+            return True
         if self._preferences_controller.busy or (
             self._preferences_controller.dirty and self._preferences_controller.error is None
         ):
-            return
+            return True
         if self._dirty or (self._controller.busy and self._controller.operation == "save"):
             self._set_message("저장 확인 후 종료")
-            return
-        self.close()
-        self._application.terminate_(None)
+            return True
+        return self._update_pending()
+
+    def quit(self) -> None:
+        """메뉴바 종료도 Dock과 동일한 앱 종료 요청으로 처리한다."""
+        if not self.termination_pending():
+            self._application.terminate_(None)

@@ -4,6 +4,8 @@ import asyncio
 import os
 import sys
 from contextlib import ExitStack
+from datetime import datetime
+from functools import partial
 from pathlib import Path
 from unittest.mock import patch
 
@@ -41,6 +43,9 @@ class FakeClient(httpx.AsyncClient):
 def start() -> None:
     """설정·CLI·수명 감독은 실제 구현으로 실행한다."""
     support = Path(os.environ["DATABASE_PATH"]).parent / "app-support"
+    command = os.environ.get("FAKE_COMMAND", "run")
+    if command not in {"run", "api"}:
+        raise ValueError("격리 실행은 run 또는 api만 허용합니다.")
     with ExitStack() as isolated:
         # 실제 로그인 서비스의 역할 잠금이나 사용자 Keychain을 조회하지 않는다.
         isolated.enter_context(
@@ -55,7 +60,16 @@ def start() -> None:
             isolated.enter_context(patch.object(MacKeychain, "read", return_value=None))
         # 수집기가 만드는 외부 연결만 가상화하고 MCP의 내부 루프백 연결은 그대로 둔다.
         isolated.enter_context(patch("src.bootstrap.resident.httpx", AsyncClient=FakeClient))
-        isolated.enter_context(patch.object(sys, "argv", ["maeng-mate", "run"]))
+        if instant := os.environ.get("FAKE_NOW"):
+            from src.bootstrap import work_rules
+            from src.infrastructure.sqlite.day_records import SQLiteDayStore
+
+            now = datetime.fromisoformat(instant)
+            # 자정이나 퇴근 시각에 관계없이 같은 오늘 기록·미래 예약을 검증한다.
+            isolated.enter_context(
+                patch.object(work_rules, "SQLiteDayStore", partial(SQLiteDayStore, now=lambda: now))
+            )
+        isolated.enter_context(patch.object(sys, "argv", ["maeng-mate", command]))
         main()
 
 

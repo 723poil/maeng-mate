@@ -15,8 +15,9 @@ from src.bootstrap.app_settings import application_environment
 from src.bootstrap.backup_restore import guard_startup
 from src.bootstrap.backup_transaction import pending_restore
 from src.bootstrap.collection_wiring import build_collection
-from src.bootstrap.environment import ConfigError, app_environment, required, sync_interval
+from src.bootstrap.environment import app_environment, required, sync_interval
 from src.bootstrap.instance import application_directory
+from src.bootstrap.local_listener import local_listener
 from src.bootstrap.notion_credentials import load_notion_environment
 from src.bootstrap.runtime_settings import load_runtime_environment
 from src.bootstrap.storage import require_migrated_database
@@ -131,19 +132,11 @@ async def _run_resident(env: Mapping[str, str]) -> None:
     path = required(env, "DATABASE_PATH")
     database = Database(path)
     await require_migrated_database(database)
-    settings = load_work_settings(database, prepare_categories=True)
     stop = asyncio.Event()
     committed = asyncio.Event() if pending_restore(application_directory()) else None
-    # 포트 충돌 시 예약 등록이나 원천 조회까지 진행하지 않는다.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        try:
-            # 직전 연결의 TIME_WAIT 때문에 정상 재시작이 막히지 않게 한다.
-            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            listener.bind(("127.0.0.1", environment.port))
-            listener.listen(socket.SOMAXCONN)
-            listener.setblocking(False)
-        except OSError:
-            raise ConfigError("로컬 API 포트를 사용할 수 없습니다: LOCAL_API_PORT") from None
+    # 단독 API와 동일하게 포트 확보 뒤에만 설정·오늘 기록·예약을 보정한다.
+    with local_listener(environment.port) as listener:
+        settings = load_work_settings(database, prepare_categories=True)
         rules_service = build_work_rules(settings, database)
         schedules = SQLiteSchedules(database)
         sources = settings.active_sources

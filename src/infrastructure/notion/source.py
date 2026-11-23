@@ -316,6 +316,9 @@ class NotionSource:
                             parent_label=round_name if source.parent_label else None,
                             parent_order=order,
                             display_values=values,
+                            raw_fields={
+                                names[key]: value for key, value in item.raw_fields.items()
+                            },
                             calendar_periods={
                                 names[key]: period for key, period in item.calendar_periods.items()
                             },

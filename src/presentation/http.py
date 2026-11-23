@@ -5,7 +5,7 @@ import hashlib
 import hmac
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager, nullcontext
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -18,6 +18,7 @@ from src.application.date_inputs import parse_day
 from src.application.day_ports import DayUseCases
 from src.application.errors import InvalidDateError, QueryReadError, SnapshotError
 from src.application.mcp_access import McpAccessStore, McpSettingsClient, is_mcp_read_route
+from src.application.mcp_lists import ListAccessError, ListQueries
 from src.application.notifications import NotificationStore
 from src.application.notion_credentials import NotionCredentialsClient
 from src.application.notion_page_links import NotionPageLinksClient
@@ -34,6 +35,7 @@ from src.application.work_rules_settings import WorkRulesClient
 from src.presentation.calendar_http import create_calendar_router
 from src.presentation.collection_http import create_collection_router
 from src.presentation.day_http import create_day_router
+from src.presentation.mcp_lists_http import create_list_router
 from src.presentation.mcp_settings_http import create_mcp_settings_router
 from src.presentation.notification_http import create_notification_router
 from src.presentation.notion_credentials_http import create_notion_credentials_router
@@ -77,17 +79,23 @@ def create_app(
     source_settings_service: SourceSettingsClient | None = None,
     calendar_service: CalendarService | None = None,
     slack_settings_service: SlackSettingsClient | None = None,
+    list_queries: ListQueries | None = None,
+    list_mcp_server: FastMCP | None = None,
 ) -> FastAPI:
     """설정과 어댑터를 만들지 않고 주입받은 상태 조회만 노출한다."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """MCP 수명을 같은 앱의 시작·종료에 묶는다."""
-        if mcp_server is None:
+        if mcp_server is None and list_mcp_server is None:
             yield
             return
         # 도구 세션을 먼저 종료한 뒤 그 세션들이 사용한 루프백 연결을 닫는다.
-        async with mcp_query_client or nullcontext(), mcp_server.session_manager.run():
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(mcp_query_client or nullcontext())
+            for server in (mcp_server, list_mcp_server):
+                if server is not None:
+                    await stack.enter_async_context(server.session_manager.run())
             if on_mcp_ready is not None:
                 on_mcp_ready(True)
             try:
@@ -107,6 +115,13 @@ def create_app(
         candidate = hashlib.sha256(raw.encode()).digest()
         internal = header.startswith("Bearer ") and hmac.compare_digest(expected, candidate)
         mcp_path = request.url.path == "/mcp" or request.url.path.startswith("/mcp/")
+        list_mcp_path = request.url.path == "/mcp-lists" or request.url.path.startswith(
+            "/mcp-lists/"
+        )
+        list_read = (request.method, request.url.path) in {
+            ("GET", "/v1/mcp/lists/sources"),
+            ("POST", "/v1/mcp/lists/search"),
+        }
         response: Response
         if not header.startswith("Bearer ") or len(header) > 4096:
             response = JSONResponse({"detail": "Unauthorized"}, status_code=401)
@@ -117,10 +132,22 @@ def create_app(
         ):
             # 복원 확정 전에는 내부 준비 검사만 허용한다. MCP 인증도 최근 사용을 기록한다.
             response = JSONResponse({"detail": "데이터 복원 중입니다."}, status_code=503)
-        elif internal and not mcp_path:
+        elif internal and not (mcp_path or list_mcp_path or list_read):
             response = await call_next(request)
         elif internal:
             response = JSONResponse({"detail": "MCP access token required"}, status_code=403)
+        elif list_mcp_path or list_read:
+            # 목록 토큰은 이 별도 경로에만 허용한다. 개인·관리 토큰으로 대체하지 않는다.
+            try:
+                if list_queries is None:
+                    raise ListAccessError()
+                await asyncio.to_thread(list_queries.access.authorize, candidate.hex())
+                request.scope["maeng.list_digest"] = candidate.hex()
+                response = await call_next(request)
+            except ListAccessError:
+                response = JSONResponse({"detail": "Unauthorized"}, status_code=401)
+            except SnapshotError:
+                response = JSONResponse({"detail": "Authentication unavailable"}, status_code=503)
         else:
             try:
                 allowed = mcp_access is not None and await asyncio.to_thread(
@@ -194,6 +221,9 @@ def create_app(
     app.include_router(create_runtime_settings_router(runtime_settings_service))
     app.include_router(create_notion_credentials_router(notion_credentials_service))
     app.include_router(create_mcp_settings_router(mcp_service))
+    app.include_router(create_list_router(list_queries))
+    if list_mcp_server is not None:
+        app.mount("/mcp-lists", list_mcp_server.streamable_http_app())
     if mcp_server is not None:
         app.mount("/mcp", mcp_server.streamable_http_app())
     app.include_router(create_page_links_router(page_links_service))

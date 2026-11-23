@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from src.application.errors import QueryReadError, SnapshotError
 from src.application.mcp_access import McpSettingsService
+from src.application.mcp_lists import ListQueries
 from src.application.models import SystemStatusContext
 from src.application.notion_page_links import NotionPageLinksClient
 from src.application.periodic import IntervalUpdate
@@ -38,11 +39,13 @@ from src.domain.runtime_settings import GeneralSettings, NotionSettings, Runtime
 from src.infrastructure.notion.catalog import NotionCatalog
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.mcp_access import SQLiteMcpAccess
+from src.infrastructure.sqlite.mcp_lists import SQLiteListAccess
 from src.infrastructure.sqlite.preferences import SQLitePreferences
 from src.infrastructure.sqlite.runtime_settings import SQLiteRuntimeSettings
 from src.infrastructure.sqlite.work_reader import SQLiteWorkReader
 from src.infrastructure.sqlite.work_settings import SQLiteWorkSettings
 from src.presentation.http import create_app
+from src.presentation.mcp_lists import create_list_server
 
 
 def build_api(
@@ -63,6 +66,7 @@ def build_api(
         sources_configured=bool(settings and settings.active_sources),
         retention_confirmed=bool(settings and settings.retention_confirmed),
         relevance_policy=environment.relevance_policy,
+        personal_identity_configured=environment.notion_user_id is not None,
     )
 
     def query_status() -> dict[str, object]:
@@ -121,6 +125,17 @@ def build_api(
         else None
     )
     task_search, task_statuses = build_task_queries(environment, settings, reader=work_reader)
+    list_queries = (
+        ListQueries(
+            settings or Settings(()),
+            work_reader or SQLiteWorkReader(Database(environment.database)),
+            SQLiteListAccess(Database(environment.database)),
+            now,
+            environment.snapshot_max_age_seconds,
+        )
+        if environment.database
+        else None
+    )
     return create_app(
         environment.token,
         query_status,
@@ -152,6 +167,8 @@ def build_api(
         notification_channels=tuple(channel.key for channel in CHANNELS),
         notion_credentials_service=credentials,
         source_settings_service=source_settings,
+        list_queries=list_queries,
+        list_mcp_server=create_list_server(list_queries) if list_queries else None,
         runtime_settings_service=RuntimeSettingsService(
             SQLiteRuntimeSettings(Database(environment.database)),
             RuntimeSettings(

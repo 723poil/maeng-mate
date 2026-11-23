@@ -7,13 +7,14 @@ from pathlib import Path
 from src.infrastructure.sqlite.runtime_settings import read_settings
 from src.infrastructure.sqlite.schema import (
     INDEXES,
+    MCP_LIST_TOKENS_TABLE,
     SCHEMA_VERSION,
     SOURCE_STATUS_OPTIONS_TABLE,
     TABLES,
 )
 from src.infrastructure.sqlite.work_settings import read_document
 
-_DEVICE_TABLES = ("mcp_preferences", "mcp_access_tokens")
+_DEVICE_TABLES = ("mcp_preferences", "mcp_access_tokens", "mcp_list_tokens")
 _SCHEMA_QUERY = "SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name"
 
 
@@ -80,6 +81,10 @@ def validate_portable_database(path: Path) -> int:
         actual = source.execute(_SCHEMA_QUERY).fetchmany(len(expected) + 1)
         version = SCHEMA_VERSION
         if actual != expected:
+            # 목록 접근 권한은 기기별로 새로 부여하며 v18 백업의 업무는 보존한다.
+            reference.execute("DROP TABLE mcp_list_tokens")
+            version = 18
+        if actual != reference.execute(_SCHEMA_QUERY).fetchall():
             # v17의 전체 DDL도 이름·정의까지 대조한다. 알 수 없는 테이블이나 트리거는 거부한다.
             reference.execute("DROP TABLE source_status_options")
             if actual != reference.execute(_SCHEMA_QUERY).fetchall():
@@ -96,7 +101,9 @@ def validate_portable_database(path: Path) -> int:
         ):
             raise ValueError("백업 DB의 무결성을 확인하지 못했습니다.")
         if any(
-            source.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() for table in _DEVICE_TABLES
+            source.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+            for table in _DEVICE_TABLES
+            if table != "mcp_list_tokens" or version >= 19
         ):
             raise ValueError("기기 접근 권한을 포함한 백업은 불러올 수 없습니다.")
         source.row_factory = sqlite3.Row
@@ -107,12 +114,16 @@ def validate_portable_database(path: Path) -> int:
 
 
 def prepare_portable_restore(path: Path) -> None:
-    """검증한 v17 복원 후보에만 비어 있는 상태 스키마 저장소를 추가한다."""
-    if validate_portable_database(path) == 17:
+    """검증한 v17·v18 후보에 업무를 보존한 최신 기기 접근 스키마를 추가한다."""
+    version = validate_portable_database(path)
+    if version < SCHEMA_VERSION:
         with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True)) as connection:
             connection.execute("BEGIN")
-            connection.execute(SOURCE_STATUS_OPTIONS_TABLE)
-            connection.execute("INSERT INTO schema_versions(version) VALUES(18)")
+            if version == 17:
+                connection.execute(SOURCE_STATUS_OPTIONS_TABLE)
+                connection.execute("INSERT INTO schema_versions(version) VALUES(18)")
+            connection.execute(MCP_LIST_TOKENS_TABLE)
+            connection.execute("INSERT INTO schema_versions(version) VALUES(19)")
             connection.commit()
 
 

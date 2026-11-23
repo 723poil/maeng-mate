@@ -127,6 +127,9 @@ class ItemBase:
     source_edited_at: str
     observed_at: str
     display_values: Mapping[str, str] = field(default_factory=dict, kw_only=True, repr=False)
+    raw_fields: Mapping[str, dict[str, object]] = field(
+        default_factory=dict, kw_only=True, repr=False
+    )
     alert_values: Mapping[str, str] = field(default_factory=dict, kw_only=True, repr=False)
     # 예약 시각은 같은 수집에서 큐에 저장하고 스냅샷에는 발송 전 대조할 해시만 남긴다.
     alert_due_at: Mapping[str, datetime] = field(default_factory=dict, kw_only=True, repr=False)

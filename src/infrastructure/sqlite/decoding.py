@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 
 from src.application.errors import QueryReadError
 from src.domain.models import CalendarEvent, EventType, Leave, Period, SourceMapping, Task, WorkItem
+from src.domain.raw_fields import checked_raw_field
 
 
 class StoredItemIdentity(TypedDict):
@@ -115,6 +116,18 @@ def decode_item(value: object, source: SourceMapping) -> WorkItem:
         timestamp(common["source_edited_at"])
         timestamp(common["observed_at"])
         display_values: dict[str, str] = {}
+        stored_fields = record(payload.get("raw_fields", {}))
+        raw_fields = {
+            column.value_key: checked_raw_field(stored_fields[column.value_key])
+            for column in source.display_columns or ()
+            if column.value_key in stored_fields
+        }
+        if any(
+            raw_fields[column.value_key]["type"] != column.kind
+            for column in source.display_columns or ()
+            if column.value_key in raw_fields
+        ):
+            raise QueryReadError()
         if source.display_columns:
             raw_values = record(payload.get("display_values", {}))
             display_values = {
@@ -136,6 +149,7 @@ def decode_item(value: object, source: SourceMapping) -> WorkItem:
             return Task(
                 **common,
                 display_values=display_values,
+                raw_fields=raw_fields,
                 calendar_periods=calendar_periods,
                 title=string(payload["title"]),
                 assignee_ids=identities(payload["assignee_ids"]),
@@ -156,6 +170,7 @@ def decode_item(value: object, source: SourceMapping) -> WorkItem:
             return CalendarEvent(
                 **common,
                 display_values=display_values,
+                raw_fields=raw_fields,
                 calendar_periods=calendar_periods,
                 title=string(payload["title"]),
                 participant_ids=identities(payload["participant_ids"]),

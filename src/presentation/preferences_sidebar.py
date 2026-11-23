@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from enum import Enum
+from typing import Protocol
 
 from AppKit import (
     NSColor,
@@ -39,6 +40,13 @@ class SettingsPage(Enum):
         self.integration = integration
 
 
+class SidebarPage(Protocol):
+    """기본 사이드바 셀에 필요한 페이지 이름과 시스템 심볼이다."""
+
+    title: str
+    icon: str
+
+
 class SidebarCell(NSTableCellView):
     """행을 누르면 창 이동 대신 기능을 선택한다."""
 
@@ -50,7 +58,7 @@ class SidebarCell(NSTableCellView):
 class SidebarActions(NSObject):
     """마우스와 키보드의 기본 목록 선택을 페이지 전환으로 연결한다."""
 
-    owner: "PreferencesSidebar"
+    owner: "NavigationSidebar"
 
     def numberOfRowsInTableView_(self, table: NSTableView) -> int:
         """사용 가능한 설정 페이지 수를 반환한다."""
@@ -80,8 +88,8 @@ class SidebarActions(NSObject):
         row = self.owner.view.selectedRow()
         if 0 <= row < len(self.owner.rows):
             item = self.owner.rows[row]
-            if isinstance(item, SettingsPage):
-                self.owner.changed(item)
+            if not isinstance(item, str):
+                self.owner.changed(row)
 
     def tableView_isGroupRow_(self, table: NSTableView, row: int) -> bool:
         """연동·고급은 페이지가 아닌 그룹 제목으로 표시한다."""
@@ -89,35 +97,30 @@ class SidebarActions(NSObject):
 
     def tableView_shouldSelectRow_(self, table: NSTableView, row: int) -> bool:
         """그룹 제목을 클릭해도 내용 페이지를 바꾸지 않는다."""
-        return isinstance(self.owner.rows[row], SettingsPage)
+        return not isinstance(self.owner.rows[row], str)
 
     def tableView_heightOfRow_(self, table: NSTableView, row: int) -> float:
         """그룹 제목과 선택 행의 높이를 구분한다."""
         return 24.0 if isinstance(self.owner.rows[row], str) else 34.0
 
 
-class PreferencesSidebar:
-    """페이지 전환만 담당하고 저장 설정과는 분리한다."""
+class NavigationSidebar:
+    """홈과 설정 창에서 같은 macOS 목록 선택과 키보드 탐색을 제공한다."""
 
     def __init__(
         self,
         parent: NSView,
+        y: float,
         height: float,
-        changed: Callable[[SettingsPage], None],
-        *,
-        pages: tuple[SettingsPage, ...],
+        rows: tuple[SidebarPage | str, ...],
+        changed: Callable[[int], None],
     ) -> None:
-        """활성화된 기능만 업무 설정과 연동 순서로 배치한다."""
-        self.changed = changed
-        primary = tuple(page for page in SettingsPage if page in pages and not page.integration)
-        integrations = tuple(page for page in SettingsPage if page in pages and page.integration)
-        self.rows: tuple[SettingsPage | str, ...] = (
-            (*primary, "연동", *integrations) if integrations else primary
-        )
+        """페이지 목록과 선택 콜백을 기본 소스 목록에 연결한다."""
+        self.rows, self.changed = rows, changed
         self._actions = SidebarActions.alloc().init()
         self._actions.owner = self
         # SourceList가 보태는 행 여백도 스크롤 뷰 경계 안에서 잘리도록 감싼다.
-        self._scroll = NSScrollView.alloc().initWithFrame_(frame(8, 52, 132, height - 108))
+        self._scroll = NSScrollView.alloc().initWithFrame_(frame(8, y, 132, height))
         self._scroll.setDrawsBackground_(False)
         self._scroll.setBorderType_(NSNoBorder)
         self._scroll.setHasVerticalScroller_(False)
@@ -140,11 +143,41 @@ class PreferencesSidebar:
         self.view.setDelegate_(self._actions)
         self._scroll.setDocumentView_(self.view)
         parent.addSubview_(self._scroll)
-        self.select(SettingsPage.SCREEN)
 
-    def select(self, page: SettingsPage) -> None:
-        """설정 창 재사용 중에도 선택 상태를 기본 컨트롤에서 관리한다."""
+    def select(self, page: SidebarPage) -> None:
+        """페이지의 현재 행을 찾아 선택한다."""
         if page in self.rows:
-            self.view.selectRowIndexes_byExtendingSelection_(
-                NSIndexSet.indexSetWithIndex_(self.rows.index(page)), False
-            )
+            index = self.rows.index(page)
+            if self.view.selectedRow() != index:
+                self.view.selectRowIndexes_byExtendingSelection_(
+                    NSIndexSet.indexSetWithIndex_(index), False
+                )
+
+
+class PreferencesSidebar(NavigationSidebar):
+    """페이지 전환만 담당하고 저장 설정과는 분리한다."""
+
+    def __init__(
+        self,
+        parent: NSView,
+        height: float,
+        changed: Callable[[SettingsPage], None],
+        *,
+        pages: tuple[SettingsPage, ...],
+    ) -> None:
+        """활성화된 기능만 업무 설정과 연동 순서로 배치한다."""
+
+        primary = tuple(page for page in SettingsPage if page in pages and not page.integration)
+        integrations = tuple(page for page in SettingsPage if page in pages and page.integration)
+        rows: tuple[SettingsPage | str, ...] = (
+            (*primary, "연동", *integrations) if integrations else primary
+        )
+
+        def selected(index: int) -> None:
+            """설정 페이지 선택만 설정 창으로 전달한다."""
+            page = rows[index]
+            if isinstance(page, SettingsPage):
+                changed(page)
+
+        super().__init__(parent, 52, height - 108, rows, selected)
+        self.select(SettingsPage.SCREEN)

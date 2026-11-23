@@ -8,8 +8,6 @@ import objc
 from AppKit import (
     NSAlert,
     NSApplication,
-    NSApplicationActivationPolicyAccessory,
-    NSApplicationActivationPolicyRegular,
 )
 from Foundation import NSBundle, NSObject
 
@@ -62,23 +60,6 @@ class UpdateDelegate(NSObject):
         """자동 확인 창을 Dock에서도 찾을 수 있게 한다."""
         return True
 
-    @objc.typedSelector(b"v@:Z@@")
-    def standardUserDriverWillHandleShowingUpdate_forUpdate_state_(
-        self, showing: bool, item: object, state: object
-    ) -> None:
-        """다른 앱 뒤에 열린 설치 확인 창도 Dock에서 선택할 수 있게 한다."""
-        if showing:
-            NSApplication.sharedApplication().setActivationPolicy_(
-                NSApplicationActivationPolicyRegular
-            )
-
-    @objc.typedSelector(b"v@:")
-    def standardUserDriverWillFinishUpdateSession(self) -> None:
-        """설치 또는 보류 선택을 마치면 다시 메뉴바 전용 앱으로 돌아간다."""
-        NSApplication.sharedApplication().setActivationPolicy_(
-            NSApplicationActivationPolicyAccessory
-        )
-
     @objc.typedSelector(b"v@:@@")
     def updater_willInstallUpdate_(self, updater: object, item: object) -> None:
         """조회·다운로드가 끝나 실제 설치가 결정된 시점만 표시한다."""
@@ -92,7 +73,7 @@ class UpdateDelegate(NSObject):
     def applicationShouldTerminate_(self, sender: NSApplication) -> int:
         """새 앱이 다시 시작할 수 있도록 저장과 서버 종료를 확인한다."""
         if not self.installing:
-            return 1
+            return 0 if self.pending() else 1
         if self.pending():
             message = (
                 "편집 중인 내용을 저장하거나 취소하고 진행 중인 작업을 마친 뒤 다시 시도하세요."

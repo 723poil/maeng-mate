@@ -401,8 +401,10 @@ class PreferencesWindow:
         self._render_state = None
         self.render()
 
-    def show(self) -> None:
-        """다시 열어도 저장 중인 선택과 스크롤을 보존한다."""
+    def show(self, *, screen: bool = False) -> None:
+        """일반 열기는 선택을 유지하고 홈의 표시 설정은 화면 페이지를 연다."""
+        if screen:
+            self._sidebar.select(SettingsPage.SCREEN)
         self.render()
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self._window.makeKeyAndOrderFront_(None)

@@ -24,7 +24,7 @@ from src.domain.calendar import CalendarKind, CalendarPreferences
 from src.domain.source_display import SourceDisplay, display_groups
 from src.presentation.calendar_controller import CalendarController
 from src.presentation.calendar_style import box, kind_color
-from src.presentation.native_views import button, frame, label
+from src.presentation.native_views import button, frame, icon_button, label
 
 
 class CalendarControlActions(NSObject):
@@ -97,12 +97,17 @@ class CalendarToolbar:
                     )
                 )
                 self.filter_button.setToolTip_("표시 항목")
-            self.month = label(parent, "", x + 136, y + 6, 104, size=12, bold=True)
+            center = width / 2
+            self.month = label(parent, "", x + center - 52, y + 6, 104, size=12, bold=True)
             self.month.setAlignment_(NSTextAlignmentCenter)
-            coordinates = (104, 248, 278, 342)
+            coordinates = (center - 82, center + 58, width - 146, width - 82)
         else:
             self.month = label(parent, "", x, y + 3, 154, size=20, bold=True)
             coordinates = (230, 266, 160, 308)
+            if open_filters is not None:
+                self.filter_button = button(
+                    parent, "표시 항목", x + 342, y, 76, self._actions, "filters:"
+                )
         self._previous = button(
             parent, "", x + coordinates[0], y, 24, self._actions, "previous:", bordered=False
         )
@@ -123,9 +128,17 @@ class CalendarToolbar:
             )
             control.setToolTip_(title)
         if compact and open_window:
-            button(parent, "창으로 보기 ↗", x + 388, y, 88, self._actions, "open:", bordered=False)
+            icon_button(
+                parent,
+                "arrow.up.left.and.arrow.down.right",
+                "큰 캘린더 열기",
+                x + width - 38,
+                y,
+                self._actions,
+                "open:",
+            )
         self._spinner = NSProgressIndicator.alloc().initWithFrame_(
-            frame(x + width - 20 if not compact else x + 370, y + 7, 12, 12)
+            frame(x + width - 20 if not compact else x + width - 55, y + 7, 12, 12)
         )
         self._spinner.setStyle_(NSProgressIndicatorStyleSpinning)
         self._spinner.setDisplayedWhenStopped_(False)

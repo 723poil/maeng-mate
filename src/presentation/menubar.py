@@ -124,6 +124,10 @@ class Callbacks(NSObject):
         self.owner.open_main()
         return False
 
+    def home_(self, sender: object) -> None:
+        """빠른 패널에서 메인 창의 홈으로 이동한다."""
+        self.owner.open_main()
+
     def calendar_(self, sender: object) -> None:
         """메인 표시와 별개로 캘린더 창을 연다."""
         self.owner.open_calendar()
@@ -361,7 +365,15 @@ class MenuBarApp:
     def _build(self) -> None:
         """고정 기능을 배치하고 카테고리 카드는 확인한 소스로 따로 만든다."""
         view = self._view
-        self._date = label(view, "오늘", 22, 615, POPOVER_WIDTH - 170, size=17, bold=True)
+        self._date = label(view, "오늘", 22, 615, POPOVER_WIDTH - 202, size=17, bold=True)
+        home_button = button(
+            view, "", POPOVER_WIDTH - 170, 614, 26, self._callbacks, "home:", bordered=False
+        )
+        home_button.setImage_(
+            NSImage.imageWithSystemSymbolName_accessibilityDescription_("house", "홈 열기")
+        )
+        home_button.setAccessibilityLabel_("홈 열기")
+        home_button.setToolTip_("홈 열기")
         calendar_button = button(
             view, "", POPOVER_WIDTH - 138, 614, 26, self._callbacks, "calendar:", bordered=False
         )

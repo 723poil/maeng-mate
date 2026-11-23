@@ -178,7 +178,13 @@ def test_native_menu_renders_and_saves_attendance(
         main.fold()
         assert main.folded and main.calendar
         main.fold()
-        app.open_main()
+        app.show_panel()
+        home_button = next(
+            control for control, _ in app._header_frames if control.toolTip() == "홈 열기"
+        )
+        home_button.performClick_(None)
+        assert app._main_window is main and main.window.isVisible() and not main.calendar
+        assert not app._panel.is_visible()
         app._preferences = replace(
             original,
             sections=tuple(SectionPreference(item.key, False) for item in app._section_order),

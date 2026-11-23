@@ -24,7 +24,13 @@ from src.infrastructure.sqlite.portable_backup import (
 )
 from src.infrastructure.work_rules_file import MAX_WORK_RULES_BYTES, WorkRulesFile
 
-__all__ = ["MAX_ARCHIVE_BYTES", "create_backup", "preserve_device_access", "unpack_backup"]
+__all__ = [
+    "MAX_ARCHIVE_BYTES",
+    "BackupPublicationError",
+    "create_backup",
+    "preserve_device_access",
+    "unpack_backup",
+]
 
 _DATABASE = "data.sqlite3"
 _RULES = "work-rules.json"
@@ -33,6 +39,24 @@ _MAX_DB_BYTES = 8 * 1024**3
 MAX_ARCHIVE_BYTES = _MAX_DB_BYTES + 1024**2
 _MEMBER_LIMITS = {_DATABASE: _MAX_DB_BYTES, _RULES: MAX_WORK_RULES_BYTES, _MANIFEST: 1024}
 _CHUNK_BYTES = 1024**2
+
+
+class BackupPublicationError(OSError):
+    """파일은 게시됐지만 디렉터리 동기화 또는 후속 정리를 완료하지 못했다."""
+
+
+def _sync_directory(directory: Path) -> None:
+    """지원하는 볼륨에서 게시한 이름을 동기화하고 실제 저장 오류는 전파한다."""
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            os.fsync(descriptor)
+        except OSError as error:
+            # 디렉터리 fsync 자체를 지원하지 않는 외장 볼륨은 기존 저장 동작을 유지한다.
+            if error.errno not in (errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP):
+                raise
+    finally:
+        os.close(descriptor)
 
 
 class _ArchiveReader(BufferedReader):
@@ -65,40 +89,56 @@ def create_backup(database: Path, rules: Path, target: Path) -> None:
     """같은 시점의 DB·근무 규칙을 검증한 다음 완성된 파일을 새 이름으로만 게시한다."""
     if target.exists() or target.is_symlink():
         raise FileExistsError("같은 이름의 파일이 있습니다. 새 이름으로 저장하세요.")
-    with tempfile.TemporaryDirectory() as temporary:
-        staging = Path(temporary)
-        snapshot = staging / "snapshot.sqlite3"
-        portable = staging / _DATABASE
-        # 근무 규칙이 바뀌지 않는 구간 안에서 WAL에 커밋된 DB 상태를 읽는다.
-        with private_file_lock(rules.with_name(f".{rules.name}.lock")):
-            saved_rules = WorkRulesFile(rules).read()
-            copy_database(database, snapshot)
-            created_at = datetime.now(UTC).isoformat()
-        build_portable_database(snapshot, portable)
-        if portable.stat().st_size > _MAX_DB_BYTES:
-            raise ValueError("백업할 데이터 크기가 지원 범위를 넘었습니다.")
-        manifest = {
-            "format": "maeng-mate",
-            "version": 1,
-            "createdAt": created_at,
-            "workRules": saved_rules is not None,
-        }
-        # 사용자 위치에는 검증한 휴대용 자료만 쓰고, 동시 저장 때 기존 파일을 덮지 않는다.
-        with tempfile.TemporaryDirectory(dir=target.parent, prefix=".maeng-mate-") as publication:
-            output = Path(publication) / "backup"
-            output.touch(mode=0o600, exist_ok=False)
-            with output.open("wb") as stream:
-                with ZipFile(stream, "w") as archive:
-                    archive.writestr(_MANIFEST, json.dumps(manifest))
-                    archive.write(portable, _DATABASE)
-                    if saved_rules is not None:
-                        archive.writestr(
-                            _RULES,
-                            json.dumps(document_payload(saved_rules), ensure_ascii=False).encode(),
-                        )
-                stream.flush()
-                os.fsync(stream.fileno())
-            _publish_new_file(output, target)
+    published = False
+    try:
+        with tempfile.TemporaryDirectory() as temporary:
+            staging = Path(temporary)
+            snapshot = staging / "snapshot.sqlite3"
+            portable = staging / _DATABASE
+            # 근무 규칙이 바뀌지 않는 구간 안에서 WAL에 커밋된 DB 상태를 읽는다.
+            with private_file_lock(rules.with_name(f".{rules.name}.lock")):
+                saved_rules = WorkRulesFile(rules).read()
+                copy_database(database, snapshot)
+                created_at = datetime.now(UTC).isoformat()
+            build_portable_database(snapshot, portable)
+            if portable.stat().st_size > _MAX_DB_BYTES:
+                raise ValueError("백업할 데이터 크기가 지원 범위를 넘었습니다.")
+            manifest = {
+                "format": "maeng-mate",
+                "version": 1,
+                "createdAt": created_at,
+                "workRules": saved_rules is not None,
+            }
+            # 사용자 위치에는 검증한 휴대용 자료만 쓰고, 동시 저장 때 기존 파일을 덮지 않는다.
+            with tempfile.TemporaryDirectory(
+                dir=target.parent, prefix=".maeng-mate-"
+            ) as publication:
+                output = Path(publication) / "backup"
+                output.touch(mode=0o600, exist_ok=False)
+                with output.open("wb") as stream:
+                    with ZipFile(stream, "w") as archive:
+                        archive.writestr(_MANIFEST, json.dumps(manifest))
+                        archive.write(portable, _DATABASE)
+                        if saved_rules is not None:
+                            archive.writestr(
+                                _RULES,
+                                json.dumps(
+                                    document_payload(saved_rules), ensure_ascii=False
+                                ).encode(),
+                            )
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                _publish_new_file(output, target)
+                published = True
+            # 임시 게시 폴더 정리까지 마친 뒤 최종 이름이 속한 디렉터리를 확정한다.
+            _sync_directory(target.parent)
+    except OSError as error:
+        # 게시 뒤에는 완성된 파일을 지우지 않고 호출자가 재시도 여부를 판단하게 한다.
+        if published:
+            raise BackupPublicationError(
+                "백업 파일은 생성됐지만 저장 완료를 확인하지 못했습니다."
+            ) from error
+        raise
 
 
 def _creation_time(data: bytes, *, has_rules: bool) -> str:

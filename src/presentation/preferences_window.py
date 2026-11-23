@@ -152,7 +152,7 @@ class PreferencesActions(NSObject):
         ):
             if not self.owner.work_rules_restart_blocked():
                 self.owner._work_rules.restart()
-        elif self.owner._runtime_controller is not None and not self.owner.source_edits_pending():
+        elif self.owner._runtime_controller is not None and not self.owner._restart_edits_pending():
             credentials = self.owner._credentials_controller
             self.owner._runtime_controller.restart(
                 provider_pending=bool(credentials and credentials.restart_required)
@@ -256,7 +256,7 @@ class PreferencesWindow:
         self._pages = {page: self._page(content, viewport) for page in pages}
         if data_backup is not None:
             self._backup_view = DataBackupView(
-                self._pages[SettingsPage.BACKUP], viewport, data_backup, self._backup_edits_pending
+                self._pages[SettingsPage.BACKUP], viewport, data_backup, self._restart_edits_pending
             )
         self._build_screen_page(self._pages[SettingsPage.SCREEN], viewport)
         self._build_notification_page(self._pages[SettingsPage.NOTIFICATIONS], viewport, channels)
@@ -543,7 +543,7 @@ class PreferencesWindow:
             and not credentials_busy
             and not (credentials and credentials.input_dirty)
             and not (links and (links.busy or links.dirty))
-            and not self.source_edits_pending()
+            and not self._restart_edits_pending()
             and (controller.can_restart or provider_pending)
         )
 
@@ -619,6 +619,8 @@ class PreferencesWindow:
         slack = self._slack_controller
         return bool(
             self.controller.dirty
+            # 알림 이름·아이콘은 적용 전까지 제어기가 아닌 뷰에만 초안이 있다.
+            or (self._identity_view and self._identity_view.dirty)
             or (runtime and (runtime.dirty or runtime.restarting))
             or (credentials and credentials.input_dirty)
             or (links and links.dirty)
@@ -628,15 +630,11 @@ class PreferencesWindow:
 
     def update_pending(self) -> bool:
         """복원이나 편집 도중에 업데이트 설치가 앱을 종료하지 않게 한다."""
-        return self._backup_edits_pending() or bool(self._backup_view and self._backup_view.busy)
+        return self._restart_edits_pending() or bool(self._backup_view and self._backup_view.busy)
 
-    def _backup_edits_pending(self) -> bool:
-        """복원 재시작으로 다른 화면의 편집 중인 설정과 기록을 잃지 않게 한다."""
-        return (
-            self._source_restart_blocked()
-            or self.source_edits_pending()
-            or bool(self._identity_view and self._identity_view.dirty)
-        )
+    def _restart_edits_pending(self) -> bool:
+        """설정 적용·복원·업데이트 전에 모든 화면의 초안과 저장 작업을 확인한다."""
+        return self._source_restart_blocked() or self.source_edits_pending()
 
     def _render_work_rules(self, controller: WorkRulesEditor) -> None:
         """공통 하단 버튼과 상태를 현재 근무 규칙 편집에 연결한다."""

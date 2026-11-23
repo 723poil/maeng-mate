@@ -103,6 +103,10 @@ class CalendarToolbar:
         else:
             self.month = label(parent, "", x, y + 3, 154, size=20, bold=True)
             coordinates = (230, 266, 160, 308)
+            if open_filters is not None:
+                self.filter_button = button(
+                    parent, "표시 항목", x + 342, y, 76, self._actions, "filters:"
+                )
         self._previous = button(
             parent, "", x + coordinates[0], y, 24, self._actions, "previous:", bordered=False
         )

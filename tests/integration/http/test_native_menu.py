@@ -168,6 +168,9 @@ def test_native_menu_renders_and_saves_attendance(
             ),
         )
         app._resize_lists()
+        from AppKit import NSApplicationActivationPolicyRegular
+
+        assert app._application.activationPolicy() == NSApplicationActivationPolicyRegular
         assert app._main_window is None
         app._callbacks.applicationShouldHandleReopen_hasVisibleWindows_(None, False)
         main = app._main_window
@@ -177,7 +180,17 @@ def test_native_menu_renders_and_saves_attendance(
         assert app._main_window is main and main.calendar and main.page
         main.fold()
         assert main.folded and main.calendar
+        if main._slide_timer is not None:
+            main._slide_start -= 0.1
+            main.animate_sidebar()
+            assert 0 < main._side_width < 146
+        # 중간에 방향을 뒤집어도 마지막 상태와 본문의 오른쪽 끝이 일치한다.
         main.fold()
+        if main._slide_timer is not None:
+            main._slide_start -= 1
+            main.animate_sidebar()
+        assert main._slide_timer is None and main._side_width == 146
+        assert sum((main.body.frame().origin.x, main.body.frame().size.width)) == main.width - 8
         app.show_panel()
         home_button = next(
             control for control, _ in app._header_frames if control.toolTip() == "홈 열기"

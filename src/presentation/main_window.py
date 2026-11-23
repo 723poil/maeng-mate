@@ -1,5 +1,6 @@
 """Finder에서 여는 홈과 월간 캘린더를 같은 유리 창에 배치한다."""
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -12,8 +13,9 @@ from AppKit import (
     NSScreen,
     NSScrollView,
     NSView,
+    NSWorkspace,
 )
-from Foundation import NSObject
+from Foundation import NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
 
 from src.application.desktop import MenuEntry
 from src.presentation.calendar_views import (
@@ -62,6 +64,10 @@ class WindowActions(NSObject):
         """본문 너비를 바꾸고 같은 화면을 다시 배치한다."""
         self.owner.fold()
 
+    def slide_(self, sender: object) -> None:
+        """메인 루프에서 사이드바와 본문 위치를 함께 갱신한다."""
+        self.owner.animate_sidebar()
+
 
 class MainWindow:
     """기존 컨트롤과 표시 설정을 재사용하는 앱 기본 창이다."""
@@ -87,6 +93,8 @@ class MainWindow:
         self.page: CalendarPage | None = None
         self.compact: CompactCalendarView | None = None
         self.lists: dict[str, EntryList] = {}
+        self._slide_timer: NSTimer | None = None
+        self._side_width = 146.0
         self._layout()
 
     def _layout(self) -> None:
@@ -100,17 +108,15 @@ class MainWindow:
         side = 0 if self.folded else 146
         root = NSView.alloc().initWithFrame_(frame(0, 0, w, h))
         self.window.setContentView_(glass_container(root, w, h))
-        self.sidebar = NSView.alloc().initWithFrame_(frame(4, 44, side, h - 160))
-        root.addSubview_(self.sidebar)
-        self.sidebar.setHidden_(self.folded)
-        if not self.folded:
-            pages = (
-                (MainPage.HOME, MainPage.CALENDAR) if self.calendar_factory else (MainPage.HOME,)
-            )
-            self.navigation = NavigationSidebar(root, h - 120, 84, pages, self._navigate)
-            icon_button(root, "gearshape", "설정 열기", 12, 8, self.target, "settings:")
+        self.rail = NSView.alloc().initWithFrame_(frame(side - 146, 0, 146, h))
+        root.addSubview_(self.rail)
+        self.sidebar = NSView.alloc().initWithFrame_(frame(4, 44, 142, h - 160))
+        self.rail.addSubview_(self.sidebar)
+        pages = (MainPage.HOME, MainPage.CALENDAR) if self.calendar_factory else (MainPage.HOME,)
+        self.navigation = NavigationSidebar(self.rail, h - 120, 84, pages, self._navigate)
+        icon_button(self.rail, "gearshape", "설정 열기", 12, 8, self.target, "settings:")
         toggle_x = max(78, side + 8)
-        icon_button(
+        self.toggle_button = icon_button(
             root,
             "sidebar.left",
             "사이드바 펼치기" if self.folded else "사이드바 접기",
@@ -150,8 +156,62 @@ class MainWindow:
 
     def fold(self) -> None:
         """사이드바를 접거나 펼쳐 달력과 홈의 실제 너비를 바꾼다."""
+        self._stop_slide()
         self.folded = not self.folded
+        self._slide_from = self._side_width
+        self._slide_to = 0.0 if self.folded else 146.0
+        # 마지막 폭에 맞춰 목록을 한 번만 배치해 매 프레임 달력 셀을 만들지 않는다.
+        origin = self.scroll.contentView().bounds()[0][1]
         self._layout()
+        document = self.scroll.documentView()
+        if document is not None:
+            document.scrollPoint_((0, origin))
+        if (
+            not self.window.isVisible()
+            or NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+        ):
+            self._place_sidebar(self._slide_to)
+            return
+        self._place_sidebar(self._slide_from)
+        self._slide_start = time.monotonic()
+        self._slide_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                1 / 60, self.actions, "slide:", None, True
+            )
+        )
+        NSRunLoop.currentRunLoop().addTimer_forMode_(self._slide_timer, NSRunLoopCommonModes)
+
+    def _place_sidebar(self, width: float) -> None:
+        """고정된 오른쪽 가장자리를 기준으로 본문 폭과 도구 위치를 맞춘다."""
+        self._side_width = width
+        h = self.height
+        self.rail.setFrame_(frame(width - 146, 0, 146, h))
+        self.rail.setHidden_(width == 0)
+        self.body.setFrame_(frame(width + 8, 8, self.width - width - 16, h - 50))
+        self.body.setBoundsSize_((self.width - self._slide_to - 16, h - 50))
+        x = max(78, width + 8)
+        self.toggle_button.setFrame_(frame(x, h - 36, 30, 26))
+        (_, y), size = self.title.frame()
+        self.title.setFrame_(frame(x + 36, y, *size))
+
+    def animate_sidebar(self) -> None:
+        """빠른 재클릭은 직전 위치에서 반전하며 창이 닫히면 즉시 끝낸다."""
+        progress = (
+            min(1.0, (time.monotonic() - self._slide_start) / 0.2)
+            if self.window.isVisible()
+            else 1.0
+        )
+        self._place_sidebar(
+            self._slide_to + (self._slide_from - self._slide_to) * (1 - progress) ** 3
+        )
+        if progress == 1:
+            self._stop_slide()
+
+    def _stop_slide(self) -> None:
+        """지난 전환의 타이머가 새 창 상태를 덮어쓰지 않도록 정리한다."""
+        if self._slide_timer is not None:
+            self._slide_timer.invalidate()
+            self._slide_timer = None
 
     def update(self, cards: tuple[HomeCard, ...], empty: str) -> None:
         """행 내용만 달라지면 기존 목록과 스크롤 위치를 유지한다."""

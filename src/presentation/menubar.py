@@ -9,7 +9,7 @@ from pathlib import Path
 
 from AppKit import (
     NSApplication,
-    NSApplicationActivationPolicyAccessory,
+    NSApplicationActivationPolicyRegular,
     NSBezelStyleRounded,
     NSButton,
     NSColor,
@@ -17,6 +17,8 @@ from AppKit import (
     NSControlSizeSmall,
     NSFont,
     NSImage,
+    NSMenu,
+    NSMenuItem,
     NSNoBorder,
     NSPopUpButton,
     NSProgressIndicator,
@@ -127,6 +129,10 @@ class Callbacks(NSObject):
     def home_(self, sender: object) -> None:
         """빠른 패널에서 메인 창의 홈으로 이동한다."""
         self.owner.open_main()
+
+    def applicationShouldTerminate_(self, app: NSApplication) -> int:
+        """Dock과 단축키의 종료 요청에도 미완료 입력을 보호한다."""
+        return 0 if self.owner.termination_pending() else 1
 
     def calendar_(self, sender: object) -> None:
         """메인 표시와 별개로 캘린더 창을 연다."""
@@ -316,10 +322,22 @@ class MenuBarApp:
         self._shutdown_requested = shutdown_requested
         self._notification_error: str | None = None
         self._application = NSApplication.sharedApplication()
-        self._application.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        self._application.setActivationPolicy_(NSApplicationActivationPolicyRegular)
         self._callbacks = Callbacks.alloc().init()
         self._callbacks.owner = self
         self._application.setDelegate_(self._callbacks)
+        # Dock·응용 프로그램 메뉴에서 같은 정식 종료 경로를 사용한다.
+        menu = NSMenu.alloc().init()
+        app_item = NSMenuItem.alloc().init()
+        menu.addItem_(app_item)
+        app_menu = NSMenu.alloc().init()
+        app_menu.addItem_(
+            NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "맹메이트 종료", "terminate:", "q"
+            )
+        )
+        app_item.setSubmenu_(app_menu)
+        self._application.setMainMenu_(menu)
         self._controller = DesktopController(client)
         self._dirty = False
         self._save_blocked = False
@@ -1413,20 +1431,24 @@ class MenuBarApp:
             controller.close()
         NSStatusBar.systemStatusBar().removeStatusItem_(self._status_item)
 
-    def quit(self) -> None:
-        """미완료 자동 저장이 있으면 완료를 기다린 뒤 종료한다."""
+    def termination_pending(self) -> bool:
+        """저장 작업 또는 미적용 입력이 있으면 종료를 보류한다."""
         if any(controller.busy for controller in self._settings_controllers):
-            return
+            return True
         if self._records_controller is not None and self._records_controller.saving:
-            return
+            return True
         if self._identity_controller is not None and self._identity_controller.busy:
-            return
+            return True
         if self._preferences_controller.busy or (
             self._preferences_controller.dirty and self._preferences_controller.error is None
         ):
-            return
+            return True
         if self._dirty or (self._controller.busy and self._controller.operation == "save"):
             self._set_message("저장 확인 후 종료")
-            return
-        self.close()
-        self._application.terminate_(None)
+            return True
+        return self._update_pending()
+
+    def quit(self) -> None:
+        """메뉴바 종료도 Dock과 동일한 앱 종료 요청으로 처리한다."""
+        if not self.termination_pending():
+            self._application.terminate_(None)

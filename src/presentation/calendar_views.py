@@ -37,15 +37,19 @@ class CompactCalendarView:
         toggle: Callable[[str, bool], None],
         open_window: Callable[[], None],
         *,
+        inset: float = 16,
         choices: Callable[[], tuple[CalendarFilterChoice, ...]] = lambda: calendar_filter_choices(
             ()
         ),
     ) -> None:
         """메인 영역 이동에서도 컨트롤을 새로 만들지 않는다."""
         self.controller, self.preferences = controller, preferences
-        self.view = NSView.alloc().initWithFrame_(frame(16, 0, width - 32, COMPACT_CALENDAR_HEIGHT))
+        self._inset = inset
+        content_width = width - 2 * inset
+        self.view = NSView.alloc().initWithFrame_(
+            frame(inset, 0, content_width, COMPACT_CALENDAR_HEIGHT)
+        )
         parent.addSubview_(self.view)
-        content_width = width - 32
         card(self.view, 0, 0, content_width, COMPACT_CALENDAR_HEIGHT)
         self.filter_popover = CalendarFilterPopover(preferences, toggle, choices)
         self.filters = self.filter_popover.filters
@@ -79,7 +83,7 @@ class CompactCalendarView:
         """본문 스크롤 안에서 카드 위치만 갱신한다."""
         if self.view.frame()[0][1] != y:
             self.filter_popover.hide()
-        self.view.setFrame_(frame(16, y, self.view.frame()[1][0], COMPACT_CALENDAR_HEIGHT))
+        self.view.setFrame_(frame(self._inset, y, self.view.frame()[1][0], COMPACT_CALENDAR_HEIGHT))
 
     def render(self, enabled: bool) -> None:
         """선택 종류와 날짜를 두 화면에서 즉시 일치시킨다."""

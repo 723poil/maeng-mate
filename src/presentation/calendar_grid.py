@@ -131,7 +131,14 @@ class CalendarGrid:
         # 날짜·일정 표시는 한 뷰에 두고, 투명 클릭 버튼은 항상 맨 위에 둔다.
         contents = NSView.alloc().initWithFrame_(frame(0, 0, width, self._row_height))
         cell.addSubview_(contents)
-        number = label(contents, "1", 5, self._row_height - 24, 22, size=11 if self.compact else 12)
+        number = label(
+            contents,
+            "1",
+            (width - 22) / 2 if self.compact else 5,
+            self._row_height - 24,
+            22,
+            size=11 if self.compact else 12,
+        )
         number.setAlignment_(NSTextAlignmentCenter)
         overlay = button(cell, "", 0, 0, width, self._actions, "day:", bordered=False)
         overlay.setFrame_(frame(0, 0, width, self._row_height))
@@ -184,7 +191,15 @@ class CalendarGrid:
             cell.setSubviews_([])
             today = day == data.today
             if today:
-                box(cell, 5, self._row_height - 25, 22, 22, NSColor.systemBlueColor(), 11)
+                box(
+                    cell,
+                    slot.number.frame()[0][0],
+                    self._row_height - 25,
+                    22,
+                    22,
+                    NSColor.systemBlueColor(),
+                    11,
+                )
             size = 11 if self.compact else 12
             # 오늘 배경, 날짜 숫자, 근무 아이콘 순으로 겹치는 작은 칸도 같은 순서를 유지한다.
             cell.addSubview_(slot.number)
@@ -229,7 +244,15 @@ class CalendarGrid:
                 )
                 dots = kinds[: max(0, int((width - 10) // 8))]
                 for offset, (kind, source_color) in enumerate(dots):
-                    box(cell, 8 + offset * 8, 2, 5, 5, kind_color(kind, source_color), 2.5)
+                    box(
+                        cell,
+                        (width - len(dots) * 8 + 3) / 2 + offset * 8,
+                        2,
+                        5,
+                        5,
+                        kind_color(kind, source_color),
+                        2.5,
+                    )
             else:
                 slots = 3 if self._row_height >= 80 else 2
                 shown = items[: slots - 1] if len(items) > slots else items[:slots]

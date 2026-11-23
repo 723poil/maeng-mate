@@ -4,7 +4,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
-from AppKit import NSApplication, NSButton, NSNoBorder, NSScreen, NSScrollView, NSView
+from AppKit import (
+    NSApplication,
+    NSButton,
+    NSLineBreakByTruncatingTail,
+    NSNoBorder,
+    NSScreen,
+    NSScrollView,
+    NSView,
+)
 from Foundation import NSObject
 
 from src.application.desktop import MenuEntry
@@ -15,7 +23,7 @@ from src.presentation.calendar_views import (
 )
 from src.presentation.entry_list import EntryList
 from src.presentation.glass_panel import auxiliary_window
-from src.presentation.native_views import button, card, frame, glass_container, label
+from src.presentation.native_views import button, card, frame, glass_container, icon_button, label
 from src.presentation.preferences_sidebar import NavigationSidebar
 
 
@@ -100,10 +108,27 @@ class MainWindow:
                 (MainPage.HOME, MainPage.CALENDAR) if self.calendar_factory else (MainPage.HOME,)
             )
             self.navigation = NavigationSidebar(root, h - 120, 84, pages, self._navigate)
-            button(root, "설정…", 8, 10, 126, self.target, "settings:")
-        button(root, "사이드바", max(48, side + 4), h - 36, 80, self.actions, "fold:")
-        self.title = label(root, "", max(134, side + 90), h - 30, 150, size=16, bold=True)
-        button(root, "화면 설정…", w - 104, h - 36, 96, self.target, "screenSettings:")
+            icon_button(root, "gearshape", "설정 열기", 12, 8, self.target, "settings:")
+        toggle_x = max(78, side + 8)
+        icon_button(
+            root,
+            "sidebar.left",
+            "사이드바 펼치기" if self.folded else "사이드바 접기",
+            toggle_x,
+            h - 36,
+            self.actions,
+            "fold:",
+        )
+        self.title = label(root, "", toggle_x + 36, h - 32, 150, size=16, bold=True)
+        self.display_settings = icon_button(
+            root,
+            "slider.horizontal.3",
+            "홈 표시 설정",
+            w - 38,
+            h - 36,
+            self.target,
+            "screenSettings:",
+        )
         self.body = NSView.alloc().initWithFrame_(frame(side + 8, 8, w - side - 16, h - 50))
         root.addSubview_(self.body)
         self.scroll = self._scroll(self.body)
@@ -153,7 +178,7 @@ class MainWindow:
         self.compact = None
         self.headers.clear()
         self.lists.clear()
-        w, h = self.body.frame()[1]
+        w, h = self.scroll.contentView().bounds()[1]
         heights = [
             COMPACT_CALENDAR_HEIGHT
             if item.key == "calendar"
@@ -165,9 +190,14 @@ class MainWindow:
         top = max(h, sum(heights) + 8 * len(heights))
         doc = NSView.alloc().initWithFrame_(frame(0, 0, w, top))
         self.scroll.setDocumentView_(doc)
-        nav_height = max(self.sidebar.frame()[1][1], 28 * len(self.cards))
+        # 항상 표시되는 스크롤 막대가 차지한 폭도 실제 클립 뷰에서 제외한다.
+        w = self.scroll.contentView().bounds()[1][0]
+        doc.setFrameSize_((w, top))
+        nav_height = max(self.sidebar.frame()[1][1], 24 + 28 * len(self.cards))
         nav = NSView.alloc().initWithFrame_(frame(0, 0, 136, nav_height))
         self.nav_scroll.setDocumentView_(nav)
+        if len(self.cards) > 1:
+            label(nav, "바로가기", 14, nav_height - 20, 108, size=11, secondary=True)
         for index, (item, height) in enumerate(zip(self.cards, heights, strict=True)):
             y = top - height
             if item.key == "calendar" and self.compact_factory:
@@ -187,16 +217,20 @@ class MainWindow:
                     self.lists[item.key] = entries
             self.headers.append(header)
             if len(self.cards) > 1:
-                button(
+                jump = button(
                     nav,
                     item.title,
-                    0,
-                    nav_height - 28 * (index + 1),
-                    132,
+                    14,
+                    nav_height - 24 - 28 * (index + 1),
+                    118,
                     self.actions,
                     "jump:",
                     bordered=False,
-                ).setTag_(index)
+                )
+                jump.setTag_(index)
+                jump.setAlignment_(0)
+                jump.setToolTip_(item.title)
+                jump.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
             top = y - 8
         if not self.cards:
             label(doc, self.empty, 12, h - 34, w - 24, secondary=True)
@@ -212,6 +246,7 @@ class MainWindow:
         """선택한 본문과 목차만 보이고 숨은 달력 팝오버를 닫는다."""
         if not self.folded:
             self.navigation.select(MainPage.CALENDAR if self.calendar else MainPage.HOME)
+        self.display_settings.setHidden_(self.calendar)
         self.title.setStringValue_("캘린더" if self.calendar else "홈")
         self.calendar_host.setHidden_(not self.calendar)
         self.scroll.setHidden_(self.calendar)

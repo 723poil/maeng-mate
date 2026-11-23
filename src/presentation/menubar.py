@@ -1274,6 +1274,7 @@ class MenuBarApp:
                     self._calendar_preferences,
                     self._toggle_calendar_filter,
                     self.open_calendar,
+                    inset=0,
                     choices=self._calendar_filter_choices,
                 )
 

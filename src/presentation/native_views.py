@@ -72,6 +72,17 @@ def button(
     return view
 
 
+def icon_button(
+    parent: NSView, name: str, title: str, x: float, y: float, target: NSObject, action: str
+) -> NSButton:
+    """시스템 아이콘 버튼의 도움말과 VoiceOver 이름을 동작에 맞춘다."""
+    control = button(parent, "", x, y, 30, target, action, bordered=False)
+    control.setImage_(NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, title))
+    control.setToolTip_(title)
+    control.setAccessibilityLabel_(title)
+    return control
+
+
 def symbol(parent: NSView, name: str, x: float, y: float) -> NSImageView:
     """외부 이미지 없이 SF Symbols로 섹션을 구별한다."""
     view = NSImageView.alloc().initWithFrame_(frame(x, y, 19, 19))

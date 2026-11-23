@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from src.application.credentials import CredentialError, validated_secret
 from src.application.notion_credentials import NotionCredentialsClient, credential_state_payload
+from src.presentation.credential_errors_http import credential_http_error
 from src.presentation.request_body import read_limited_body
 
 
@@ -47,14 +48,7 @@ def create_notion_credentials_router(service: NotionCredentialsClient | None) ->
         except (ValueError, UnicodeError):
             raise HTTPException(422, {"code": "invalid"}) from None
         except CredentialError as error:
-            status = (
-                409
-                if error.code == "conflict"
-                else 503
-                if error.code in {"keychain", "busy", "unavailable", "timeout", "rate_limited"}
-                else 422
-            )
-            raise HTTPException(status, {"code": error.code}) from None
+            raise credential_http_error(error) from None
 
     @router.get("/v1/notion/credentials")
     async def read() -> dict[str, object]:
@@ -71,7 +65,7 @@ def create_notion_credentials_router(service: NotionCredentialsClient | None) ->
                 await asyncio.to_thread(service.read, allow_prompt=True)
             )
         except CredentialError as error:
-            raise HTTPException(503, {"code": error.code}) from None
+            raise credential_http_error(error) from None
 
     @router.post("/v1/notion/credentials/check")
     async def check(request: Request) -> dict[str, object]:

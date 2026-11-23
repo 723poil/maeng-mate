@@ -10,6 +10,8 @@
 
 비밀값과 형식 검증, 버전이 있는 저장 레코드, 저장소 포트와 공개 오류 분류는 `src/application/credentials.py`에서 공유한다. Notion의 환경값 복귀, Slack 앱 토큰의 형식, MCP 토큰 발급은 각 유스케이스에서 결정한다.
 
+Notion·Slack 관리 HTTP의 공통 자격 정보 오류는 `src/presentation/credential_errors_http.py`에서 변환한다. `conflict`는 409, `keychain`·`busy`·`unavailable`·`timeout`·`rate_limited`는 503, `invalid`·`missing`·`unauthorized`·`permission`은 422로 반환하며 기존 `detail.code`를 유지한다. 조회·명시적 승인·저장·확인·삭제가 같은 정책을 따른다. 외부 토큰 거부는 로컬 API 관리자 인증의 401·403과 구별한다. Slack 발송 전용 오류는 해당 HTTP 경로에서 별도로 처리한다.
+
 파일 가져오기와 SQLite 읽기·편집은 application의 `parse_settings`로 같은 설정 검증을 수행한다. 수집 소스 화면과 서비스 시작 시에는 같은 읽기에서 얻은 원본 문서와 검증된 매핑을 함께 사용한다. 업무 문서 저장 시 현재 버전을 쓰기 트랜잭션 안에서 다시 확인한다. 이때 읽은 기존 문서와 새로 저장한 문서의 검증 결과를 규칙·구독 비교에 재사용하고, 저장 응답의 재시작 필요 여부는 실제로 확정한 매핑으로 판정한다. 최상위 키·버전과 하위 항목은 Python 타입으로 확인하고, 잘못된 문서는 원문 없이 `WorkSettingsError`로 반환한다.
 
 | 저장 위치 | 값 |
@@ -41,3 +43,5 @@
 ## 결과와 검증
 
 서비스는 시작 파일·DB·Keychain으로 조립된다. 직접 실행하는 CLI에는 환경변수를 명시적으로 주입할 수 있다. `src/bootstrap/app_settings.py`, `work_settings.py`, `src/application/runtime_settings_service.py`, `notion_credentials.py`, `notion_page_links.py`에서 구현한다. 임시 자료로 기존 값 보존, 연결 실패, 충돌, 토큰 삭제와 링크 즉시 반영을 확인한다.
+
+자격 정보 오류는 실제 유스케이스·HTTP와 임시 SQLite·가상 자격 정보 저장소를 연결해 두 확인 경로의 미등록·충돌·일시 장애 및 공개 코드 일치를 확인한다. 개발 앱 PDD는 운영 프로필과 분리한 임시 저장 경로와 고유 루프백 포트를 사용하고, 검사 실패 전후의 저장 자료 보존과 화면 안내를 확인한다. 가상 원천 검증은 실제 회사 연동 검증으로 간주하지 않는다.

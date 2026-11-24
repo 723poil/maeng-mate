@@ -1,8 +1,12 @@
 """Notion 계정과 조회 옵션을 편집하는 기본 macOS 폼이다."""
 
-from AppKit import NSPopUpButton, NSScrollView, NSTextField, NSView
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+
+from AppKit import NSMenuItem, NSPopUpButton, NSScrollView, NSTextField, NSView
 from Foundation import NSObject
 
+from src.application.notion_people import NotionPeople
 from src.application.runtime_settings import parse_runtime_settings
 from src.domain.runtime_settings import RuntimeSettings
 from src.presentation.native_views import (
@@ -70,10 +74,19 @@ class RuntimeSettingsForm:
         viewport: float,
         controller: RuntimeSettingsController,
         actions: NSObject,
+        people: Callable[[], NotionPeople] | None = None,
     ) -> None:
         """Notion 페이지 문서를 만들고 맨 위에 계정 카드를 놓는다."""
         self.controller = controller
         self._generation = 0
+        # 사람 목록은 토큰이 있을 때 한 번 읽고, 못 읽으면 ID 직접 입력으로 대신한다.
+        self._people_source = people
+        self._people: NotionPeople | None = None
+        self._people_future: Future[NotionPeople] | None = None
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="notion-people")
+        self._person_ids: list[str | None] = []
+        self._person_titles: list[str] = []
+        self._manual = False
         # 아래 토큰·링크 카드가 필요하면 문서를 늘리므로 처음에는 보이는 높이로 만든다.
         notion = NSView.alloc().initWithFrame_(frame(0, 0, 584, viewport))
         notion_page.setDocumentView_(notion)
@@ -88,12 +101,21 @@ class RuntimeSettingsForm:
         card_title(section, "내 계정", height)
 
         row = form_row_y(height, 0)
-        row_label(section, "내 Notion ID", row)
+        row_label(section, "사용자", row)
+        # 저장값은 ID 입력칸이 가진다. 사람 목록을 읽으면 이름 메뉴로 보여 주고 고른 ID를 칸에 쓴다.
         self.user_id = form_field(
             section, row, CARD_WIDTH - CARD_PADDING - FORM_CONTROL_X, "Notion 사용자 ID"
         )
         self.user_id.setDelegate_(actions)
         self.user_id.setToolTip_("담당자·참여자 중 나를 찾을 때 이 ID를 씁니다.")
+        self.person = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            frame(FORM_CONTROL_X - 3, form_control_y(row, 26), POLICY_WIDTH, 26), False
+        )
+        self.person.setToolTip_("담당자·참여자 중 나를 찾을 때 씁니다.")
+        self.person.setTarget_(actions)
+        self.person.setAction_("personChosen:")
+        self.person.setHidden_(True)
+        section.addSubview_(self.person)
 
         row = form_row_y(height, 1)
         row_label(section, "목록 범위", row)
@@ -132,6 +154,70 @@ class RuntimeSettingsForm:
             }
         )
 
+    def load_people(self) -> None:
+        """토큰이 등록된 뒤 사람 목록을 한 번만 백그라운드에서 읽는다."""
+        if self._people_source is None or self._people is not None or self._people_future:
+            return
+        self._people_future = self._executor.submit(self._people_source)
+
+    def forget_people(self) -> None:
+        """토큰이 바뀌면 다른 워크스페이스일 수 있으므로 목록을 다시 읽게 한다."""
+        self._people = None
+        self._manual = False
+
+    def choose_person(self) -> None:
+        """이름을 고르면 그 ID를 저장 초안에 쓰고, 마지막 항목이면 ID 입력칸을 연다."""
+        index = self.person.indexOfSelectedItem()
+        if 0 <= index < len(self._person_ids):
+            self.user_id.setStringValue_(self._person_ids[index] or "")
+            self.controller.edited()
+            return
+        self._manual = True
+        self._sync_person()
+        window = self.user_id.window()
+        if window is not None:
+            window.makeFirstResponder_(self.user_id)
+
+    def _collect_people(self) -> None:
+        """끝난 조회만 반영한다. 실패하면 목록 없이 ID 입력칸을 그대로 쓴다."""
+        future = self._people_future
+        if future is None or not future.done():
+            return
+        self._people_future = None
+        try:
+            self._people = future.result()
+        except Exception:
+            self._people = NotionPeople()
+
+    def _sync_person(self) -> None:
+        """현재 ID를 이름으로 보여 주고, 목록에 없는 ID는 맨 위 항목으로 남긴다."""
+        people = self._people.people if self._people is not None else ()
+        picker = bool(people) and not self._manual
+        self.person.setHidden_(not picker)
+        self.user_id.setHidden_(picker)
+        if not picker:
+            return
+        current = self.user_id.stringValue().strip()
+        ids: list[str | None] = [person.id for person in people]
+        titles = [person.name for person in people]
+        if current and current not in ids:
+            ids.insert(0, current)
+            titles.insert(0, f"ID {current[:8]}…")
+        elif not current:
+            ids.insert(0, None)
+            titles.insert(0, "선택 안 함")
+        if ids != self._person_ids or titles != self._person_titles:
+            # 같은 이름이 둘이어도 항목 수가 줄지 않도록 메뉴 항목을 직접 만든다.
+            self.person.removeAllItems()
+            for title in titles:
+                item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+                self.person.menu().addItem_(item)
+            self.person.menu().addItem_(NSMenuItem.separatorItem())
+            manual = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("ID로 입력…", None, "")
+            self.person.menu().addItem_(manual)
+            self._person_ids, self._person_titles = ids, titles
+        self.person.selectItemAtIndex_(ids.index(current or None))
+
     def render(self) -> None:
         """새 조회·저장 성공에서만 값을 채워 입력 중인 초안을 덮지 않는다."""
         controller = self.controller
@@ -142,5 +228,7 @@ class RuntimeSettingsForm:
                 0 if value.general.relevance_policy == "assignment" else 1
             )
             self._generation = controller.generation
-        for control in (self.user_id, self.policy):
+        self._collect_people()
+        self._sync_person()
+        for control in (self.user_id, self.policy, self.person):
             control.setEnabled_(controller.editable)

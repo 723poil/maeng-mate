@@ -290,6 +290,9 @@ class MenuBarApp:
             if notion_credentials_client
             else None
         )
+        self._notion_people = (
+            notion_credentials_client.people if notion_credentials_client else None
+        )
         self._mcp_settings_controller = (
             McpSettingsController(mcp_settings_client, skills) if mcp_settings_client else None
         )
@@ -1168,6 +1171,16 @@ class MenuBarApp:
         empty = title == "수집 소스 없음"
         self._empty = empty
         self._connect_button.setHidden_(not empty)
+        # 토큰을 이미 등록했으면 남은 일은 표 연결이므로 버튼 이름도 다음 할 일로 바꾼다.
+        credentials = self._notion_credentials_controller
+        connected = bool(credentials and credentials.state and credentials.state.configured)
+        connect_title = "표 연결…" if connected else "Notion 연결…"
+        if self._connect_button.title() != connect_title:
+            self._connect_button.setTitle_(connect_title)
+            (x, y), (_, height) = self._connect_button.frame()
+            self._connect_button.setFrame_(
+                frame(x, y, self._connect_button.fittingSize()[0] + 12, height)
+            )
         for control in (
             self._collection,
             self._collection_detail,
@@ -1518,6 +1531,8 @@ class MenuBarApp:
                 self._source_client,
                 self._data_backup,
                 self._app_updates,
+                open_url=self._open_url,
+                notion_people=self._notion_people,
             )
         self._settings_window.show(page=SettingsPage.SCREEN if screen else page)
 
@@ -1527,6 +1542,9 @@ class MenuBarApp:
         state = controller.state if controller is not None else None
         configured = state is not None and state.configured
         self.open_settings(page=SettingsPage.SOURCES if configured else SettingsPage.NOTION)
+        # 토큰이 없다고 확인된 경우에만 토큰 페이지를 열고 복사를 기다린다.
+        if state is not None and not configured and self._settings_window is not None:
+            self._settings_window.start_token_capture()
 
     def _update_pending(self) -> bool:
         """설정 창을 열기 전에도 메뉴바와 기록 창의 편집·저장을 보호한다."""

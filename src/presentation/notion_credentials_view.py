@@ -1,6 +1,14 @@
 """Notion 인증의 보안 입력과 색상 상태 배지를 그린다."""
 
-from AppKit import NSSecureTextField, NSView
+from AppKit import (
+    NSComboButton,
+    NSComboButtonStyleSplit,
+    NSFont,
+    NSMenu,
+    NSMenuItem,
+    NSSecureTextField,
+    NSView,
+)
 from Foundation import NSObject
 
 from src.presentation.native_views import (
@@ -34,6 +42,7 @@ TOKEN_TOP = PAGE_TOP + ACCOUNT_HEIGHT + CARD_GAP
 SAVE_WIDTH = 108.0
 CHECK_WIDTH = 96.0
 DELETE_WIDTH = 64.0
+CREATE_WIDTH = 168.0
 
 
 class NotionCredentialsView:
@@ -105,6 +114,32 @@ class NotionCredentialsView:
             actions,
             "checkCredential:",
         )
+        # 토큰이 없거나 만료되면 연결 확인 대신 만들기 버튼을 둔다. 메뉴의 통합 연결은
+        # 개인 토큰 생성이 막힌 회사 워크스페이스용 대안이다.
+        alternative = NSMenu.alloc().initWithTitle_("토큰 만들기")
+        connection = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "통합 연결로 만들기…", "createConnectionToken:", ""
+        )
+        connection.setTarget_(actions)
+        alternative.addItem_(connection)
+        self.create = NSComboButton.comboButtonWithTitle_menu_target_action_(
+            "Notion에서 만들기…", alternative, actions, "createPersonalToken:"
+        )
+        self.create.setStyle_(NSComboButtonStyleSplit)
+        self.create.setFont_(NSFont.systemFontOfSize_(12))
+        self.create.setToolTip_("토큰을 만들고 Copy를 누르면 자동으로 연결합니다.")
+        self._row_y = row
+        section.addSubview_(self.create)
+        self.cancel = button(
+            section,
+            "취소",
+            delete_x,
+            form_control_y(row, 26),
+            DELETE_WIDTH,
+            actions,
+            "cancelTokenCapture:",
+        )
+        self.capturing = False
         self.render()
 
     def clear_confirmed_input(self) -> None:
@@ -122,7 +157,25 @@ class NotionCredentialsView:
         configured = controller.state is not None and controller.state.configured
         self.check.setEnabled_(controller.editable and configured and not controller.input_dirty)
         self.delete.setEnabled_(controller.editable and configured and not controller.input_dirty)
+        # 감지 중에는 취소만, 토큰이 없거나 만료되면 만들기, 정상 토큰은 확인·삭제를 둔다.
+        expired = configured and (
+            controller.error_code == "unauthorized"
+            or (controller.state is not None and controller.state.verification == "failed")
+        )
+        needs_token = not self.capturing and (not configured or expired)
+        self.cancel.setHidden_(not self.capturing)
+        self.create.setHidden_(not needs_token)
+        self.create.setEnabled_(controller.editable)
+        self.check.setHidden_(self.capturing or needs_token)
+        self.delete.setHidden_(self.capturing or not configured)
+        # 콤보 버튼은 테두리 안쪽 여백이 일반 버튼보다 1.5pt 좁아 오른쪽 끝을 그만큼 늘린다.
+        right = CARD_WIDTH - CARD_PADDING - (DELETE_WIDTH if configured else 0) + 1.5
+        self.create.setFrame_(
+            frame(right - CREATE_WIDTH, form_control_y(self._row_y, 24), CREATE_WIDTH, 24)
+        )
         caption, tone = controller.badge
+        if self.capturing and not controller.busy:
+            caption, tone = "복사 기다리는 중", "blue"
         self._badge.update(caption, tone)
         # 오류와 토큰 위치는 화면 줄 대신 배지 도움말로 알려 준다.
         source = controller.state.source if controller.state is not None else None

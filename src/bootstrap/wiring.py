@@ -98,10 +98,28 @@ def build_api(
         if work_rules_service
         else lambda: legacy or DEFAULT_WORK_RULES,
     )
+    runtime_settings = (
+        RuntimeSettingsService(
+            SQLiteRuntimeSettings(Database(environment.database)),
+            RuntimeSettings(
+                general=GeneralSettings(
+                    "assignment"
+                    if environment.relevance_policy == "assignment"
+                    else "participation",
+                    environment.snapshot_max_age_seconds,
+                ),
+                notion=NotionSettings(environment.notion_user_id),
+            ),
+        )
+        if environment.database
+        else None
+    )
     credentials = build_notion_credentials(
         environment.notion_token,
         settings.sources if settings else (),
         legacy_token=notion_legacy_token,
+        # 개인 토큰을 저장하면 토큰 주인을 비어 있는 본인 ID로 채운다.
+        owner_found=runtime_settings.fill_notion_user if runtime_settings else None,
     )
     notifications, groups = build_notifications(environment, settings)
     source_settings = (
@@ -169,20 +187,7 @@ def build_api(
         source_settings_service=source_settings,
         list_queries=list_queries,
         list_mcp_server=create_list_server(list_queries) if list_queries else None,
-        runtime_settings_service=RuntimeSettingsService(
-            SQLiteRuntimeSettings(Database(environment.database)),
-            RuntimeSettings(
-                general=GeneralSettings(
-                    "assignment"
-                    if environment.relevance_policy == "assignment"
-                    else "participation",
-                    environment.snapshot_max_age_seconds,
-                ),
-                notion=NotionSettings(environment.notion_user_id),
-            ),
-        )
-        if environment.database
-        else None,
+        runtime_settings_service=runtime_settings,
         preferences_store=SQLitePreferences(
             Database(environment.database),
             tuple(channel.key for channel in CHANNELS),

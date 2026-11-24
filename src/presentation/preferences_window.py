@@ -25,9 +25,10 @@ from AppKit import (
 )
 from Foundation import NSNotification, NSObject
 
-from src.application.credentials import CredentialError, validated_secret
+from src.application.credentials import CredentialError, CredentialSecret, validated_secret
 from src.application.data_backup import DataBackupActions
 from src.application.notifications import NotificationChannel
+from src.application.notion_people import NotionPeople
 from src.application.source_settings import SourceSettingsClient, SourceSettingsError
 from src.application.work_rules_settings import WorkRulesDocument
 from src.domain.preferences import (
@@ -67,6 +68,11 @@ from src.presentation.notion_credentials_controller import NotionCredentialsCont
 from src.presentation.notion_credentials_view import NotionCredentialsView
 from src.presentation.notion_page_links_controller import NotionPageLinksController
 from src.presentation.notion_page_links_view import NotionPageLinksView
+from src.presentation.notion_token_capture import (
+    CONNECTION_TOKEN_URL,
+    PERSONAL_TOKEN_URL,
+    NotionTokenCapture,
+)
 from src.presentation.preferences_controller import PreferencesController
 from src.presentation.preferences_sidebar import PreferencesSidebar, SettingsPage
 from src.presentation.runtime_settings_controller import RuntimeSettingsController
@@ -196,6 +202,24 @@ class PreferencesActions(NSObject):
         """현재 저장된 토큰만 확인한다."""
         self.owner.perform_credential("check")
 
+    def createPersonalToken_(self, sender: object) -> None:
+        """개인 토큰 페이지를 열고 복사를 기다린다."""
+        self.owner.start_token_capture(PERSONAL_TOKEN_URL)
+
+    def createConnectionToken_(self, sender: object) -> None:
+        """개인 토큰이 막힌 워크스페이스는 통합 연결 페이지를 열고 복사를 기다린다."""
+        self.owner.start_token_capture(CONNECTION_TOKEN_URL)
+
+    def personChosen_(self, sender: object) -> None:
+        """사용자 메뉴에서 고른 사람을 본인 ID 초안으로 쓴다."""
+        if self.owner._runtime_form is not None:
+            self.owner._runtime_form.choose_person()
+        self.owner.render()
+
+    def cancelTokenCapture_(self, sender: object) -> None:
+        """토큰 복사 감지를 멈춘다."""
+        self.owner.cancel_token_capture()
+
     def deleteCredential_(self, sender: object) -> None:
         """인증 카드의 명시적 삭제를 전달한다."""
         self.owner.perform_credential("delete")
@@ -220,9 +244,16 @@ class PreferencesWindow:
         source_client: SourceSettingsClient | None = None,
         data_backup: DataBackupActions | None = None,
         app_updates: UpdateChecks | None = None,
+        open_url: Callable[[str], None] | None = None,
+        notion_people: Callable[[], NotionPeople] | None = None,
     ) -> None:
         """설정 작업자와 설치된 채널만 주입받는다."""
         self._render_state: object = None
+        self._open_url = open_url
+        self._token_capture = NotionTokenCapture()
+        # 토큰 저장 요청이 진행 중인지와, 성공하면 자동으로 다시 시작할지(처음 등록·만료 교체)다.
+        self._token_saving = False
+        self._restart_after_token = False
         self._pending_work_edits = pending_work_edits
         self._source_form: SourceSettingsForm | None = None
         self._category_form: CategorySettingsForm | None = None
@@ -300,7 +331,11 @@ class PreferencesWindow:
         self._build_notification_page(self._pages[SettingsPage.NOTIFICATIONS], viewport, channels)
         if runtime_controller is not None:
             self._runtime_form = RuntimeSettingsForm(
-                self._pages[SettingsPage.NOTION], viewport, runtime_controller, self._actions
+                self._pages[SettingsPage.NOTION],
+                viewport,
+                runtime_controller,
+                self._actions,
+                notion_people,
             )
         if credentials_controller is not None:
             page = self._pages.get(SettingsPage.NOTION)
@@ -587,10 +622,89 @@ class PreferencesWindow:
             return
         try:
             token = validated_secret(view.token.stringValue()) if action == "save" else None
-            controller.perform(action, token)
+            if token is not None:
+                self._submit_token(token)
+            else:
+                controller.perform(action, token)
         except CredentialError:
             controller.error_code, controller.error = "invalid", "토큰 형식을 확인하세요."
         self.render()
+
+    def start_token_capture(self, url: str = PERSONAL_TOKEN_URL) -> None:
+        """토큰 페이지를 열고 이후 새로 복사한 토큰을 자동으로 확인·저장한다."""
+        if self._credentials_controller is None or self._open_url is None:
+            return
+        self._token_capture.start()
+        self._open_url(url)
+        self.render()
+
+    def cancel_token_capture(self) -> None:
+        """토큰 복사 감지만 멈추고 입력·저장 상태는 그대로 둔다."""
+        self._token_capture.stop()
+        self.render()
+
+    def _submit_token(self, token: CredentialSecret) -> None:
+        """저장 전 상태로 처음 등록·만료 교체인지 판단하고 확인 후 저장을 요청한다."""
+        controller = self._credentials_controller
+        if controller is None:
+            return
+        state = controller.state
+        self._restart_after_token = (
+            state is None
+            or not state.configured
+            or state.verification == "failed"
+            or controller.error_code == "unauthorized"
+        )
+        controller.perform("save", token)
+        self._token_saving = controller.busy
+
+    def _watch_token(self) -> None:
+        """감지한 토큰을 저장하고, 실패하면 다음 복사를 기다리고, 성공하면 다시 시작한다."""
+        controller = self._credentials_controller
+        capture = self._token_capture
+        if controller is None:
+            return
+        if self._token_saving and not controller.busy:
+            self._token_saving = False
+            if controller.error is None:
+                capture.clear_captured()
+                capture.stop()
+                self._restart_for_token()
+                self._refresh_account()
+            else:
+                capture.resume()
+        # 저장할 수 없는 동안 읽으면 복사한 토큰을 놓치므로 편집 가능할 때만 확인한다.
+        if controller.editable and not controller.input_dirty:
+            token = capture.poll()
+            if token is not None:
+                self._submit_token(token)
+                if not self._token_saving:
+                    capture.resume()
+        if self._credentials_view is not None:
+            self._credentials_view.capturing = capture.active
+
+    def _refresh_account(self) -> None:
+        """새 토큰의 사람 목록과 서버가 채운 본인 ID를 다시 읽는다. 편집 중인 초안은 두고 넘어간다."""
+        if self._runtime_form is not None:
+            self._runtime_form.forget_people()
+        runtime = self._runtime_controller
+        if runtime is not None and not runtime.dirty:
+            runtime.reload()
+
+    def _restart_for_token(self) -> None:
+        """처음 등록·만료 교체만 다른 편집이 없을 때 자동으로 적용하고 평소 변경은 버튼을 기다린다."""
+        controller = self._credentials_controller
+        runtime = self._runtime_controller
+        restart, self._restart_after_token = self._restart_after_token, False
+        if (
+            restart
+            and controller is not None
+            and controller.restart_required
+            and runtime is not None
+            and not self._other_edits_pending()
+            and not self._restart_edits_pending()
+        ):
+            runtime.restart(provider_pending=True)
 
     def save_runtime(self) -> None:
         """입력 오류는 폼에 남기고 검증된 값만 저장 작업자에게 전달한다."""
@@ -606,8 +720,11 @@ class PreferencesWindow:
         controller = self._runtime_controller
         if controller is None or self._runtime_form is None:
             return
-        self._runtime_form.render()
         credentials = self._credentials_controller
+        # 토큰이 있을 때만 사람 목록을 읽어 사용자 칸을 이름 메뉴로 바꾼다.
+        if credentials is not None and credentials.state and credentials.state.configured:
+            self._runtime_form.load_people()
+        self._runtime_form.render()
         if self._credentials_view is not None:
             self._credentials_view.render()
         links = self._page_links_controller
@@ -774,6 +891,8 @@ class PreferencesWindow:
 
     def tick(self) -> None:
         """닫힌 창에서는 완료된 작업만 회수하고 화면은 다시 열 때 갱신한다."""
+        # 토큰 감지는 브라우저로 넘어가 창이 가려지거나 닫혀도 계속한다.
+        self._watch_token()
         visible = self._window.isVisible()
         if self._backup_view is not None:
             self._backup_view.tick(visible=visible and self._selected_page == SettingsPage.BACKUP)

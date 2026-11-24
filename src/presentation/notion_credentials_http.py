@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from src.application.credentials import CredentialError, validated_secret
 from src.application.notion_credentials import NotionCredentialsClient, credential_state_payload
+from src.application.notion_people import people_payload
 from src.presentation.request_body import read_limited_body
 
 
@@ -87,5 +88,17 @@ def create_notion_credentials_router(service: NotionCredentialsClient | None) ->
     async def delete(request: Request) -> dict[str, object]:
         """명시적 삭제와 환경값 복귀 방지를 함께 저장한다."""
         return await perform(request, "delete")
+
+    @router.get("/v1/notion/people")
+    async def people() -> dict[str, object]:
+        """본인 선택에 쓸 토큰 주인과 사람 이름만 반환하고 토큰은 반환하지 않는다."""
+        if service is None:
+            raise HTTPException(503, {"code": "unavailable"})
+        try:
+            return people_payload(await asyncio.to_thread(service.people))
+        except CredentialError as error:
+            raise HTTPException(
+                422 if error.code == "missing" else 503, {"code": error.code}
+            ) from None
 
     return router

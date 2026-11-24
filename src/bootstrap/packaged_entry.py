@@ -28,7 +28,7 @@ def main() -> None:
         app = NSApplication.sharedApplication()
         app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
         alert = NSAlert.alloc().init()
-        alert.setMessageText_("Maeng Mate를 실행하지 못했습니다.")
+        alert.setMessageText_("Catch를 실행하지 못했습니다.")
         alert.setInformativeText_(
             str(error)
             if isinstance(error, ConfigError)

@@ -1,14 +1,15 @@
 """저장 설정과 실행 중인 설정을 구분하는 편집 계약이다."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from src.application.runtime_settings import (
+    RuntimeSettingsConflictError,
     RuntimeSettingsStore,
     parse_runtime_settings,
     runtime_settings_payload,
 )
-from src.domain.runtime_settings import RuntimeSettings
+from src.domain.runtime_settings import NotionSettings, RuntimeSettings
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,17 @@ class RuntimeSettingsService:
     def save(self, value: RuntimeSettings) -> RuntimeSettingsState:
         """최초 저장도 버전 조건을 유지하고 실행값을 즉시 바꾸지 않는다."""
         return self._state(self._store.save(value), True)
+
+    def fill_notion_user(self, user_id: str) -> None:
+        """토큰 주인 ID는 본인 ID가 비어 있을 때만 채워 사용자가 고른 값을 덮지 않는다."""
+        current = self._store.read() or self._active
+        if current.notion.user_id:
+            return
+        try:
+            self._store.save(replace(current, notion=NotionSettings(user_id)))
+        except RuntimeSettingsConflictError:
+            # 화면에서 동시에 저장한 값이 있으면 그 선택을 따른다.
+            return
 
     def _state(self, value: RuntimeSettings, initialized: bool) -> RuntimeSettingsState:
         """값이 같으면 버전 증가만으로 재시작을 요구하지 않는다."""

@@ -1,6 +1,7 @@
 """Notion 인증 정보의 비밀값·저장 포트·검증 후 교체 계약이다."""
 
 import hmac
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -11,6 +12,7 @@ from src.application.credentials import (
     CredentialStore,
     validated_secret,
 )
+from src.application.notion_people import NotionDirectory, NotionPeople
 
 
 @dataclass(frozen=True)
@@ -27,8 +29,8 @@ class NotionCredentialState:
 class NotionConnectionChecker(Protocol):
     """토큰과 현재 수집 소스의 읽기 권한을 확인한다."""
 
-    def verify(self, token: CredentialSecret) -> None:
-        """성공 때만 반환하고 실패는 공개 가능한 분류로 알린다."""
+    def verify(self, token: CredentialSecret) -> str | None:
+        """성공하면 토큰 주인 ID(개인 토큰만)를 돌려주고 실패는 공개 가능한 분류로 알린다."""
         ...
 
 
@@ -51,6 +53,10 @@ class NotionCredentialsClient(Protocol):
         """토큰을 지우고 환경값 복귀를 막는다."""
         ...
 
+    def people(self) -> NotionPeople:
+        """저장된 토큰의 주인과 본인으로 고를 수 있는 사람 목록을 읽는다."""
+        ...
+
 
 class NotionCredentialsService:
     """외부 확인 중에는 잠금을 열어 두고 검증 뒤 조건부 교체한다."""
@@ -62,9 +68,12 @@ class NotionCredentialsService:
         *,
         legacy: CredentialSecret | None,
         active: CredentialSecret | None,
+        directory: NotionDirectory | None = None,
+        owner_found: Callable[[str], None] | None = None,
     ) -> None:
         """기존 환경값과 실제 실행에 주입한 비밀값은 서버 안에서만 보유한다."""
         self._store, self._checker = store, checker
+        self._directory, self._owner_found = directory, owner_found
         self._legacy, self._active = legacy, active
         self._checked: tuple[int, Literal["ok", "failed"]] | None = None
 
@@ -106,22 +115,39 @@ class NotionCredentialsService:
         if current.token is None:
             raise CredentialError("missing")
         try:
-            self._checker.verify(current.token)
+            owner = self._checker.verify(current.token)
         except CredentialError:
             self._checked = (revision, "failed")
             raise
         self._current(revision)
         self._checked = (revision, "ok")
+        self._fill_owner(owner)
         return self.read()
 
     def save(self, revision: int, token: CredentialSecret) -> NotionCredentialState:
         """검증 실패와 동시 수정에서 기존 정상 토큰을 보존한다."""
         self._current(revision)
         token = validated_secret(token.value)
-        self._checker.verify(token)
+        owner = self._checker.verify(token)
         saved = self._store.replace(revision, token)
         self._checked = (saved.revision, "ok")
+        # 다시 시작 한 번으로 토큰과 본인 ID가 함께 적용되도록 저장 직후 채운다.
+        self._fill_owner(owner)
         return self.read()
+
+    def _fill_owner(self, owner: str | None) -> None:
+        """개인 토큰의 주인을 본인 ID 후보로 알린다. 비어 있을 때만 채우는 것은 받는 쪽이 정한다."""
+        if owner is not None and self._owner_found is not None:
+            self._owner_found(owner)
+
+    def people(self) -> NotionPeople:
+        """선택된 토큰으로만 조회하고 토큰이 없으면 목록 대신 오류를 알린다."""
+        token = self.selected().token
+        if token is None:
+            raise CredentialError("missing")
+        if self._directory is None:
+            raise CredentialError("unavailable")
+        return self._directory.people(token)
 
     def delete(self, revision: int) -> NotionCredentialState:
         """비밀값 없는 삭제 표시만 남겨 예전 파일의 토큰을 차단한다."""

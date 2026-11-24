@@ -7,8 +7,7 @@ from math import inf
 
 from AppKit import (
     NSButton,
-    NSFont,
-    NSNoBorder,
+    NSLineBreakByTruncatingTail,
     NSPasteboard,
     NSPasteboardTypeString,
     NSPopUpButton,
@@ -24,7 +23,25 @@ from src.application.ai_skills import SkillTarget, SkillVersions, UnversionedSki
 from src.domain.mcp_access import McpAccessToken
 from src.domain.work_dates import SEOUL
 from src.presentation.mcp_settings_controller import McpSettingsController
-from src.presentation.native_views import button, card, frame, label, place_label
+from src.presentation.native_views import (
+    BUTTON_BEZEL_INSET,
+    CARD_GAP,
+    CARD_PADDING,
+    CARD_TITLE,
+    CARD_WIDTH,
+    FORM_CONTROL_X,
+    FORM_LABEL_WIDTH,
+    FORM_ROW,
+    button,
+    card,
+    card_height,
+    form_control_y,
+    form_dividers,
+    form_row_y,
+    frame,
+    label,
+    place_label,
+)
 from src.presentation.settings_badge import SettingsBadge
 
 PERIODS: tuple[tuple[str, int | None], ...] = (
@@ -39,6 +56,29 @@ SKILL_TARGETS: tuple[tuple[str, SkillTarget], ...] = (
     ("Claude Code", "claude"),
     ("둘 다", "both"),
 )
+# 페이지 문서 폭과 맨 위 카드 위 여백이다.
+PAGE_WIDTH = 584.0
+PAGE_TOP = 8.0
+# 컨트롤 높이: 입력칸·스위치 22, 팝업·테두리 버튼 26, 배지 20.
+FIELD_HEIGHT = 22.0
+POPUP_HEIGHT = 26.0
+BADGE_HEIGHT = 20.0
+SWITCH_WIDTH = 40.0
+POPUP_WIDTH = 140.0
+STATUS_WIDTH = 120.0
+# 오른쪽 끝 버튼 폭이다. 복사 버튼 문구는 제어기 안내(‘토큰 복사’를 누르세요)와 같아야 한다.
+COPY_WIDTH = 80.0
+INSTALL_WIDTH = 104.0
+ISSUE_WIDTH = 72.0
+REVOKE_WIDTH = 64.0
+# 입력칸 오른쪽 끝은 복사 버튼의 보이는 테두리 왼쪽에서 8pt 띄운다.
+FIELD_WIDTH = CARD_WIDTH - CARD_PADDING - COPY_WIDTH + 2 * BUTTON_BEZEL_INSET - 8 - FORM_CONTROL_X
+# 토큰 줄의 칸: 이름(최대 60자라 넓게) · 만료일 · 상태 배지 · 폐기 버튼.
+TOKEN_NAME_WIDTH = 200.0
+EXPIRY_X = CARD_PADDING + TOKEN_NAME_WIDTH + 8
+EXPIRY_WIDTH = 112.0
+TOKEN_BADGE_X = EXPIRY_X + EXPIRY_WIDTH + 8
+TOKEN_BADGE_WIDTH = 72.0
 
 
 def _date(value: float) -> str:
@@ -121,12 +161,12 @@ class _TokenControls:
 
 
 class McpSettingsView:
-    """컴팩트한 입력과 스크롤 목록에서 여러 토큰을 관리한다."""
+    """서버·발급·토큰 목록·스킬 카드를 위에서부터 쌓고 페이지 전체를 스크롤한다."""
 
     def __init__(
         self, page: NSScrollView, viewport: float, controller: McpSettingsController
     ) -> None:
-        """서버 상태·발급·목록을 한 페이지에 배치한다."""
+        """네 카드를 만들고, 토큰 수에 따라 늘어나는 목록 카드에 맞춰 페이지 높이를 정한다."""
         self.controller = controller
         self._secret_generation = -1
         self._issue_generation = 0
@@ -135,80 +175,170 @@ class McpSettingsView:
         self._list_editable: bool | None = None
         self._checked_at = inf
         self._next_expiry = inf
-        self._list_ids: tuple[str, ...] = ()
         self._actions = McpSettingsActions.alloc().init()
         self._actions.owner = self
-        height = max(464.0, viewport)
-        document = NSView.alloc().initWithFrame_(frame(0, 0, 584, height))
-        page.setDocumentView_(document)
-        card(document, 16, height - 148, 552, 140)
-        label(document, "MCP 서버", 28, height - 40, 170, size=13, bold=True)
-        self._status = SettingsBadge(document, 390, height - 40, 100)
-        self.enabled = NSSwitch.alloc().initWithFrame_(frame(512, height - 43, 44, 26))
+        self._page = page
+        self._viewport = viewport
+        self._document = NSView.alloc().initWithFrame_(frame(0, 0, PAGE_WIDTH, viewport))
+        page.setDocumentView_(self._document)
+
+        # 서버 카드: 사용 상태와 스위치, 접속 주소, 마지막 사용 시각.
+        self._server = self._section()
+        height = self._draw_card(self._server, "MCP 서버", 3)
+        row = form_row_y(height, 0)
+        self._row_label(self._server, "사용", row)
+        self._status = SettingsBadge(
+            self._server,
+            FORM_CONTROL_X,
+            form_control_y(row, BADGE_HEIGHT),
+            STATUS_WIDTH,
+            align="left",
+        )
+        self.enabled = NSSwitch.alloc().initWithFrame_(
+            frame(
+                CARD_WIDTH - CARD_PADDING - SWITCH_WIDTH,
+                form_control_y(row, FIELD_HEIGHT),
+                SWITCH_WIDTH,
+                FIELD_HEIGHT,
+            )
+        )
         self.enabled.setTarget_(self._actions)
         self.enabled.setAction_("enabled:")
         self.enabled.setAccessibilityLabel_("MCP 사용")
-        document.addSubview_(self.enabled)
-        self.endpoint = self._field(document, 28, height - 78, 440)
+        self._server.addSubview_(self.enabled)
+        row = form_row_y(height, 1)
+        self._row_label(self._server, "주소", row)
+        self.endpoint = NSTextField.textFieldWithString_("")
+        self._place_field(self._server, self.endpoint, row)
         self.endpoint.setEditable_(False)
         self.endpoint.setSelectable_(True)
-        button(document, "주소 복사", 476, height - 77, 80, self._actions, "copyEndpoint:")
-        self._recent = label(document, "", 28, height - 107, 236, size=11, secondary=True)
-        self.skill_target = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            frame(276, height - 112, 160, 28), False
+        self._end_button(self._server, "주소 복사", COPY_WIDTH, row, "copyEndpoint:")
+        row = form_row_y(height, 2)
+        self._row_label(self._server, "최근 사용", row)
+        self._recent = self._value(self._server, row)
+
+        # 발급 카드: 이름·기간을 고른 뒤 발급하고, 원문은 이 창에서 한 번만 복사한다.
+        self._issuing = self._section()
+        height = self._draw_card(self._issuing, "토큰 발급", 3)
+        row = form_row_y(height, 0)
+        self._row_label(self._issuing, "이름", row)
+        self.name = NSTextField.textFieldWithString_("")
+        self._place_field(self._issuing, self.name, row)
+        self.name.setPlaceholderString_("예: 업무용")
+        self.name.setDelegate_(self._actions)
+        row = form_row_y(height, 1)
+        self._row_label(self._issuing, "유효 기간", row)
+        self.period = self._popup(self._issuing, row, [title for title, _ in PERIODS], 2)
+        self._issue = self._end_button(self._issuing, "발급", ISSUE_WIDTH, row, "issue:")
+        row = form_row_y(height, 2)
+        self._row_label(self._issuing, "새 토큰", row)
+        self.issued = NSSecureTextField.textFieldWithString_("")
+        self._place_field(self._issuing, self.issued, row)
+        self.issued.setEditable_(False)
+        self.issued.setSelectable_(True)
+        self.issued.setPlaceholderString_("발급 후 한 번만 복사할 수 있습니다")
+        self._copy = self._end_button(self._issuing, "토큰 복사", COPY_WIDTH, row, "copyToken:")
+
+        # 토큰 목록 카드는 render에서 목록이 바뀔 때마다 다시 그린다.
+        self._tokens = self._section()
+
+        # 스킬 카드는 한 번 설치하면 되므로 늘어나는 목록 아래에 둔다.
+        self._skill = self._section()
+        height = self._draw_card(self._skill, "AI 스킬", 2)
+        row = form_row_y(height, 0)
+        self._row_label(self._skill, "설치할 앱", row)
+        self.skill_target = self._popup(
+            self._skill, row, [name for name, _ in SKILL_TARGETS], len(SKILL_TARGETS) - 1
         )
-        self.skill_target.addItemsWithTitles_([name for name, _ in SKILL_TARGETS])
-        self.skill_target.selectItemAtIndex_(2)
-        document.addSubview_(self.skill_target)
-        self._install_skill = button(
-            document, "설치 / 업데이트", 438, height - 111, 118, self._actions, "installSkill:"
+        self._install_skill = self._end_button(
+            self._skill, "설치·업데이트", INSTALL_WIDTH, row, "installSkill:"
         )
         self._install_skill.setToolTip_(
             "선택한 앱에 업무 조회용 스킬을 설치합니다. MCP 연결은 해당 앱에서 설정하세요."
         )
-        self._versions = label(document, "", 28, height - 137, 528, size=11, secondary=True)
-        card(document, 16, height - 284, 552, 124)
-        label(document, "토큰 발급", 28, height - 190, 528, size=13, bold=True)
-        self.name = self._field(document, 28, height - 230, 220)
-        self.name.setPlaceholderString_("토큰 이름 (예: 업무용)")
-        self.name.setDelegate_(self._actions)
-        self.period = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            frame(256, height - 230, 160, 28), False
-        )
-        self.period.addItemsWithTitles_([title for title, _ in PERIODS])
-        self.period.selectItemAtIndex_(2)
-        document.addSubview_(self.period)
-        self._issue = button(document, "발급", 434, height - 229, 122, self._actions, "issue:")
-        self.issued = NSSecureTextField.textFieldWithString_("")
-        self.issued.setFont_(NSFont.systemFontOfSize_(13))
-        place_label(self.issued, 28, height - 264, 440, 26)
-        self.issued.setEditable_(False)
-        self.issued.setSelectable_(True)
-        self.issued.setPlaceholderString_("토큰을 발급하면 여기서 복사할 수 있습니다")
-        document.addSubview_(self.issued)
-        self._copy = button(
-            document, "토큰 복사", 476, height - 264, 80, self._actions, "copyToken:"
-        )
-        label(document, "등록된 토큰", 28, height - 314, 528, size=13, bold=True)
-        card(document, 16, 8, 552, height - 334)
-        self._list_height = height - 342
-        self._scroll = NSScrollView.alloc().initWithFrame_(frame(28, 12, 528, self._list_height))
-        self._scroll.setHasVerticalScroller_(True)
-        self._scroll.setAutohidesScrollers_(True)
-        self._scroll.setDrawsBackground_(False)
-        self._scroll.setBorderType_(NSNoBorder)
-        document.addSubview_(self._scroll)
-        document.scrollPoint_((0, max(0, height - viewport)))
+        row = form_row_y(height, 1)
+        self._row_label(self._skill, "설치 버전", row)
+        self._versions = self._value(self._skill, row)
         self.render()
 
-    def _field(self, parent: NSView, x: float, y: float, width: float) -> NSTextField:
-        """기본 입력 높이로 줄여 같은 행의 중앙에 배치한다."""
-        field = NSTextField.textFieldWithString_("")
-        field.setFont_(NSFont.systemFontOfSize_(13))
-        height = field.fittingSize()[1]
-        field.setFrame_(frame(x, y + (28 - height) / 2, width, height))
+    def _section(self) -> NSView:
+        """카드 하나를 담는 뷰다. 위치는 _layout에서 위쪽부터 정한다."""
+        view = NSView.alloc().initWithFrame_(frame(0, 0, CARD_WIDTH, 0))
+        self._document.addSubview_(view)
+        return view
+
+    def _draw_card(self, view: NSView, title: str, rows: int) -> float:
+        """카드 배경·줄 구분선·제목을 그리고 카드 높이를 돌려준다."""
+        height = card_height(rows)
+        view.setFrameSize_((CARD_WIDTH, height))
+        card(view, 0, 0, CARD_WIDTH, height)
+        form_dividers(view, height, rows)
+        caption = label(view, title, 0, 0, 300, size=13, bold=True)
+        place_label(caption, CARD_PADDING, height - CARD_PADDING - CARD_TITLE, 300, CARD_TITLE)
+        return height
+
+    def _row_label(self, parent: NSView, text: str, y: float) -> None:
+        """항목 이름은 왼쪽 칸에서 입력 줄 높이의 가운데에 둔다."""
+        name = label(parent, text, 0, 0, FORM_LABEL_WIDTH - 8)
+        place_label(name, CARD_PADDING, y, FORM_LABEL_WIDTH - 8, FORM_ROW)
+
+    def _value(self, parent: NSView, y: float) -> NSTextField:
+        """읽기 전용 값은 입력 칸 세로선에서 시작하고 길면 끝을 줄인다."""
+        width = CARD_WIDTH - CARD_PADDING - FORM_CONTROL_X
+        value = label(parent, "", 0, 0, width)
+        value.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
+        place_label(value, FORM_CONTROL_X, y, width, FORM_ROW)
+        return value
+
+    def _place_field(self, parent: NSView, field: NSTextField, y: float) -> None:
+        """입력칸은 항목 칸 오른쪽에서 시작해 오른쪽 버튼 앞까지 기본 높이로 둔다."""
+        field.setFrame_(
+            frame(FORM_CONTROL_X, form_control_y(y, FIELD_HEIGHT), FIELD_WIDTH, FIELD_HEIGHT)
+        )
         parent.addSubview_(field)
-        return field
+
+    def _popup(self, parent: NSView, y: float, titles: list[str], selected: int) -> NSPopUpButton:
+        """팝업 테두리가 입력 세로선에 맞도록 3pt 앞에서 시작한다."""
+        popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            frame(FORM_CONTROL_X - 3, form_control_y(y, POPUP_HEIGHT), POPUP_WIDTH, POPUP_HEIGHT),
+            False,
+        )
+        popup.addItemsWithTitles_(titles)
+        popup.selectItemAtIndex_(selected)
+        parent.addSubview_(popup)
+        return popup
+
+    def _end_button(
+        self, parent: NSView, title: str, width: float, y: float, action: str
+    ) -> NSButton:
+        """보이는 테두리가 카드 안쪽 오른쪽 여백에 닿도록 프레임을 테두리 여백만큼 민다."""
+        return button(
+            parent,
+            title,
+            CARD_WIDTH - CARD_PADDING - width + BUTTON_BEZEL_INSET,
+            form_control_y(y, POPUP_HEIGHT),
+            width,
+            self._actions,
+            action,
+        )
+
+    def _layout(self) -> None:
+        """카드 높이 합에 맞춰 페이지 높이를 바꾸고 보던 위치를 위쪽 기준으로 유지한다."""
+        sections = (self._server, self._issuing, self._tokens, self._skill)
+        heights = [view.frame()[1][1] for view in sections]
+        content = PAGE_TOP + sum(heights) + CARD_GAP * (len(sections) - 1) + CARD_PADDING
+        old_height = self._document.frame()[1][1]
+        old_origin = self._page.contentView().bounds()[0][1]
+        height = max(self._viewport, content)
+        self._document.setFrameSize_((PAGE_WIDTH, height))
+        top = height - PAGE_TOP
+        for view, section_height in zip(sections, heights, strict=True):
+            view.setFrame_(frame(CARD_PADDING, top - section_height, CARD_WIDTH, section_height))
+            top -= section_height + CARD_GAP
+        # 문서 원점은 아래쪽이므로 늘어난 높이만큼 원점을 올려야 같은 위쪽 내용이 보인다.
+        self._document.scrollPoint_(
+            (0, max(0, min(height - self._viewport, old_origin + height - old_height)))
+        )
 
     @property
     def is_editing(self) -> bool:
@@ -229,14 +359,17 @@ class McpSettingsView:
         self.skill_target.setEnabled_(controller.can_install_skill)
         self._install_skill.setEnabled_(controller.can_install_skill)
         versions = controller.skill_versions
-        self._versions.setStringValue_(
-            f"동봉 스킬 {versions.bundled}    ·    Codex {_version_label(versions.codex, versions)}"
-            f"    ·    Claude Code {_version_label(versions.claude, versions)}"
+        # 줄 이름이 ‘설치 버전’이므로 값에는 앱에 든 최신 버전과 앱별 설치 버전만 적는다.
+        text = (
+            f"최신 {versions.bundled}  ·  Codex {_version_label(versions.codex, versions)}"
+            f"  ·  Claude Code {_version_label(versions.claude, versions)}"
             if versions
-            else "스킬 버전 확인 중…"
+            else "확인 중…"
             if controller.busy
-            else "스킬 버전 확인 불가"
+            else "확인할 수 없음"
         )
+        self._versions.setStringValue_(text)
+        self._versions.setToolTip_(text)
         self.enabled.setEnabled_(editable)
         self.name.setEnabled_(editable)
         self.period.setEnabled_(editable)
@@ -291,7 +424,7 @@ class McpSettingsView:
                     (item.last_used_at for item in items if item.last_used_at is not None),
                     default=None,
                 )
-                self._recent.setStringValue_(_last_used(latest))
+                self._recent.setStringValue_(_date(latest) if latest is not None else "기록 없음")
         # 같은 구간에서는 시간이 지나도 상태가 같다. 시계가 뒤로 이동하면 다시 판정한다.
         check_status = data_changed or not self._checked_at <= now < self._next_expiry
         editable = controller.editable
@@ -315,46 +448,50 @@ class McpSettingsView:
         self._list_editable = editable
 
     def _build_token_rows(self, items: tuple[McpAccessToken, ...], *, loaded: bool) -> None:
-        """새 목록의 표시 정보를 배치하고 같은 토큰 순서라면 스크롤 위치를 보존한다."""
-        old = self._scroll.documentView()
-        origin = self._scroll.contentView().bounds()[0][1] if old is not None else 0
-        ids = tuple(item.id for item in items)
-        same_ids = ids == self._list_ids and old is not None
-        self._list_ids = ids
+        """토큰 카드를 새 목록으로 다시 그리고 늘어난 높이에 맞춰 페이지를 다시 배치한다."""
+        self._tokens.setSubviews_([])
         self._token_controls.clear()
-        height = max(self._list_height, len(items) * 34)
-        document = NSView.alloc().initWithFrame_(frame(0, 0, 528, height))
+        # 빈 목록도 안내 한 줄을 두어 카드 모양을 유지한다.
+        height = self._draw_card(self._tokens, "발급한 토큰", max(1, len(items)))
         if not items:
-            label(
-                document,
-                "발급된 토큰 없음" if loaded else "상태를 불러오는 중…",
+            empty = label(
+                self._tokens,
+                "발급한 토큰이 없습니다" if loaded else "불러오는 중…",
                 0,
-                height - 25,
-                528,
-                size=12,
+                0,
+                300,
                 secondary=True,
             )
+            place_label(empty, CARD_PADDING, form_row_y(height, 0), 300, FORM_ROW)
         for index, item in enumerate(items):
-            y = height - (index + 1) * 34
-            name = label(document, item.name, 0, y + 7, 170, size=12)
+            y = form_row_y(height, index)
+            name = label(self._tokens, item.name, 0, 0, TOKEN_NAME_WIDTH)
+            # 이름은 최대 60자라 칸을 넘으면 끝을 줄이고 전체는 도움말로 보여 준다.
+            name.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
+            place_label(name, CARD_PADDING, y, TOKEN_NAME_WIDTH, FORM_ROW)
             name.setToolTip_(item.name + "\n" + _last_used(item.last_used_at))
             expiry = label(
-                document,
+                self._tokens,
                 "만료 " + _date(item.expires_at)[:10]
                 if item.expires_at is not None
                 else "만료 없음",
-                180,
-                y + 8,
-                124,
-                size=11,
+                0,
+                0,
+                EXPIRY_WIDTH,
                 secondary=True,
             )
+            place_label(expiry, EXPIRY_X, y, EXPIRY_WIDTH, FORM_ROW)
             expiry.setToolTip_(
                 "만료: " + _date(item.expires_at) if item.expires_at is not None else "만료 없음"
             )
-            badge = SettingsBadge(document, 310, y + 7, 100)
-            revoke = button(document, "폐기", 450, y + 4, 78, self._actions, "revoke:")
+            badge = SettingsBadge(
+                self._tokens,
+                TOKEN_BADGE_X,
+                form_control_y(y, BADGE_HEIGHT),
+                TOKEN_BADGE_WIDTH,
+                align="left",
+            )
+            revoke = self._end_button(self._tokens, "폐기", REVOKE_WIDTH, y, "revoke:")
             revoke.setTag_(index)
             self._token_controls.append(_TokenControls(badge, revoke))
-        self._scroll.setDocumentView_(document)
-        document.scrollPoint_((0, origin if same_ids else max(0, height - self._list_height)))
+        self._layout()

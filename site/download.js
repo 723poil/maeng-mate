@@ -12,7 +12,7 @@ async function refreshDownloadLinks() {
     if (!version || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) return;
 
     const tag = "v" + version;
-    const url = `${releases}/download/${tag}/Maeng-Mate-${version}-macOS-arm64.dmg`;
+    const url = `${releases}/download/${tag}/Catch-${version}-macOS-arm64.dmg`;
     if (item.querySelector("enclosure")?.getAttribute("url") !== url) return;
     for (const link of document.querySelectorAll("[data-release-download]")) link.href = url;
     for (const label of document.querySelectorAll("[data-release-label]")) label.textContent = tag + " DMG 다운로드";

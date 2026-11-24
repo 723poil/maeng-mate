@@ -57,9 +57,9 @@ def prepare_sparkle(public_key: str) -> None:
 def publish_feed() -> None:
     """이번 빌드 한 건의 DMG·공개키·한국어 노트를 대조하고 서명된 피드를 만든다."""
     dist = ROOT / "dist"
-    info = plistlib.loads((dist / "Maeng Mate.app/Contents/Info.plist").read_bytes())
+    info = plistlib.loads((dist / "Catch.app/Contents/Info.plist").read_bytes())
     version = info["CFBundleVersion"]
-    dmg = dist / f"Maeng-Mate-{version}-macOS-arm64.dmg"
+    dmg = dist / f"Catch-{version}-macOS-arm64.dmg"
     # 개인키는 표준 입력으로만 도구에 주며 자식 환경이나 인수에 복사하지 않는다.
     key = os.environ.pop("SPARKLE_PRIVATE_ED_KEY").strip()
     if not key or not info.get("SUPublicEDKey"):

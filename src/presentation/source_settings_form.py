@@ -7,7 +7,18 @@ from dataclasses import replace
 from urllib.parse import unquote
 from uuid import uuid4
 
-from AppKit import NSButton, NSMenuItem, NSPopUpButton, NSScrollView, NSTextField, NSView
+from AppKit import (
+    NSBox,
+    NSButton,
+    NSColor,
+    NSMenu,
+    NSMenuItem,
+    NSPopUpButton,
+    NSScrollView,
+    NSTextAlignmentRight,
+    NSTextField,
+    NSView,
+)
 from Foundation import NSObject
 
 from src.application.notion_page_links import PageLinksError, page_url
@@ -19,6 +30,7 @@ from src.application.source_settings import (
     SourceSettingsClient,
     SourceSettingsError,
     SourceSettingsState,
+    SourceTable,
 )
 from src.application.work_settings import category_bindings, column_bindings_payload
 from src.domain.category_configuration import ColumnBinding
@@ -28,14 +40,39 @@ from src.domain.source_display import SOURCE_SORTS, SourceCategory
 from src.domain.source_roles import ROLE_TEMPLATES, ColumnRole, roles_payload, source_roles
 from src.domain.work_dates import canonical_identity
 from src.presentation.column_setup_sheet import ColumnSetupSheet
-from src.presentation.native_views import button, card, frame, label
+from src.presentation.native_views import (
+    BUTTON_BEZEL_INSET,
+    CARD_GAP,
+    CARD_PADDING,
+    CARD_TITLE,
+    CARD_WIDTH,
+    FORM_CONTROL_X,
+    FORM_LABEL_WIDTH,
+    FORM_ROW,
+    FORM_ROW_GAP,
+    button,
+    card,
+    card_height,
+    form_control_y,
+    form_divider,
+    form_dividers,
+    form_row_y,
+    frame,
+    label,
+    place_label,
+)
 from src.presentation.runtime_settings_controller import SettingsEditor
 
 type SourceEditor = SettingsEditor[CollectionDraft, SourceSettingsState]
-HEADER_HEIGHT = 232
-OPTION_HEIGHT = 184
-PARENT_OPTION_ROW = 34
-COLLAPSED_OPTIONS = 44
+# 연결 카드는 Notion 표·표 선택·이름·표 종류·카테고리 다섯 줄이다.
+HEADER_HEIGHT = card_height(5)
+# 연결한 표 목록 카드에서 한 줄의 높이다.
+SOURCE_ROW = FORM_ROW
+# 새 표에서 종류가 맞는 첫 칼럼을 미리 골라 둘 역할이다. 사람 칸은 본인 ID 설정이 필요해 고르지 않는다.
+AUTO_ROLES = frozenset({"title", "status", "dueDate", "period"})
+# 고급 카드를 접었을 때는 제목 줄만 남는다.
+COLLAPSED_OPTIONS = CARD_PADDING + CARD_TITLE + CARD_PADDING
+PAGE_TOP = 8.0
 EVENT_CHOICES = ("other", "meeting", "leave")
 COLLECTION_MODES: tuple[SourceKind, ...] = ("task", "meeting", "leave")
 
@@ -51,14 +88,39 @@ def set_titles(control: NSPopUpButton, titles: list[str]) -> None:
 
 def source_menu_name(raw: dict[str, object], position: int) -> str:
     """소스명을 표시하고 아직 카테고리가 필요한 연결을 표시한다."""
-    name = str(raw.get("name") or f"소스 {position}")
-    return name if raw.get("categoryId") else f"{name} · 카테고리 필요"
+    name = str(raw.get("name") or f"표 {position}")
+    return name if raw.get("categoryId") else f"{name} · 카테고리 선택 필요"
+
+
+def kind_title(kind: object) -> str:
+    """수집 방식을 사용자가 아는 표 종류 이름으로 바꾼다."""
+    return "일정" if kind == "meeting" else "휴가 승인" if kind == "leave" else "할 일"
+
+
+def recommended_mode(schema: SourceSchema) -> int:
+    """칸 종류로 표 종류를 추천한다. 상태 칸이 있으면 할 일, 날짜만 있으면 일정이다."""
+    kinds = {column.kind for column in schema.columns}
+    if "status" in kinds:
+        return 0
+    return 1 if "date" in kinds else 0
 
 
 class SourceFormActions(NSObject):
     """사용자가 누른 소스·조회·매핑 조작을 전달한다."""
 
     owner: "SourceSettingsForm"
+
+    def pickSource_(self, sender: NSButton) -> None:
+        """목록에서 누른 연결을 편집 대상으로 고른다."""
+        self.owner.pick_source(sender.tag())
+
+    def findTables_(self, sender: object) -> None:
+        """Notion에서 연결할 수 있는 표 목록을 읽는다."""
+        self.owner.find_tables()
+
+    def chooseTable_(self, sender: NSMenuItem) -> None:
+        """표 목록 메뉴에서 고른 표로 주소를 채우고 바로 칸을 읽는다."""
+        self.owner.choose_table(sender.tag())
 
     def select_(self, sender: object) -> None:
         """다른 소스를 열 때 초안이 남았는지 확인한다."""
@@ -168,69 +230,92 @@ class SourceSettingsForm:
         self._actions.owner = self
         self.document = NSView.alloc().initWithFrame_(frame(0, 0, 584, viewport))
         page.setDocumentView_(self.document)
-        self._header = NSView.alloc().initWithFrame_(frame(16, 0, 552, HEADER_HEIGHT))
-        self.document.addSubview_(self._header)
-        card(self._header, 0, 0, 552, HEADER_HEIGHT)
-        label(self._header, "수집 소스", 12, 194, 85, bold=True)
-        self.list = self._popup(self._header, 102, 190, 320, ["새 소스"], "select:")
-        self._new = button(self._header, "+ 새 소스", 430, 190, 108, self._actions, "newSource:")
-        label(self._header, "Notion 주소", 12, 126, 84)
-        self.reference = self._field(102, 122, 320, "원본 표 주소 또는 데이터 소스 ID")
-        self._inspect = button(
-            self._header, "표 불러오기", 430, 122, 108, self._actions, "inspect:"
-        )
-        label(self._header, "수집할 표", 12, 92, 84)
-        self.schemas = self._popup(self._header, 102, 88, 436, ["칼럼 조회 후 표시"], "schema:")
-        label(self._header, "소스 이름", 12, 58, 84)
-        self.name = self._field(102, 54, 436, "예: 팀 스프린트")
-        label(self._header, "수집 방식", 12, 24, 84)
-        self.mode = self._popup(self._header, 102, 20, 436, ["목록", "일정"], "mode:")
-        self.mode.setToolTip_("일정은 시작·종료 날짜를 연결하고 목록은 기한을 선택할 수 있습니다.")
-        label(self._header, "카테고리 *", 12, 160, 84)
-        self.category = self._popup(self._header, 102, 156, 320, ["카테고리 선택"], "category:")
-        self._manage = button(
-            self._header, "카테고리 관리", 430, 156, 108, self._actions, "manageCategories:"
-        )
+        self._tables_pending: Future[tuple[SourceTable, ...]] | None = None
+        self._tables: tuple[SourceTable, ...] = ()
+        # 연결한 표를 한 줄씩 보여 주는 목록 카드다. 줄은 상태가 바뀔 때 다시 그린다.
+        self._sources_view = NSView.alloc().initWithFrame_(frame(16, 0, CARD_WIDTH, 0))
+        self.document.addSubview_(self._sources_view)
+        self._source_rows: list[NSButton] = []
 
-        self._detail = NSView.alloc().initWithFrame_(frame(16, 0, 552, COLLAPSED_OPTIONS))
+        # 연결 카드는 지금 필요한 줄만 보인다. 위치는 `_place_header`가 줄 구성에 맞춰 정한다.
+        self._header = NSView.alloc().initWithFrame_(frame(16, 0, CARD_WIDTH, HEADER_HEIGHT))
+        self.document.addSubview_(self._header)
+        self._header_card = card(self._header, 0, 0, CARD_WIDTH, HEADER_HEIGHT)
+        self._header_title = label(self._header, "새 연결", 0, 0, 300, size=13, bold=True)
+        self._header_height = HEADER_HEIGHT
+        self._header_dividers: list[NSBox] = []
+        self._manual = False
+        # 선택 모델은 기존처럼 팝업 버튼에 두고 화면에는 목록 카드만 보인다.
+        self.list = self._popup(self._header, 0, 0, 10, ["새 소스"], "select:")
+        self.list.setHidden_(True)
+        self._header_labels = {
+            key: label(self._header, text, 0, 0, FORM_LABEL_WIDTH - 8)
+            for key, text in (
+                ("table", "Notion 표"),
+                ("schema", "표 선택"),
+                ("name", "이름"),
+                ("mode", "표 종류"),
+                ("category", "카테고리"),
+            )
+        }
+        # 표는 목록에서 고른다. 주소·ID 입력칸은 메뉴의 ‘주소로 입력…’을 골랐을 때만 보인다.
+        self._find = button(self._header, "표 고르기…", 0, 0, 240, self._actions, "findTables:")
+        self.reference = self._field(0, 0, 300, "표 주소 또는 ID")
+        self._inspect = button(self._header, "불러오기", 0, 0, 90, self._actions, "inspect:")
+        self.schemas = self._popup(self._header, 0, 0, 300, ["불러온 뒤 선택"], "schema:")
+        self.name = self._field(0, 0, 300, "예: 팀 스프린트")
+        self.mode = self._popup(self._header, 0, 0, 200, ["할 일", "일정"], "mode:")
+        self.mode.setToolTip_("할 일은 담당자·상태·마감일을, 일정은 시작·종료 날짜를 씁니다.")
+        self.category = self._popup(self._header, 0, 0, 240, ["카테고리 선택"], "category:")
+        # 카테고리 관리는 사이드바의 ‘카테고리’ 페이지가 맡아 이 카드에서는 버튼을 두지 않는다.
+        self._manage = button(self._header, "", 0, 0, 1, self._actions, "manageCategories:")
+        self._manage.setHidden_(True)
+
+        # 고급 카드: 제목 줄만 보이다가 펼치면 원본 링크·정렬·하위 표·(부모)·연결 해제 줄이 나온다.
+        self._detail = NSView.alloc().initWithFrame_(frame(16, 0, CARD_WIDTH, COLLAPSED_OPTIONS))
         self.document.addSubview_(self._detail)
-        self._detail_card = card(self._detail, 0, 0, 552, COLLAPSED_OPTIONS)
-        self._detail_title = label(self._detail, "세부 옵션", 12, 13, 320, bold=True)
-        self._expand_options = button(
-            self._detail, "펼치기", 430, 9, 108, self._actions, "options:"
-        )
-        self._advanced = NSView.alloc().initWithFrame_(
-            frame(0, 0, 552, OPTION_HEIGHT - COLLAPSED_OPTIONS)
-        )
+        self._detail_card = card(self._detail, 0, 0, CARD_WIDTH, COLLAPSED_OPTIONS)
+        self._detail_title = label(self._detail, "고급", 0, 0, 300, size=13, bold=True)
+        self._expand_options = button(self._detail, "펼치기", 0, 0, 80, self._actions, "options:")
+        self._advanced = NSView.alloc().initWithFrame_(frame(0, 0, CARD_WIDTH, 0))
         self._detail.addSubview_(self._advanced)
-        self._common_options = NSView.alloc().initWithFrame_(frame(0, 34, 552, 106))
-        self._advanced.addSubview_(self._common_options)
-        label(self._common_options, "열기 주소", 12, 77, 84)
-        self.url = self._field(102, 74, 436, "선택 사항", parent=self._common_options)
-        label(self._common_options, "항목 정렬", 12, 43, 84)
+        # 예전 구조의 묶음 뷰는 남겨 두되 고급 카드 전체 좌표를 그대로 쓴다.
+        self._common_options = self._advanced
+        self._detail_labels = {
+            key: label(self._advanced, text, 0, 0, FORM_LABEL_WIDTH - 8)
+            for key, text in (
+                ("url", "원본 링크"),
+                ("sort", "정렬"),
+                ("rounds", "하위 표"),
+                ("parent", "부모 항목"),
+            )
+        }
+        self.url = self._field(0, 0, 300, "‘원본 ↗’을 눌렀을 때 열 주소", parent=self._advanced)
         self.sort = self._popup(
-            self._common_options, 102, 39, 270, ["정렬 없음", "날짜순", "제목순"], "changed:"
+            self._advanced, 0, 0, 220, ["정렬 없음", "날짜순", "제목순"], "changed:"
         )
         self._sort_keys = list(SOURCE_SORTS)
         self.sort_direction = self._popup(
-            self._common_options, 378, 39, 160, ["오름차순", "내림차순"], "changed:"
+            self._advanced, 0, 0, 150, ["오름차순", "내림차순"], "changed:"
         )
         self.rounds = self._check(
-            "부모 항목 안의 하위 표", 102, 6, 254, "structure:", parent=self._common_options
+            "페이지 안의 하위 표를 모두 모으기", 0, 0, 300, "structure:", parent=self._advanced
         )
-        self.parent_display = self._check("부모 제목 표시", 102, 39, 168, "changed:")
-        self.parent_sort = self._popup(self._advanced, 284, 38, 254, ["부모 정렬 없음"], "changed:")
+        self.parent_display = self._check("부모 제목 표시", 0, 0, 140, "changed:")
+        self.parent_sort = self._popup(self._advanced, 0, 0, 230, ["부모 정렬 없음"], "changed:")
         self._parent_hint = label(
             self._advanced,
             "카드 정렬을 지정했다면 ‘부모 정렬값’을 추가하세요.",
-            12,
-            8,
-            400,
+            0,
+            0,
+            CARD_WIDTH - FORM_CONTROL_X - CARD_PADDING,
             secondary=True,
         )
         self._parent_orders: list[tuple[str, str | None]] = []
-        self._remove = button(self._advanced, "소스 제거", 425, 5, 113, self._actions, "remove:")
+        self._remove = button(self._advanced, "연결 해제", 0, 0, 100, self._actions, "remove:")
+        self._detail_dividers: list[NSBox] = []
         self._round_title: NSPopUpButton | None = None
+        self._draw_sources()
         self._fill({})
 
     @property
@@ -259,6 +344,206 @@ class SourceSettingsForm:
         control.setAction_(action)
         view.addSubview_(control)
         return control
+
+    def _header_rows(self) -> list[str]:
+        """연결 카드에 보일 줄을 고른다. 표가 하나면 ‘표 선택’ 줄은 숨긴다."""
+        return [
+            "table",
+            *(("schema",) if len(self._profiles) > 1 else ()),
+            "name",
+            "mode",
+            "category",
+        ]
+
+    def _place_header(self) -> float:
+        """보일 줄만 간격 체계대로 놓고 카드 높이를 돌려준다."""
+        rows = self._header_rows()
+        height = card_height(len(rows))
+        self._header_height = height
+        self._header_card.setFrame_(frame(0, 0, CARD_WIDTH, height))
+        place_label(
+            self._header_title, CARD_PADDING, height - CARD_PADDING - CARD_TITLE, 300, CARD_TITLE
+        )
+        y = {key: form_row_y(height, index) for index, key in enumerate(rows)}
+        for key, name in self._header_labels.items():
+            name.setHidden_(key not in y)
+            if key in y:
+                place_label(name, CARD_PADDING, y[key], FORM_LABEL_WIDTH - 8, FORM_ROW)
+        row = y["table"]
+        self._find.setHidden_(self._manual)
+        self.reference.setHidden_(not self._manual)
+        self._inspect.setHidden_(not self._manual)
+        self._find.setFrame_(
+            frame(FORM_CONTROL_X - BUTTON_BEZEL_INSET, form_control_y(row, 26), 240, 26)
+        )
+        self.reference.setFrame_(frame(FORM_CONTROL_X, form_control_y(row, 24), 300, 24))
+        self._inspect.setFrame_(
+            frame(
+                CARD_WIDTH - CARD_PADDING - 90 + BUTTON_BEZEL_INSET,
+                form_control_y(row, 26),
+                90,
+                26,
+            )
+        )
+        self.schemas.setHidden_("schema" not in y)
+        if "schema" in y:
+            self.schemas.setFrame_(
+                frame(FORM_CONTROL_X - 3, form_control_y(y["schema"], 26), 300, 26)
+            )
+        self.name.setFrame_(frame(FORM_CONTROL_X, form_control_y(y["name"], 24), 300, 24))
+        self.mode.setFrame_(frame(FORM_CONTROL_X - 3, form_control_y(y["mode"], 26), 200, 26))
+        self.category.setFrame_(
+            frame(FORM_CONTROL_X - 3, form_control_y(y["category"], 26), 240, 26)
+        )
+        while len(self._header_dividers) < len(rows) - 1:
+            self._header_dividers.append(form_divider(self._header, 0))
+        for index, divider in enumerate(self._header_dividers):
+            divider.setHidden_(index >= len(rows) - 1)
+            if index < len(rows) - 1:
+                divider.setFrame_(
+                    frame(
+                        CARD_PADDING,
+                        form_row_y(height, index) - FORM_ROW_GAP / 2,
+                        CARD_WIDTH - 2 * CARD_PADDING,
+                        1,
+                    )
+                )
+        return height
+
+    def _row_label(self, text: str, y: float) -> None:
+        """연결 카드의 항목 이름은 왼쪽 칸에서 입력 줄 가운데에 둔다."""
+        name = label(self._header, text, 0, 0, FORM_LABEL_WIDTH - 8)
+        place_label(name, CARD_PADDING, y, FORM_LABEL_WIDTH - 8, FORM_ROW)
+
+    def _draw_sources(self) -> None:
+        """연결한 표를 한 줄씩 그리고 지금 편집 중인 줄을 강조한다."""
+        state = self.editor.state
+        sources = state.settings.sources if state is not None else ()
+        names = {category.id: category.name for category in self._categories}
+        rows = [
+            (
+                source_menu_name(raw, index + 1),
+                f"{names.get(str(raw.get('categoryId')), '카테고리 없음')} · {kind_title(raw.get('kind'))}",
+            )
+            for index, raw in enumerate(sources)
+        ]
+        # 새 연결은 아래 연결 카드가 보여 주므로 목록에 줄을 만들지 않는다.
+        # 저장된 연결이 하나도 없으면 목록 카드 자체를 숨긴다.
+        height = card_height(len(rows)) if rows else 0.0
+        self._sources_view.setSubviews_([])
+        self._sources_view.setFrameSize_((CARD_WIDTH, height))
+        self._sources_view.setHidden_(not rows)
+        card(self._sources_view, 0, 0, CARD_WIDTH, height)
+        form_dividers(self._sources_view, height, len(rows))
+        title = label(self._sources_view, "연결한 표", 0, 0, 300, size=13, bold=True)
+        place_label(title, CARD_PADDING, height - CARD_PADDING - CARD_TITLE, 300, CARD_TITLE)
+        self._new = button(
+            self._sources_view,
+            "표 연결",
+            CARD_WIDTH - CARD_PADDING - 88 + BUTTON_BEZEL_INSET,
+            height - CARD_PADDING - CARD_TITLE - 3,
+            88,
+            self._actions,
+            "newSource:",
+        )
+        self._source_rows = []
+        for index, (name, detail) in enumerate(rows):
+            y = form_row_y(height, index)
+            selected = index == self._selected
+            if selected:
+                # 선택한 줄은 위아래로 여유를 둔 옅은 바탕으로만 표시한다.
+                mark = card(
+                    self._sources_view,
+                    CARD_PADDING / 2,
+                    y + 6,
+                    CARD_WIDTH - CARD_PADDING,
+                    SOURCE_ROW - 12,
+                    input_area=True,
+                )
+                mark.setFillColor_(NSColor.labelColor().colorWithAlphaComponent_(0.07))
+                mark.setBorderWidth_(0)
+            caption = label(self._sources_view, name, 0, 0, 260, size=13, bold=selected)
+            place_label(caption, CARD_PADDING, y, 260, SOURCE_ROW)
+            sub_caption = label(self._sources_view, detail, 0, 0, 240, size=12, secondary=True)
+            place_label(sub_caption, CARD_WIDTH - CARD_PADDING - 240, y, 240, SOURCE_ROW)
+            sub_caption.setAlignment_(NSTextAlignmentRight)
+            # 줄 전체를 누를 수 있게 투명 버튼을 맨 위에 둔다.
+            hit = button(
+                self._sources_view,
+                "",
+                0,
+                y,
+                CARD_WIDTH,
+                self._actions,
+                "pickSource:",
+                bordered=False,
+            )
+            hit.setFrame_(frame(0, y, CARD_WIDTH, SOURCE_ROW))
+            hit.setTransparent_(True)
+            hit.setTag_(index)
+            self._source_rows.append(hit)
+
+    def pick_source(self, index: int) -> None:
+        """목록 줄을 누르면 숨긴 선택 모델을 거쳐 기존 선택 흐름을 그대로 쓴다."""
+        if index == self._selected:
+            return
+        self.list.selectItemAtIndex_(index)
+        self.select()
+        self._draw_sources()
+        self._layout(self._body_height)
+        self.render()
+
+    def find_tables(self) -> None:
+        """사용자가 누를 때만 연동에 공유된 표 목록을 읽는다."""
+        if self.busy or self._tables_pending is not None or not self.editor.editable:
+            return
+        self.error = None
+        self._tables_pending = self._executor.submit(self._client.tables, "notion")
+
+    def _show_tables(self) -> None:
+        """읽은 표 목록을 ‘찾기…’ 버튼 아래 메뉴로 보여 준다."""
+        menu = NSMenu.alloc().initWithTitle_("Notion 표")
+        if not self._tables:
+            empty = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "연동에 공유된 표가 없습니다", None, ""
+            )
+            empty.setEnabled_(False)
+            menu.addItem_(empty)
+        for index, table in enumerate(self._tables):
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                table.title, "chooseTable:", ""
+            )
+            item.setTarget_(self._actions)
+            item.setTag_(index)
+            menu.addItem_(item)
+        menu.addItem_(NSMenuItem.separatorItem())
+        manual = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "주소로 입력…", "chooseTable:", ""
+        )
+        manual.setTarget_(self._actions)
+        manual.setTag_(-1)
+        menu.addItem_(manual)
+        menu.popUpMenuPositioningItem_atLocation_inView_(None, (0, -4), self._find)
+
+    def choose_table(self, index: int) -> None:
+        """고른 표의 ID로 주소를 채우고 바로 칸을 불러온다. -1이면 주소 입력칸을 연다."""
+        if index == -1:
+            self._manual = True
+            self._layout(self._body_height)
+            window = self.reference.window()
+            if window is not None:
+                window.makeFirstResponder_(self.reference)
+            return
+        if not 0 <= index < len(self._tables):
+            return
+        table = self._tables[index]
+        self._manual = False
+        self._find.setTitle_(table.title[:40])
+        self.reference.setStringValue_(table.id)
+        if not self.name.stringValue().strip():
+            self.name.setStringValue_(table.title[:120])
+        self.mark_edited()
+        self.inspect()
 
     def _field(
         self, x: float, y: float, width: float, placeholder: str, *, parent: NSView | None = None
@@ -321,15 +606,18 @@ class SourceSettingsForm:
         self._lookup_reference = ""
         self._remove_pending = False
         self._open_after_inspect = False
+        self._tables = ()
+        self._manual = False
+        self._find.setTitle_("연결된 표" if raw else "표 고르기…")
         self._category_links = category_bindings(raw)
         self.name.setStringValue_(str(raw.get("name", "")))
         self._load_categories(raw)
         self.reference.setStringValue_(str(raw.get("dataSourceId", "")))
         self.url.setStringValue_(str(raw.get("pageUrl", "")))
         mode = raw.get("kind")
-        titles = ["목록", "일정"]
+        titles = ["할 일", "일정"]
         if mode == "leave":
-            titles.append("휴가 승인 조회")
+            titles.append("휴가 승인")
         set_titles(self.mode, titles)
         self.mode.selectItemAtIndex_(1 if mode == "meeting" else 2 if mode == "leave" else 0)
         self._roles = source_roles(self._mode(), raw.get("columnRoles"))
@@ -406,6 +694,9 @@ class SourceSettingsForm:
         if state is not None and self.editor.editable and not self.editor.dirty and not self.busy:
             self.list.selectItemAtIndex_(len(state.settings.sources))
             self.select()
+            # 목록의 선택 표시를 지우고 연결 카드를 새 연결로 다시 배치한다.
+            self._draw_sources()
+            self._layout(self._body_height)
             self.render()
 
     def toggle_options(self) -> None:
@@ -420,7 +711,7 @@ class SourceSettingsForm:
         titles = (
             ["표 선택", *(item.name for item in self._profiles)]
             if self._profiles
-            else ["연결된 표" if self._original else "칼럼 조회 후 표시"]
+            else ["연결된 표" if self._original else "불러온 뒤 선택"]
         )
         set_titles(self.schemas, titles)
 
@@ -485,6 +776,17 @@ class SourceSettingsForm:
 
     def poll(self) -> None:
         """완료한 응답만 현재 페이지 상태에 반영한다."""
+        if self._tables_pending is not None and self._tables_pending.done():
+            pending, self._tables_pending = self._tables_pending, None
+            try:
+                self._tables = pending.result()
+                self._show_tables()
+            except Exception as error:
+                self.error = (
+                    str(error)
+                    if isinstance(error, SourceSettingsError)
+                    else "표 목록을 읽지 못했습니다."
+                )
         if self._pending is None or not self._pending.done():
             return
         result, self._pending = self._pending, None
@@ -514,6 +816,10 @@ class SourceSettingsForm:
             0,
         )
         self.schemas.selectItemAtIndex_(1 if len(profiles) == 1 else match)
+        # 새 연결은 칸 종류를 보고 표 종류를 먼저 골라 둔다. 저장된 연결은 사용자의 선택을 유지한다.
+        if not self._original and len(profiles) == 1 and self.mode.numberOfItems() >= 2:
+            self.mode.selectItemAtIndex_(recommended_mode(profiles[0]))
+            self._roles = ROLE_TEMPLATES[self._mode()]
         self.choose_schema(first_saved_lookup=first_saved_lookup)
 
     def choose_schema(self, *, first_saved_lookup: bool = False) -> None:
@@ -707,7 +1013,7 @@ class SourceSettingsForm:
             offset = max(0.0, old_height - self._viewport - origin)
         if self._body is not None:
             self._body.setHidden_(True)
-            self.document.setSubviews_([self._header, self._detail])
+            self.document.setSubviews_([self._sources_view, self._header, self._detail])
         self._role_names.clear()
         self._mapping.clear()
         self._options.clear()
@@ -750,7 +1056,7 @@ class SourceSettingsForm:
             # 소제목과 다음 상위 행 사이의 여백은 하위 설정이 있을 때만 확보한다.
             height += 32 + 32 * len(options)
         card(body, 0, 0, 628, height)
-        label(body, "원본 칼럼 선택", 12, height - 32, 360, bold=True)
+        label(body, "칸 연결", 12, height - 32, 360, bold=True)
         y: float = height - 63
         if schema.round_titles:
             label(body, "부모 제목", 12, y + 4, 108)
@@ -817,28 +1123,39 @@ class SourceSettingsForm:
     def _summary(self, offset: float = 0.0) -> None:
         """메인 폼에는 편집기 대신 선택 상태와 열기 버튼을 둔다."""
         if self._body is not None:
-            self.document.setSubviews_([self._header, self._detail])
+            self.document.setSubviews_([self._sources_view, self._header, self._detail])
         self._refresh_sort()
-        height = 82
-        body = NSView.alloc().initWithFrame_(frame(16, 0, 552, height))
+        height = card_height(1)
+        body = NSView.alloc().initWithFrame_(frame(16, 0, CARD_WIDTH, height))
         self._body = body
-        card(body, 0, 0, 552, height)
-        label(body, "원본 칼럼 연결", 12, 48, 390, bold=True)
+        card(body, 0, 0, CARD_WIDTH, height)
+        title = label(body, "카테고리에 보일 칸", 0, 0, 300, size=13, bold=True)
+        place_label(title, CARD_PADDING, height - CARD_PADDING - CARD_TITLE, 300, CARD_TITLE)
         selected = self.selected_category()
         config = selected.configuration if selected is not None else None
         message = (
             "카테고리를 선택한 뒤 표를 연결하세요."
             if selected is None
-            else "저장 칼럼은 카테고리 설정에서 추가할 수 있습니다."
+            else "보일 칸은 카테고리 설정에서 추가할 수 있습니다."
             if config is None or not config.columns
-            else f"카테고리 칼럼 {len(config.columns)}개 중 {len(self._category_links)}개 연결"
+            else f"카테고리 칸 {len(config.columns)}개 중 {len(self._category_links)}개 연결됨"
         )
-        label(body, message, 12, 21, 420, secondary=True)
+        hint = label(body, message, 0, 0, CARD_WIDTH - 2 * CARD_PADDING, secondary=True)
+        place_label(
+            hint, CARD_PADDING, form_row_y(height, 0), CARD_WIDTH - 2 * CARD_PADDING, FORM_ROW
+        )
         self._setup_columns = button(
-            body, "연결 편집", 430, 42, 108, self._actions, "setupColumns:"
+            body,
+            "칸 연결…",
+            CARD_WIDTH - CARD_PADDING - 96 + BUTTON_BEZEL_INSET,
+            height - CARD_PADDING - CARD_TITLE - 3,
+            96,
+            self._actions,
+            "setupColumns:",
         )
         self.document.addSubview_(body)
-        self._layout(height, offset)
+        # 새 연결은 표를 불러오기 전까지 보일 칸 카드를 숨긴다.
+        self._layout(height if self._original or self._schema is not None else 0, offset)
 
     def _update_sheet(self) -> None:
         """원본 칼럼의 기본 연결을 시트에서 편집한다."""
@@ -963,16 +1280,24 @@ class SourceSettingsForm:
             ],
             "columns:",
         )
-        popup.selectItemAtIndex_(
-            next(
-                (
-                    index
-                    for index, column in enumerate(columns, 1)
-                    if self._same_value(column, selected.get(role.key, ""))
-                ),
-                0,
-            )
+        chosen = next(
+            (
+                index
+                for index, column in enumerate(columns, 1)
+                if self._same_value(column, selected.get(role.key, ""))
+            ),
+            0,
         )
+        # 새 연결은 종류가 맞는 첫 칸을 미리 골라 두어 사용자는 확인만 하면 된다.
+        if (
+            not chosen
+            and columns
+            and not self._original
+            and role.key in AUTO_ROLES
+            and role.key not in selected
+        ):
+            chosen = 1
+        popup.selectItemAtIndex_(chosen)
         self._mapping[role.key] = popup, columns
 
     def _read_role_names(self) -> None:
@@ -1017,25 +1342,94 @@ class SourceSettingsForm:
     def _layout(self, body_height: float, offset: float = 0.0) -> None:
         """편집 가능한 전체 높이를 스크롤 페이지에 반영한다."""
         self._body_height = body_height
-        # 부모 옵션은 구조 선택 바로 아래 한 행만 차지하고, 숨기면 공통 행을 당긴다.
-        extra = PARENT_OPTION_ROW if self._uses_rounds() else 0
-        expanded_height = OPTION_HEIGHT + extra
-        detail_height = expanded_height if self._options_open else COLLAPSED_OPTIONS
-        self._common_options.setFrame_(frame(0, 34 + extra, 552, 106))
-        self._advanced.setFrameSize_((552, expanded_height - COLLAPSED_OPTIONS))
-        height = max(self._viewport, body_height + HEADER_HEIGHT + detail_height + 40)
+        nested = self._uses_rounds()
+        # 하위 표를 모을 때만 부모 항목 줄과 안내 줄이 끼어든다.
+        rows = ["url", "sort", "rounds", *(("parent", "hint") if nested else ()), "remove"]
+        detail_height = card_height(len(rows)) if self._options_open else COLLAPSED_OPTIONS
+        sources_height = self._sources_view.frame()[1][1]
+        header_height = self._place_header()
+        sources_gap = CARD_GAP if sources_height else 0.0
+        top_height = sources_height + sources_gap + header_height
+        height = max(
+            self._viewport,
+            PAGE_TOP
+            + top_height
+            + CARD_GAP
+            + (body_height + CARD_GAP if body_height else 0)
+            + detail_height
+            + CARD_PADDING,
+        )
         self.document.setFrameSize_((584, height))
-        self._header.setFrame_(frame(16, height - HEADER_HEIGHT - 8, 552, HEADER_HEIGHT))
-        body_bottom = height - body_height - HEADER_HEIGHT - 20
+        top = height - PAGE_TOP
+        self._sources_view.setFrame_(frame(16, top - sources_height, CARD_WIDTH, sources_height))
+        top -= sources_height + sources_gap
+        self._header.setFrame_(frame(16, top - header_height, CARD_WIDTH, header_height))
+        top -= header_height + CARD_GAP
         if self._body is not None:
-            self._body.setFrame_(frame(16, body_bottom, 552, body_height))
-        self._detail.setFrame_(frame(16, body_bottom - detail_height - 12, 552, detail_height))
-        self._detail_card.setFrame_(frame(0, 0, 552, detail_height))
-        self._detail_title.setFrame_(frame(12, detail_height - 32, 320, 22))
-        self._expand_options.setFrame_(frame(430, detail_height - 35, 108, 26))
+            self._body.setHidden_(body_height == 0)
+            self._body.setFrame_(frame(16, top - body_height, CARD_WIDTH, body_height))
+        if body_height:
+            top -= body_height + CARD_GAP
+        self._detail.setFrame_(frame(16, top - detail_height, CARD_WIDTH, detail_height))
+        self._detail_card.setFrame_(frame(0, 0, CARD_WIDTH, detail_height))
+        title_y = detail_height - CARD_PADDING - CARD_TITLE
+        place_label(self._detail_title, CARD_PADDING, title_y, 300, CARD_TITLE)
+        self._expand_options.setFrame_(
+            frame(CARD_WIDTH - CARD_PADDING - 80 + BUTTON_BEZEL_INSET, title_y - 3, 80, 26)
+        )
         self._expand_options.setTitle_("접기" if self._options_open else "펼치기")
+        # 펼친 영역이 제목 줄을 덮으면 ‘접기’ 버튼이 클릭을 받지 못하므로 제목 줄 아래까지만 둔다.
+        self._advanced.setFrame_(
+            frame(0, 0, CARD_WIDTH, max(0.0, detail_height - CARD_PADDING - CARD_TITLE))
+        )
         self._advanced.setHidden_(not self._options_open)
+        if self._options_open:
+            self._place_advanced(detail_height, rows)
         self.document.scrollPoint_((0, max(0, height - self._viewport - offset)))
+
+    def _place_advanced(self, height: float, rows: list[str]) -> None:
+        """고급 카드의 줄을 간격 체계에 맞춰 놓고 줄 사이 구분선을 옮긴다."""
+        y = {key: form_row_y(height, index) for index, key in enumerate(rows)}
+        for key, name in self._detail_labels.items():
+            name.setHidden_(key not in y)
+            if key in y:
+                place_label(name, CARD_PADDING, y[key], FORM_LABEL_WIDTH - 8, FORM_ROW)
+        self.url.setFrame_(frame(FORM_CONTROL_X, form_control_y(y["url"], 24), 300, 24))
+        self.sort.setFrame_(frame(FORM_CONTROL_X - 3, form_control_y(y["sort"], 26), 220, 26))
+        self.sort_direction.setFrame_(
+            frame(FORM_CONTROL_X + 224, form_control_y(y["sort"], 26), 150, 26)
+        )
+        self.rounds.setFrame_(frame(FORM_CONTROL_X, form_control_y(y["rounds"], 24), 300, 24))
+        if "parent" in y:
+            self.parent_display.setFrame_(
+                frame(FORM_CONTROL_X, form_control_y(y["parent"], 24), 140, 24)
+            )
+            self.parent_sort.setFrame_(
+                frame(FORM_CONTROL_X + 144, form_control_y(y["parent"], 26), 230, 26)
+            )
+            place_label(
+                self._parent_hint,
+                FORM_CONTROL_X,
+                y["hint"],
+                CARD_WIDTH - FORM_CONTROL_X - CARD_PADDING,
+                FORM_ROW,
+            )
+        self._remove.setFrame_(
+            frame(FORM_CONTROL_X - BUTTON_BEZEL_INSET, form_control_y(y["remove"], 26), 100, 26)
+        )
+        while len(self._detail_dividers) < len(rows) - 1:
+            self._detail_dividers.append(form_divider(self._advanced, 0))
+        for index, divider in enumerate(self._detail_dividers):
+            divider.setHidden_(index >= len(rows) - 1)
+            if index < len(rows) - 1:
+                divider.setFrame_(
+                    frame(
+                        CARD_PADDING,
+                        form_row_y(height, index) - FORM_ROW_GAP / 2,
+                        CARD_WIDTH - 2 * CARD_PADDING,
+                        1,
+                    )
+                )
 
     def draft(self) -> SourceDraft:
         """수집 타입과 필수 매핑을 검사하고 선택한 소스만 바꾼다."""
@@ -1173,9 +1567,19 @@ class SourceSettingsForm:
             )
             self.list.selectItemAtIndex_(self._selected)
             self._fill(sources[self._selected] if self._selected < len(sources) else {})
+            self._draw_sources()
+            self._layout(self._body_height)
         editable = self.editor.editable and not self.busy
         self.list.setEnabled_(editable and not self.editor.dirty)
-        self._remove.setTitle_("제거 취소" if self._remove_pending else "소스 제거")
+        for row in self._source_rows:
+            row.setEnabled_(editable and not self.editor.dirty)
+        self._header_title.setStringValue_(
+            self.name.stringValue().strip() or ("새 연결" if not self._original else "연결")
+        )
+        self._find.setEnabled_(
+            editable and not self._remove_pending and self._tables_pending is None
+        )
+        self._remove.setTitle_("해제 취소" if self._remove_pending else "연결 해제")
         self._remove.setEnabled_(editable and bool(self._original))
         enabled = editable and not self._remove_pending
         self._inspect.setEnabled_(enabled)
@@ -1198,7 +1602,14 @@ class SourceSettingsForm:
         self._new.setEnabled_(editable and not self.editor.dirty)
         self._manage.setEnabled_(editable and not self.editor.dirty)
         if not self._categories:
-            for control in (self.name, self.reference, self._inspect, self.category, self.mode):
+            for control in (
+                self.name,
+                self.reference,
+                self._inspect,
+                self._find,
+                self.category,
+                self.mode,
+            ):
                 control.setEnabled_(False)
         self._setup_columns.setEnabled_(
             enabled

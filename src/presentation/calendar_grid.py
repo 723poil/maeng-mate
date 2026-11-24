@@ -26,6 +26,14 @@ from src.presentation.calendar_style import (
 )
 from src.presentation.native_views import button, frame, label, symbol
 
+# 오늘·선택 날짜를 감싸는 원의 지름이다.
+DAY_MARK = 22
+
+
+def weekend_color(sunday: bool) -> NSColor:
+    """일요일은 빨강, 토요일은 파랑이다."""
+    return NSColor.systemRedColor() if sunday else NSColor.systemBlueColor()
+
 
 class GridActions(NSObject):
     """셀 전체의 클릭을 한 날짜 선택으로 처리한다."""
@@ -87,21 +95,23 @@ class CalendarGrid:
                 secondary=True,
             )
             text.setAlignment_(NSTextAlignmentCenter)
+            # 한국 달력처럼 일요일은 빨강, 토요일은 파랑으로 구분한다.
             if column in (0, 6):
-                text.setTextColor_(
-                    NSColor.systemRedColor() if column == 0 else NSColor.systemBlueColor()
-                )
+                text.setTextColor_(weekend_color(column == 0))
         self._body = NSView.alloc().initWithFrame_(frame(0, 0, width, row_height * 6))
         self.view.addSubview_(self._body)
         # 선택 배경은 셀 뒤에서 이동하므로 날짜 선택만으로 일정 칩을 다시 만들지 않는다.
+        # 작은 달력은 오늘 원과 같은 크기의 회색 원으로, 큰 달력은 칸 전체로 선택을 표시한다.
         self._selection = box(
             self._body,
             0,
             0,
-            cell_width - 2,
-            row_height - 2,
-            NSColor.systemBlueColor().colorWithAlphaComponent_(0.10),
-            6,
+            DAY_MARK if compact else cell_width - 2,
+            DAY_MARK if compact else row_height - 2,
+            NSColor.secondaryLabelColor().colorWithAlphaComponent_(0.22)
+            if compact
+            else NSColor.controlAccentColor().colorWithAlphaComponent_(0.10),
+            DAY_MARK / 2 if compact else 6,
         )
         self._selection.setHidden_(True)
 
@@ -153,6 +163,18 @@ class CalendarGrid:
             self._selection.setHidden_(True)
             return
         row, column = divmod((selected - data.first).days, 7)
+        if self.compact:
+            # 오늘은 이미 강조 원이 있으므로 선택 원을 겹쳐 그리지 않는다.
+            self._selection.setHidden_(selected == data.today)
+            self._selection.setFrame_(
+                frame(
+                    column * self._cell_width + (self._cell_width - DAY_MARK) / 2,
+                    (5 - row) * self._row_height + self._row_height - 25,
+                    DAY_MARK,
+                    DAY_MARK,
+                )
+            )
+            return
         self._selection.setFrame_(
             frame(
                 column * self._cell_width + 1,
@@ -195,10 +217,10 @@ class CalendarGrid:
                     cell,
                     slot.number.frame()[0][0],
                     self._row_height - 25,
-                    22,
-                    22,
-                    NSColor.systemBlueColor(),
-                    11,
+                    DAY_MARK,
+                    DAY_MARK,
+                    NSColor.controlAccentColor(),
+                    DAY_MARK / 2,
                 )
             size = 11 if self.compact else 12
             # 오늘 배경, 날짜 숫자, 근무 아이콘 순으로 겹치는 작은 칸도 같은 순서를 유지한다.
@@ -207,17 +229,14 @@ class CalendarGrid:
             slot.number.setFont_(
                 NSFont.boldSystemFontOfSize_(size) if today else NSFont.systemFontOfSize_(size)
             )
+            # 주말은 요일 머리와 같은 색, 다른 달 날짜는 같은 색을 흐리게 쓴다.
             color = (
-                NSColor.systemRedColor()
-                if day.weekday() == 6
-                else NSColor.systemBlueColor()
-                if day.weekday() == 5
-                else NSColor.labelColor()
+                weekend_color(day.weekday() == 6) if day.weekday() >= 5 else NSColor.labelColor()
             )
             slot.number.setTextColor_(
-                NSColor.colorWithCalibratedWhite_alpha_(1, 1)
+                NSColor.whiteColor()
                 if today
-                else color.colorWithAlphaComponent_(0.45)
+                else color.colorWithAlphaComponent_(0.4)
                 if day.strftime("%Y-%m") != data.month
                 else color
             )

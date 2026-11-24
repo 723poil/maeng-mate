@@ -1,14 +1,61 @@
-"""개인 수신자와 봇 토큰을 구분한 컴팩트한 Slack 설정 화면이다."""
+"""Slack DM 받을 계정·봇 토큰·앱 토큰을 설정 간격 체계의 카드로 나눈 화면이다."""
 
-from AppKit import NSFont, NSScrollView, NSSecureTextField, NSTextField, NSView
+from AppKit import (
+    NSButton,
+    NSFont,
+    NSLineBreakByTruncatingTail,
+    NSScrollView,
+    NSSecureTextField,
+    NSTextField,
+    NSView,
+)
 from Foundation import NSNotification, NSObject
 
 from src.application.credentials import CredentialError, validated_secret
 from src.application.slack_settings import validated_app_token
-from src.presentation.native_views import button, card, frame, label
+from src.presentation.native_views import (
+    BUTTON_BEZEL_INSET,
+    CARD_GAP,
+    CARD_PADDING,
+    CARD_TITLE,
+    CARD_WIDTH,
+    FORM_CONTROL_X,
+    FORM_LABEL_WIDTH,
+    FORM_ROW,
+    button,
+    card,
+    card_height,
+    form_control_y,
+    form_dividers,
+    form_row_y,
+    frame,
+    label,
+    place_label,
+)
 from src.presentation.registration_status import registration_status
 from src.presentation.settings_badge import SettingsBadge
 from src.presentation.slack_settings_controller import SlackSettingsController
+
+# 페이지 맨 위 카드와 스크롤 영역 위쪽 사이 여백이다.
+PAGE_TOP = 8.0
+# 시스템 입력칸과 테두리 버튼의 기본 높이다.
+FIELD_HEIGHT = 22.0
+BUTTON_HEIGHT = 26.0
+# 카드 제목 줄 오른쪽 상태 배지가 차지할 수 있는 최대 폭이다.
+BADGE_SLOT = 100.0
+# 저장·삭제 버튼 폭이다. 세 카드의 저장 버튼이 같은 세로선에 오도록 한 값으로 맞춘다.
+ACTION_WIDTH = 64.0
+# 삭제는 카드 오른쪽 끝에 붙이고 저장은 그 바로 왼쪽 칸에 둔다(테두리가 프레임 안쪽에 그려진다).
+DELETE_X = CARD_WIDTH - CARD_PADDING - ACTION_WIDTH + BUTTON_BEZEL_INSET
+SAVE_X = DELETE_X - ACTION_WIDTH
+# 입력칸은 저장 버튼 테두리의 8pt 앞에서 끝난다.
+FIELD_WIDTH = SAVE_X + BUTTON_BEZEL_INSET - 8 - FORM_CONTROL_X
+# 연결 확인·테스트 알림은 저장·삭제 두 칸을 합친 자리를 쓴다.
+WIDE_WIDTH = 2 * ACTION_WIDTH
+# 각 카드의 줄 수다. 문서 높이를 한 번에 계산하려고 상수로 둔다.
+MEMBER_ROWS, BOT_ROWS, APP_ROWS = 1, 3, 1
+# 저장된 토큰은 되채우지 않으므로 빈 입력칸에 교체 방법만 보인다.
+REPLACE_HINT = "바꾸려면 새 토큰을 입력하세요"
 
 
 class SlackActions(NSObject):
@@ -75,7 +122,7 @@ class SlackActions(NSObject):
 
 
 class SlackSettingsView:
-    """시스템 입력 높이·정렬과 기존 설정 카드 간격을 재사용한다."""
+    """DM 받을 계정·봇 토큰·앱 토큰을 각각 독립 저장하는 세 카드다."""
 
     def __init__(
         self, page: NSScrollView, viewport: float, controller: SlackSettingsController
@@ -87,62 +134,122 @@ class SlackSettingsView:
         self._app_clear_generation = -1
         self._actions = SlackActions.alloc().init()
         self._actions.owner = self
-        height = max(416.0, viewport)
+        content = (
+            PAGE_TOP
+            + card_height(MEMBER_ROWS)
+            + CARD_GAP
+            + card_height(BOT_ROWS)
+            + CARD_GAP
+            + card_height(APP_ROWS)
+            + CARD_PADDING
+        )
+        height = max(content, viewport)
         document = NSView.alloc().initWithFrame_(frame(0, 0, 584, height))
         page.setDocumentView_(document)
-        card(document, 16, height - 96, 552, 88)
-        label(document, "개인 DM", 28, height - 40, 200, size=13, bold=True)
-        self._member_badge = SettingsBadge(document, 456, height - 40, 100)
-        caption = label(document, "멤버 ID", 28, height - 78, 84, size=12, secondary=True)
-        caption.setToolTip_("Slack 본인 프로필 → 더보기 → 멤버 ID 복사")
-        self.member = self._field(document, 120, height - 82, 336, secure=False)
-        self.member.setPlaceholderString_("본인 멤버 ID")
-        self._member_save = button(
-            document, "저장", 464, height - 81, 92, self._actions, "saveMember:"
+        top = height - PAGE_TOP
+
+        # DM 받을 계정: 멤버 ID 입력과 찾는 위치 안내.
+        member, member_height, self._member_badge = self._card(
+            document, top, "DM 받을 계정", MEMBER_ROWS
         )
-        card(document, 16, height - 260, 552, 152)
-        label(document, "봇 토큰", 28, height - 140, 200, size=13, bold=True)
-        self._token_badge = SettingsBadge(document, 456, height - 140, 100)
-        self.token = self._field(document, 28, height - 178, 528, secure=True)
-        self.token.setPlaceholderString_("Bot User OAuth Token")
-        self._token_save = button(
-            document, "확인 후 저장", 28, height - 212, 112, self._actions, "saveToken:"
-        )
-        self._check = button(document, "연결 확인", 148, height - 212, 100, self._actions, "check:")
+        row = form_row_y(member_height, 0)
+        self._row_label(member, "멤버 ID", row)
+        self.member = self._field(member, row, secure=False)
+        self.member.setPlaceholderString_("U로 시작하는 ID")
+        # 찾는 곳은 화면 줄 대신 입력칸 도움말로만 알려 준다.
+        self.member.setToolTip_("Slack 내 프로필 → 더보기(⋮) → 멤버 ID 복사")
+        self._member_save = self._button(member, "저장", SAVE_X, row, ACTION_WIDTH, "saveMember:")
+        top -= member_height + CARD_GAP
+
+        # 봇 토큰: 저장·삭제, 연결 확인, 본인 테스트 DM.
+        bot, bot_height, self._token_badge = self._card(document, top, "봇 토큰", BOT_ROWS)
+        row = form_row_y(bot_height, 0)
+        self._row_label(bot, "토큰", row)
+        self.token = self._field(bot, row, secure=True)
+        self._token_save = self._button(bot, "저장", SAVE_X, row, ACTION_WIDTH, "saveToken:")
+        self._token_save.setToolTip_("Slack에 토큰을 확인한 뒤 저장합니다.")
+        self._delete = self._button(bot, "삭제", DELETE_X, row, ACTION_WIDTH, "delete:")
+        self._delete.setToolTip_("봇 토큰만 지웁니다. 멤버 ID는 유지합니다.")
+        row = form_row_y(bot_height, 1)
+        self._row_label(bot, "연결된 봇", row)
+        self._identity = self._value(bot, "", row, width=FIELD_WIDTH)
+        self._check = self._button(bot, "연결 확인", SAVE_X, row, WIDE_WIDTH, "check:")
         self._check.setToolTip_("메시지를 보내지 않고 저장된 봇 토큰으로 연결을 확인합니다.")
-        self._test = button(document, "테스트 알림", 256, height - 212, 112, self._actions, "test:")
+        row = form_row_y(bot_height, 2)
+        self._row_label(bot, "테스트", row)
+        self._test = self._button(bot, "테스트 알림", SAVE_X, row, WIDE_WIDTH, "test:")
         self._test.setToolTip_(
             "저장한 멤버 ID로 테스트 DM을 한 건 보냅니다. 봇에 chat:write 권한이 필요합니다."
         )
-        self._delete = button(document, "삭제", 486, height - 212, 70, self._actions, "delete:")
-        self._identity = label(document, "", 28, height - 244, 528, size=12, secondary=True)
-        card(document, 16, height - 400, 552, 128)
-        caption = label(document, "앱 토큰", 28, height - 304, 200, size=13, bold=True)
-        caption.setToolTip_("Socket Mode 수신용 xapp- 토큰. 저장만 하며 연결은 시작하지 않습니다.")
-        self._app_badge = SettingsBadge(document, 456, height - 304, 100)
-        self.app_token = self._field(document, 28, height - 342, 528, secure=True)
-        self.app_token.setPlaceholderString_("App-Level Token · xapp-…")
-        self._app_save = button(
-            document, "저장", 28, height - 376, 92, self._actions, "saveAppToken:"
-        )
-        self._app_delete = button(
-            document, "삭제", 486, height - 376, 70, self._actions, "deleteAppToken:"
-        )
+        top -= bot_height + CARD_GAP
+
+        # 앱 토큰: 보관만 하며 DM 발송에는 쓰지 않는다.
+        app, app_height, self._app_badge = self._card(document, top, "앱 토큰", APP_ROWS)
+        row = form_row_y(app_height, 0)
+        caption = self._row_label(app, "토큰", row)
+        caption.setToolTip_("Socket Mode 수신용 xapp- 토큰. DM 알림에는 필요 없고 저장만 합니다.")
+        self.app_token = self._field(app, row, secure=True)
+        self._app_save = self._button(app, "저장", SAVE_X, row, ACTION_WIDTH, "saveAppToken:")
+        self._app_delete = self._button(app, "삭제", DELETE_X, row, ACTION_WIDTH, "deleteAppToken:")
+        self._app_delete.setToolTip_("앱 토큰만 지웁니다. 봇 토큰은 유지합니다.")
         document.scrollPoint_((0, max(0, height - viewport)))
         self.render()
 
-    def _field(
-        self, parent: NSView, x: float, y: float, width: float, *, secure: bool
+    def _card(
+        self, document: NSView, top: float, title: str, rows: int
+    ) -> tuple[NSView, float, SettingsBadge]:
+        """위쪽 y가 top인 제목 카드와 제목 줄 오른쪽 상태 배지를 만든다."""
+        height = card_height(rows)
+        view = NSView.alloc().initWithFrame_(frame(CARD_PADDING, top - height, CARD_WIDTH, height))
+        document.addSubview_(view)
+        card(view, 0, 0, CARD_WIDTH, height)
+        form_dividers(view, height, rows)
+        title_y = height - CARD_PADDING - CARD_TITLE
+        heading = label(view, title, 0, 0, 300, size=13, bold=True)
+        place_label(heading, CARD_PADDING, title_y, 300, CARD_TITLE)
+        # 배지는 제목 줄(높이 20) 오른쪽 끝에 붙고 글자 폭만큼만 차지한다.
+        badge = SettingsBadge(view, CARD_WIDTH - CARD_PADDING - BADGE_SLOT, title_y, BADGE_SLOT)
+        return view, height, badge
+
+    def _row_label(self, parent: NSView, text: str, y: float) -> NSTextField:
+        """항목 이름은 왼쪽 칸에서 입력 줄 높이의 가운데에 둔다."""
+        name = label(parent, text, 0, 0, FORM_LABEL_WIDTH - 8)
+        place_label(name, CARD_PADDING, y, FORM_LABEL_WIDTH - 8, FORM_ROW)
+        return name
+
+    def _value(
+        self,
+        parent: NSView,
+        text: str,
+        y: float,
+        *,
+        width: float = CARD_WIDTH - CARD_PADDING - FORM_CONTROL_X,
     ) -> NSTextField:
-        """보안·일반 입력 모두 기본 글꼴의 실제 높이로 행 중앙에 놓는다."""
+        """입력 칸 자리에 보조 설명이나 읽기 전용 값을 한 줄로 둔다."""
+        value = label(parent, text, 0, 0, width, secondary=True)
+        value.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
+        place_label(value, FORM_CONTROL_X, y, width, FORM_ROW)
+        return value
+
+    def _button(
+        self, parent: NSView, title: str, x: float, y: float, width: float, action: str
+    ) -> NSButton:
+        """테두리 버튼을 입력 줄 세로 가운데에 둔다."""
+        return button(
+            parent, title, x, form_control_y(y, BUTTON_HEIGHT), width, self._actions, action
+        )
+
+    def _field(self, parent: NSView, y: float, *, secure: bool) -> NSTextField:
+        """보안·일반 입력 모두 입력 칸 세로선에서 시작해 줄 가운데에 둔다."""
         field = (
             NSSecureTextField.textFieldWithString_("")
             if secure
             else NSTextField.textFieldWithString_("")
         )
         field.setFont_(NSFont.systemFontOfSize_(13))
-        height = min(28.0, field.fittingSize()[1])
-        field.setFrame_(frame(x, y + (28 - height) / 2, width, height))
+        field.setFrame_(
+            frame(FORM_CONTROL_X, form_control_y(y, FIELD_HEIGHT), FIELD_WIDTH, FIELD_HEIGHT)
+        )
         field.setDelegate_(self._actions)
         parent.addSubview_(field)
         return field
@@ -180,7 +287,7 @@ class SlackSettingsView:
             )
         )
         self.app_token.setPlaceholderString_(
-            "저장된 토큰을 바꾸려면 입력하세요" if app_configured else "App-Level Token · xapp-…"
+            REPLACE_HINT if app_configured else "xapp-로 시작하는 App-Level Token"
         )
         configured = state is not None and state.configured
         self.member.setEnabled_(editable)
@@ -220,11 +327,9 @@ class SlackSettingsView:
             )
         else:
             identity = ""
-        self._identity.setStringValue_(identity)
+        # 확인된 봇이 없을 때도 빈 칸 대신 무엇이 나타날지 알려 준다.
+        self._identity.setStringValue_(identity or "연결 확인 후 표시")
         self._identity.setToolTip_(identity or None)
-        from AppKit import NSLineBreakByTruncatingTail
-
-        self._identity.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
         self.token.setPlaceholderString_(
-            "저장된 토큰을 바꾸려면 입력하세요" if configured else "Bot User OAuth Token"
+            REPLACE_HINT if configured else "xoxb-로 시작하는 Bot User OAuth Token"
         )

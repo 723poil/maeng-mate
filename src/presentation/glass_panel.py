@@ -8,6 +8,7 @@ from AppKit import (
     NSBackingStoreBuffered,
     NSButton,
     NSColor,
+    NSDatePicker,
     NSEvent,
     NSEventMaskLeftMouseDown,
     NSEventMaskRightMouseDown,
@@ -15,6 +16,8 @@ from AppKit import (
     NSEventModifierFlagControl,
     NSEventModifierFlagOption,
     NSEventModifierFlagShift,
+    NSEventTypeKeyDown,
+    NSEventTypeLeftMouseDown,
     NSFloatingWindowLevel,
     NSPanel,
     NSTextView,
@@ -25,6 +28,7 @@ from AppKit import (
     NSWindowStyleMaskBorderless,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskFullSizeContentView,
+    NSWindowStyleMaskNonactivatingPanel,
     NSWindowStyleMaskTitled,
     NSWindowTitleHidden,
 )
@@ -32,6 +36,9 @@ from Foundation import NSNotificationCenter, NSObject
 from objc import super
 
 from src.presentation.native_views import frame
+
+# 본 키보드의 Return과 숫자 키패드의 Enter다.
+RETURN_KEY_CODES = {36, 76}
 
 
 class KeyablePanel(NSPanel):
@@ -100,6 +107,30 @@ class KeyablePanel(NSPanel):
             self.orderOut_(None)
 
 
+class MenuBarPanel(KeyablePanel):
+    """메뉴바 패널은 입력을 마친 뒤 빈 곳 클릭이나 Return으로 키보드 초점을 내려놓는다."""
+
+    def sendEvent_(self, event: NSEvent) -> None:
+        """초점을 가진 컨트롤에 이벤트가 닿기 전에 편집 종료 여부를 판단한다."""
+        responder = self.firstResponder()
+        # 시간 입력은 Return을 스스로 처리하지 않아 초점이 계속 남으므로 여기서 편집을 끝낸다.
+        if (
+            event.type() == NSEventTypeKeyDown
+            and event.keyCode() in RETURN_KEY_CODES
+            and isinstance(responder, NSDatePicker)
+        ):
+            self.makeFirstResponder_(None)
+            return
+        # 초점을 받지 않는 곳(배경·글자·버튼)을 누르면 입력을 마친 것으로 본다.
+        if event.type() == NSEventTypeLeftMouseDown and responder is not self:
+            content = self.contentView()
+            root = content.superview() if content is not None else None
+            hit = root.hitTest_(event.locationInWindow()) if root is not None else None
+            if hit is None or not hit.acceptsFirstResponder():
+                self.makeFirstResponder_(None)
+        super().sendEvent_(event)
+
+
 def auxiliary_window(title: str, width: float, height: float) -> KeyablePanel:
     """독립 보조 창에는 AppKit이 그리는 닫기 버튼과 투명 제목 막대를 사용한다."""
     panel = KeyablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
@@ -154,15 +185,21 @@ class GlassPanel:
         self._outside_monitor: object | None = None
         self._left = 0.0
         self._top = height
-        self._window = KeyablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            frame(0, 0, width, height), NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False
+        # 메뉴바 패널은 앱을 활성화하지 않고 키 창이 된다. macOS의 협력형 활성화는 다른 앱이
+        # 앞에 있을 때 활성화 요청을 거절할 수 있어, 활성화에 기대면 패널이 뜨지 않는다.
+        self._window = MenuBarPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            frame(0, 0, width, height),
+            NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
+            NSBackingStoreBuffered,
+            False,
         )
         self._window.setOpaque_(False)
         self._window.setBackgroundColor_(NSColor.clearColor())
         # 유리 소재와 별개인 창 그림자는 사각 창 경계를 따라 남으므로 겹치지 않는다.
         self._window.setHasShadow_(False)
         self._window.setLevel_(NSFloatingWindowLevel)
-        self._window.setHidesOnDeactivate_(True)
+        # 앱이 비활성인 채로 열리므로 비활성 숨김을 쓰지 않고, 바깥 클릭·키 창 해제로 닫는다.
+        self._window.setHidesOnDeactivate_(False)
         self._window.setBecomesKeyOnlyIfNeeded_(False)
         self._window.setCollectionBehavior_(
             NSWindowCollectionBehaviorMoveToActiveSpace
@@ -208,6 +245,8 @@ class GlassPanel:
         self._top = min(button_y - 6, screen_y + screen_height - 6)
         self.resize(self._width, self._height)
         self._window.makeKeyAndOrderFront_(None)
+        # 키 창이 되면서 첫 입력인 출근 시각이 자동으로 선택되지 않게 초점을 비운다.
+        self._window.makeFirstResponder_(None)
         if self._window.isVisible() and self._outside_monitor is None:
             self._outside_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
                 NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown, self._clicked_outside

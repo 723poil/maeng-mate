@@ -15,6 +15,7 @@ from src.application.source_settings import (
     draft_payload,
     parse_collection_draft,
     schema_payload,
+    tables_payload,
 )
 from src.application.work_settings import WorkSettingsError, category_documents
 from src.presentation.request_body import read_limited_body
@@ -82,6 +83,17 @@ def create_source_settings_router(service: SourceSettingsClient | None) -> APIRo
             return await asyncio.to_thread(service.observed_choices, str(category_id))
         except (WorkSettingsError, SnapshotError):
             raise HTTPException(503, "수집한 선택값을 읽지 못했습니다.") from None
+
+    @router.get("/tables")
+    async def tables(provider: str = "notion") -> dict[str, object]:
+        """사용자가 요청한 경우에만 연결 가능한 원본 표 목록을 읽는다."""
+        if service is None:
+            raise HTTPException(503, "표 목록을 조회할 수 없습니다.")
+        try:
+            result = await asyncio.to_thread(service.tables, provider)
+            return {"tables": tables_payload(result)}
+        except SourceSettingsError as error:
+            raise HTTPException(422, str(error)) from None
 
     @router.post("/columns")
     async def columns(request: Request) -> dict[str, object]:

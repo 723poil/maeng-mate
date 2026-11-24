@@ -130,7 +130,7 @@ def launch_action() -> str:
 
     contents = bundle_contents()
     if "Volumes" in contents.parts or "AppTranslocation" in contents.parts:
-        raise ConfigError("Maeng Mate를 응용 프로그램 폴더로 옮긴 뒤 실행하세요.")
+        raise ConfigError("Catch를 응용 프로그램 폴더로 옮긴 뒤 실행하세요.")
     manifest = application_directory() / "install.json"
     action = "install"
     try:

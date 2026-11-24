@@ -71,7 +71,9 @@ async def test_history_compares_fiftieth_change_and_preserves_current_rules(db: 
     day = clock.now().date()
     store = SQLiteDayStore(db, now=clock.now)
     service = WorkRecordsService(store, now=clock.now, policy=FlexibleDeparturePolicy())
-    record = DayRecord(day, plan="가상 계획", rules=DEFAULT_WORK_RULES)
+    # 확정 시각 비교가 기본 점심 설정에 흔들리지 않도록 점심 없는 규칙을 쓴다.
+    rules = replace(DEFAULT_WORK_RULES, lunch_start=None, lunch_end=None)
+    record = DayRecord(day, plan="가상 계획", rules=rules)
     for minute in range(51):
         record = await store.correct(
             replace(record, attendance=clock.now().replace(hour=0, minute=minute)), record.revision

@@ -9,6 +9,7 @@ import httpx
 
 from src.application.credentials import CredentialError, CredentialSecret
 from src.domain.models import SourceMapping
+from src.infrastructure.notion.directory import token_owner
 from src.infrastructure.notion.read_api import NOTION_API_URL, notion_headers
 
 
@@ -22,16 +23,16 @@ class NotionConnection:
         self._sources = tuple(sources)
         self._transport = transport
 
-    def verify(self, token: CredentialSecret) -> None:
-        """네트워크 전체 대기와 응답 크기를 제한하고 읽기 권한을 확인한다."""
+    def verify(self, token: CredentialSecret) -> str | None:
+        """네트워크 전체 대기와 응답 크기를 제한하고 읽기 권한과 토큰 주인을 확인한다."""
         try:
-            asyncio.run(self._verify(token))
+            return asyncio.run(self._verify(token))
         except (TimeoutError, httpx.TimeoutException):
             raise CredentialError("timeout") from None
         except (httpx.HTTPError, ValueError):
             raise CredentialError("unavailable") from None
 
-    async def _verify(self, token: CredentialSecret) -> None:
+    async def _verify(self, token: CredentialSecret) -> str | None:
         """마지막 응답이 늦어져도 전체 확인을9초 안에 중단한다."""
         async with (
             asyncio.timeout(9),
@@ -44,7 +45,7 @@ class NotionConnection:
                 timeout=3,
             ) as client,
         ):
-            await self._request(client, "GET", "/users/me", "user")
+            me = await self._request(client, "GET", "/users/me", "user")
             # 같은 표의 표시 설정이 여러 개여도 읽기 권한은 한 번만 확인한다.
             for origin in dict.fromkeys(source.origin for source in self._sources):
                 await asyncio.sleep(0.4)
@@ -55,6 +56,7 @@ class NotionConnection:
                     "list",
                     {"page_size": 1},
                 )
+            return token_owner(me)
 
     async def _request(
         self,
@@ -63,7 +65,7 @@ class NotionConnection:
         path: str,
         kind: str,
         body: dict[str, object] | None = None,
-    ) -> None:
+    ) -> dict[str, object]:
         """오류 원문은 읽지 않고 응답도 상한 안에서만 받아 검사한다."""
         async with client.stream(method, path, json=body) as response:
             if response.status_code != 200:
@@ -88,3 +90,4 @@ class NotionConnection:
                 raise CredentialError("unavailable")
             if kind == "list" and not isinstance(payload.get("results"), list):
                 raise CredentialError("unavailable")
+            return {str(key): value for key, value in payload.items()}

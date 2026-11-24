@@ -76,6 +76,19 @@ class NSDate(NSObject):
     """런루프의 다음 처리 시각이다."""
     @classmethod
     def dateWithTimeIntervalSinceNow_(cls, seconds: float) -> NSDate: ...
+    @classmethod
+    def dateWithTimeIntervalSince1970_(cls, seconds: float) -> NSDate: ...
+    def timeIntervalSince1970(self) -> float: ...
+
+class NSLocale(NSObject):
+    """시간 입력의 표기 형식을 고정한다."""
+    @classmethod
+    def localeWithLocaleIdentifier_(cls, identifier: str) -> NSLocale: ...
+
+class NSTimeZone(NSObject):
+    """시간 입력을 해석할 시간대다."""
+    @classmethod
+    def timeZoneWithName_(cls, name: str) -> NSTimeZone | None: ...
 
 class NSURL(NSObject):
     """검증한 링크 또는 파일 선택 결과의 주소다."""

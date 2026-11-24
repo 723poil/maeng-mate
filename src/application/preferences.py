@@ -8,6 +8,7 @@ from src.domain.calendar import CALENDAR_KINDS, CalendarKind, CalendarPreference
 from src.domain.notification_identity import NotificationIdentity
 from src.domain.notification_timing import departure_minutes
 from src.domain.preferences import (
+    DEPARTURE_DISPLAYS,
     LEGACY_SECTIONS,
     NOTIFICATION_TYPES,
     SECTIONS,
@@ -68,6 +69,7 @@ def preferences_payload(value: Preferences) -> dict[str, object]:
         "mutedSourceNotifications": {
             key: list(events) for key, events in value.muted_source_notifications.items()
         },
+        "departureDisplay": value.departure_display,
     }
 
 
@@ -103,7 +105,9 @@ def parse_preferences(
     if (
         not isinstance(value, dict)
         or not required <= set(value)
-        or set(value) - required - {"notificationIdentity", "calendar", "mutedSourceNotifications"}
+        or set(value)
+        - required
+        - {"notificationIdentity", "calendar", "mutedSourceNotifications", "departureDisplay"}
     ):
         raise ValueError("설정 형식을 확인하세요.")
     revision, enabled, sections = (
@@ -163,6 +167,13 @@ def parse_preferences(
     muted = current.muted_source_notifications if current else {}
     if "mutedSourceNotifications" in value:
         muted = parse_muted_sources(value["mutedSourceNotifications"])
+    # 예전 문서에는 표시 방식이 없으므로 현재 값 또는 퇴근 시각 표시를 이어받는다.
+    display = current.departure_display if current else "time"
+    if "departureDisplay" in value:
+        raw_display = value["departureDisplay"]
+        if raw_display not in DEPARTURE_DISPLAYS:
+            raise ValueError("퇴근 표시 방식을 확인하세요.")
+        display = "remaining" if raw_display == "remaining" else "time"
     return Preferences(
         revision,
         tuple(parsed),
@@ -176,6 +187,7 @@ def parse_preferences(
         else NotificationIdentity(),
         calendar,
         muted,
+        display,
     )
 
 

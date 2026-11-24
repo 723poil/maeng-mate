@@ -14,7 +14,7 @@ import pytest
 def test_native_menu_renders_and_saves_attendance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """기본 팝오버의 시분 선택·즉시 계산·자동 저장이 서버 기록과 일치한다."""
+    """기본 팝오버의 출근 시각 입력·즉시 계산·자동 저장이 서버 기록과 일치한다."""
     pytest.importorskip("AppKit")
     from src.application.day_records import DayService
     from src.application.desktop import (
@@ -150,12 +150,12 @@ def test_native_menu_renders_and_saves_attendance(
         status = app._status_item.button()
         assert status.title() == ""
         assert status.image().isTemplate()
-        assert status.toolTip() == status.accessibilityLabel() == "Maeng Mate · 수집 대기"
-        assert app._view.frame().size.width == 520
+        assert status.toolTip() == status.accessibilityLabel() == "Catch · 수집 대기"
+        assert app._view.frame().size.width == 480
         app._apply_source_display(display)
         task_card = app._custom_sections[tasks_card.key]
         meeting_card = app._custom_sections[meetings_card.key]
-        assert task_card.entries._scroll.frame().size.width == 466
+        assert task_card.entries._scroll.frame().size.width == 426
         # Finder만 메인 창을 열며, 사이드바와 본문은 숨긴 카테고리를 제외한다.
         from dataclasses import replace
 
@@ -215,7 +215,7 @@ def test_native_menu_renders_and_saves_attendance(
         app.open_source_board(1)
         assert opened == ["https://www.notion.so/fake-tasks", "https://www.notion.so/fake-meetings"]
         assert "완료 기준 없음" not in app._collection_detail.stringValue()
-        assert "미기록" in app._message.stringValue()
+        assert app._work_message.stringValue() == ""
         assert app._departure.stringValue() == "18:00"
         assert asyncio.run(service.read())["revision"] == 0
         scroll = task_card.entries._scroll
@@ -321,31 +321,27 @@ def test_native_menu_renders_and_saves_attendance(
         )
         app._apply_source_display(display)
         assert app._custom_sections[meetings_card.key].view.superview() == app._body
-        assert app.hour.indexOfSelectedItem() == 9
+        assert app._arrival() == "09:00"
         assert asyncio.run(service.read())["revision"] == 0
         app.leave.selectItemAtIndex_(3)
-        app.hour.selectItemAtIndex_(9)
-        app.minute.selectItemAtIndex_(1)
+        app._set_arrival(9, 1)
         app.mark_dirty()
         assert app._departure.stringValue() == "14:01"
         settle()
         assert app._departure.stringValue() == "14:01"
-        assert app.hour.indexOfSelectedItem() == 9
-        assert app.minute.indexOfSelectedItem() == 1
+        assert app._arrival() == "09:01"
         assert app.leave.indexOfSelectedItem() == 3
         record = asyncio.run(service.read())
         assert record["revision"] == 1
         assert record["attendanceTime"] == "09:01"
         # 첫 저장 응답이 나중에 도착해도 사용자의 다음 선택을 되돌리면 안 된다.
-        app.hour.selectItemAtIndex_(10)
-        app.minute.selectItemAtIndex_(0)
+        app._set_arrival(10, 0)
         app.leave.selectItemAtIndex_(0)
         app.mark_dirty()
         app._last_edit -= 1
         app.tick()
         assert app._controller.busy
-        app.hour.selectItemAtIndex_(8)
-        app.minute.selectItemAtIndex_(30)
+        app._set_arrival(8, 30)
         app.leave.selectItemAtIndex_(3)
         app.mark_dirty()
         assert app._departure.stringValue() == "12:30"
@@ -354,12 +350,10 @@ def test_native_menu_renders_and_saves_attendance(
         assert final["attendanceTime"] == "08:30"
         assert final["leaveType"] == "pm_half"
         assert final["revision"] == 3
-        assert app.hour.indexOfSelectedItem() == 8
-        assert app.minute.indexOfSelectedItem() == 30
+        assert app._arrival() == "08:30"
         assert app._departure.stringValue() == "12:30"
         # 자정 경계는 저장 전 미리보기와 저장 응답 뒤 모두 같은 이유를 보여 준다.
-        app.hour.selectItemAtIndex_(16)
-        app.minute.selectItemAtIndex_(0)
+        app._set_arrival(16, 0)
         app.leave.selectItemAtIndex_(0)
         app.mark_dirty()
         assert app._departure.stringValue() == "11/17 00:00"
@@ -370,16 +364,13 @@ def test_native_menu_renders_and_saves_attendance(
         settle()
         assert app._departure_warning.stringValue() == "익일 확정 불가 · 알림 없음"
         assert asyncio.run(service.read())["calculationState"] == "overnight"
-        app.hour.selectItemAtIndex_(15)
-        app.minute.selectItemAtIndex_(59)
+        app._set_arrival(15, 59)
         app.mark_dirty()
         assert app._departure_warning.stringValue() == ""
         settle()
         app._notification_status = lambda: "알림 연결 확인 필요"
         app.tick()
-        assert "알림 연결 확인 필요" in (
-            app._work_message.stringValue() or app._message.stringValue()
-        )
+        assert app._work_message.stringValue() == "알림 연결 확인 필요"
     finally:
         app.close()
 

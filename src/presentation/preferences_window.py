@@ -2,42 +2,77 @@
 
 from collections.abc import Callable
 from dataclasses import replace
-from importlib.metadata import version
 from typing import Literal
 
 from AppKit import (
     NSApplication,
     NSBox,
-    NSBoxSeparator,
+    NSBoxCustom,
+    NSColor,
     NSNoBorder,
+    NSNoTitle,
+    NSPopUpButton,
     NSScreen,
     NSScrollView,
     NSTextAlignmentRight,
     NSView,
+    NSVisualEffectBlendingModeBehindWindow,
+    NSVisualEffectMaterialSidebar,
+    NSVisualEffectStateFollowsWindowActiveState,
+    NSVisualEffectView,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorMoveToActiveSpace,
 )
 from Foundation import NSNotification, NSObject
 
-from src.application.credentials import CredentialError, validated_secret
+from src.application.credentials import CredentialError, CredentialSecret, validated_secret
 from src.application.data_backup import DataBackupActions
 from src.application.notifications import NotificationChannel
+from src.application.notion_people import NotionPeople
 from src.application.source_settings import SourceSettingsClient, SourceSettingsError
 from src.application.work_rules_settings import WorkRulesDocument
-from src.domain.preferences import NOTIFICATION_TYPES, SECTIONS, SectionPreference
+from src.domain.preferences import (
+    DEPARTURE_DISPLAYS,
+    NOTIFICATION_TYPES,
+    SECTIONS,
+    SectionPreference,
+)
+from src.presentation.app_info_view import AppInfoView
 from src.presentation.category_settings_form import CategorySettingsForm
 from src.presentation.data_backup_view import DataBackupView
 from src.presentation.glass_panel import auxiliary_window
 from src.presentation.mcp_settings_controller import McpSettingsController
 from src.presentation.mcp_settings_view import McpSettingsView
-from src.presentation.native_views import button, card, frame, glass_container, label, place_label
+from src.presentation.native_views import (
+    CARD_GAP,
+    CARD_PADDING,
+    CARD_TITLE,
+    CARD_TITLE_GAP,
+    CARD_WIDTH,
+    FORM_CONTROL_X,
+    FORM_LABEL_WIDTH,
+    FORM_ROW,
+    button,
+    card,
+    card_height,
+    form_control_y,
+    form_row_y,
+    frame,
+    label,
+    place_label,
+)
+from src.presentation.notification_check_view import NotificationCheckView
 from src.presentation.notification_identity_controller import NotificationIdentityController
-from src.presentation.notification_identity_view import NotificationIdentityView
 from src.presentation.notification_preferences import NotificationPreferences
 from src.presentation.notion_credentials_controller import NotionCredentialsController
 from src.presentation.notion_credentials_view import NotionCredentialsView
 from src.presentation.notion_page_links_controller import NotionPageLinksController
 from src.presentation.notion_page_links_view import NotionPageLinksView
+from src.presentation.notion_token_capture import (
+    CONNECTION_TOKEN_URL,
+    PERSONAL_TOKEN_URL,
+    NotionTokenCapture,
+)
 from src.presentation.preferences_controller import PreferencesController
 from src.presentation.preferences_sidebar import PreferencesSidebar, SettingsPage
 from src.presentation.runtime_settings_controller import RuntimeSettingsController
@@ -50,23 +85,23 @@ from src.presentation.source_settings_form import SourceEditor, SourceSettingsFo
 from src.presentation.update_button import UpdateChecks
 from src.presentation.work_rules_form import WorkRulesEditor, WorkRulesForm
 
+# 화면 페이지 카드 위 여백과 표시 순서 목록의 한 줄 높이다(드래그 손잡이·체크박스가 들어가는 표 행).
+SCREEN_PAGE_TOP = 8.0
+SECTION_ROW = 32.0
+
 
 class PreferencesActions(NSObject):
     """설정 창의 네이티브 입력을 화면 상태로 연결한다."""
 
     owner: "PreferencesWindow"
 
-    def ruleSources_(self, sender: object) -> None:
-        """규칙과 전달 채널을 편집하는 카테고리로 이동한다."""
-        self.owner._sidebar.select(SettingsPage.CATEGORIES)
-
-    def applyDeparture_(self, sender: object) -> None:
-        """직접 입력한 퇴근 알림 시각만 저장한다."""
-        self.owner.apply_departure_offsets()
-
     def changed_(self, sender: object) -> None:
         """선택 변경을 자동 저장 초안으로 전달한다."""
         self.owner.changed()
+
+    def departureDisplay_(self, sender: object) -> None:
+        """근무 카드의 퇴근 표시 방식을 자동 저장 초안으로 전달한다."""
+        self.owner.change_departure_display()
 
     def windowWillClose_(self, notification: NSNotification) -> None:
         """기본 닫기 버튼과 단축키 모두에서 임시 인증 표시를 지운다."""
@@ -167,6 +202,24 @@ class PreferencesActions(NSObject):
         """현재 저장된 토큰만 확인한다."""
         self.owner.perform_credential("check")
 
+    def createPersonalToken_(self, sender: object) -> None:
+        """개인 토큰 페이지를 열고 복사를 기다린다."""
+        self.owner.start_token_capture(PERSONAL_TOKEN_URL)
+
+    def createConnectionToken_(self, sender: object) -> None:
+        """개인 토큰이 막힌 워크스페이스는 통합 연결 페이지를 열고 복사를 기다린다."""
+        self.owner.start_token_capture(CONNECTION_TOKEN_URL)
+
+    def personChosen_(self, sender: object) -> None:
+        """사용자 메뉴에서 고른 사람을 본인 ID 초안으로 쓴다."""
+        if self.owner._runtime_form is not None:
+            self.owner._runtime_form.choose_person()
+        self.owner.render()
+
+    def cancelTokenCapture_(self, sender: object) -> None:
+        """토큰 복사 감지를 멈춘다."""
+        self.owner.cancel_token_capture()
+
     def deleteCredential_(self, sender: object) -> None:
         """인증 카드의 명시적 삭제를 전달한다."""
         self.owner.perform_credential("delete")
@@ -191,9 +244,16 @@ class PreferencesWindow:
         source_client: SourceSettingsClient | None = None,
         data_backup: DataBackupActions | None = None,
         app_updates: UpdateChecks | None = None,
+        open_url: Callable[[str], None] | None = None,
+        notion_people: Callable[[], NotionPeople] | None = None,
     ) -> None:
         """설정 작업자와 설치된 채널만 주입받는다."""
         self._render_state: object = None
+        self._open_url = open_url
+        self._token_capture = NotionTokenCapture()
+        # 토큰 저장 요청이 진행 중인지와, 성공하면 자동으로 다시 시작할지(처음 등록·만료 교체)다.
+        self._token_saving = False
+        self._restart_after_token = False
         self._pending_work_edits = pending_work_edits
         self._source_form: SourceSettingsForm | None = None
         self._category_form: CategorySettingsForm | None = None
@@ -211,7 +271,7 @@ class PreferencesWindow:
         self._page_links_controller = page_links_controller
         self._page_links_view: NotionPageLinksView | None = None
         self._identity_controller = identity_controller
-        self._identity_view: NotificationIdentityView | None = None
+        self._identity_view: NotificationCheckView | None = None
         self._mcp_view: McpSettingsView | None = None
         self._credentials_view: NotionCredentialsView | None = None
         self._runtime_form: RuntimeSettingsForm | None = None
@@ -219,26 +279,32 @@ class PreferencesWindow:
         self._actions.owner = self
         screen = NSScreen.mainScreen()
         height = min(600.0, max(500.0, screen.visibleFrame()[1][1] - 60)) if screen else 600.0
-        self._window = auxiliary_window("Maeng Mate 설정", 760, height)
+        self._window = auxiliary_window("Catch 설정", 760, height)
         self._window.setCollectionBehavior_(
             NSWindowCollectionBehaviorMoveToActiveSpace
             | NSWindowCollectionBehaviorFullScreenAuxiliary
         )
         self._window.setDelegate_(self._actions)
         content = NSView.alloc().initWithFrame_(frame(0, 0, 760, height))
-        self._glass = glass_container(content, 760, height)
-        self._window.setContentView_(self._glass)
+        # 시스템 설정처럼 사이드바만 바탕화면이 비치는 재질로 두고 본문은 불투명한 창 배경을 쓴다.
+        sidebar = NSVisualEffectView.alloc().initWithFrame_(frame(0, 0, 148, height))
+        sidebar.setMaterial_(NSVisualEffectMaterialSidebar)
+        sidebar.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+        sidebar.setState_(NSVisualEffectStateFollowsWindowActiveState)
+        content.addSubview_(sidebar)
+        # 창 뒤가 비치려면 창 자체는 투명해야 하므로 본문 영역에만 불투명 배경을 깐다.
+        body = NSBox.alloc().initWithFrame_(frame(148, 0, 760 - 148, height))
+        body.setBoxType_(NSBoxCustom)
+        body.setBorderType_(NSNoBorder)
+        body.setTitlePosition_(NSNoTitle)
+        body.setCornerRadius_(0)
+        body.setFillColor_(NSColor.windowBackgroundColor())
+        content.addSubview_(body)
+        self._window.setContentView_(content)
         label(content, "설정", 82, height - 44, 60, size=17, bold=True)
-        if app_updates:
-            app_updates.attach(content)
-        else:
-            label(content, f"버전 {version('maeng-mate')}", 20, 22, 120, size=12, secondary=True)
         self._page_title = label(
             content, SettingsPage.SCREEN.title, 188, height - 44, 450, size=17, bold=True
         )
-        divider = NSBox.alloc().initWithFrame_(frame(148, 16, 1, height - 32))
-        divider.setBoxType_(NSBoxSeparator)
-        content.addSubview_(divider)
         viewport = height - 102
         pages: tuple[SettingsPage, ...] = (SettingsPage.SCREEN, SettingsPage.NOTIFICATIONS)
         if runtime_controller is not None:
@@ -253,7 +319,10 @@ class PreferencesWindow:
             pages += (SettingsPage.SOURCES, SettingsPage.CATEGORIES)
         if data_backup is not None:
             pages += (SettingsPage.BACKUP,)
+        pages += (SettingsPage.ABOUT,)
         self._pages = {page: self._page(content, viewport) for page in pages}
+        # 버전과 업데이트 확인은 사이드바 아래 대신 앱 정보 페이지에 모은다.
+        AppInfoView(self._pages[SettingsPage.ABOUT], viewport, app_updates)
         if data_backup is not None:
             self._backup_view = DataBackupView(
                 self._pages[SettingsPage.BACKUP], viewport, data_backup, self._restart_edits_pending
@@ -262,7 +331,11 @@ class PreferencesWindow:
         self._build_notification_page(self._pages[SettingsPage.NOTIFICATIONS], viewport, channels)
         if runtime_controller is not None:
             self._runtime_form = RuntimeSettingsForm(
-                self._pages[SettingsPage.NOTION], viewport, runtime_controller, self._actions
+                self._pages[SettingsPage.NOTION],
+                viewport,
+                runtime_controller,
+                self._actions,
+                notion_people,
             )
         if credentials_controller is not None:
             page = self._pages.get(SettingsPage.NOTION)
@@ -328,16 +401,62 @@ class PreferencesWindow:
         height = max(284.0, viewport)
         document = NSView.alloc().initWithFrame_(frame(0, 0, 584, height))
         page.setDocumentView_(document)
-        rows_height = len(SECTIONS) * 32
-        self._screen_card = card(document, 16, height - rows_height - 64, 552, rows_height + 56)
-        self._screen_rows_top = height - 52
-        self._screen_max_rows = max(2, int((viewport - 64) // 32))
-        label(document, "표시와 순서", 28, height - 40, 480, size=13, bold=True)
-        hint = label(document, "끌어서 순서 변경", 410, height - 39, 146, size=11, secondary=True)
+        rows_height = len(SECTIONS) * SECTION_ROW
+        # 카드 위 여백·안쪽 여백·제목 줄은 다른 설정 카드와 같은 간격 체계를 쓴다.
+        card_top = height - SCREEN_PAGE_TOP
+        title_y = card_top - CARD_PADDING - CARD_TITLE
+        self._screen_rows_top = title_y - CARD_TITLE_GAP
+        self._screen_card = card(
+            document,
+            CARD_PADDING,
+            self._screen_rows_top - rows_height - CARD_PADDING,
+            CARD_WIDTH,
+            card_top - self._screen_rows_top + rows_height + CARD_PADDING,
+        )
+        # 아래의 근무 카드 설정 카드가 들어갈 자리를 남기고 표시 순서 목록 줄 수를 정한다.
+        chrome = (
+            SCREEN_PAGE_TOP
+            + CARD_PADDING
+            + CARD_TITLE
+            + CARD_TITLE_GAP
+            + CARD_PADDING
+            + CARD_GAP
+            + card_height(1)
+        )
+        self._screen_max_rows = max(2, int((viewport - chrome) // SECTION_ROW))
+        title = label(document, "표시와 순서", 0, 0, 300, size=13, bold=True)
+        place_label(title, CARD_PADDING * 2, title_y, 300, CARD_TITLE)
+        hint = label(document, "끌어서 순서 변경", 0, 0, 200, secondary=True)
+        place_label(hint, CARD_PADDING + CARD_WIDTH - CARD_PADDING - 200, title_y, 200, CARD_TITLE)
         hint.setAlignment_(NSTextAlignmentRight)
         self._sections = SectionOrderList(
-            document, 28, height - rows_height - 52, 528, self._sections_changed
+            document,
+            CARD_PADDING * 2,
+            self._screen_rows_top - rows_height,
+            CARD_WIDTH - 2 * CARD_PADDING,
+            self._sections_changed,
         )
+        # 근무 카드: 퇴근 시각과 남은 시간 중 무엇을 크게 보일지 고른다.
+        work_height = card_height(1)
+        self._work_display_card = NSView.alloc().initWithFrame_(
+            frame(CARD_PADDING, 0, CARD_WIDTH, work_height)
+        )
+        document.addSubview_(self._work_display_card)
+        card(self._work_display_card, 0, 0, CARD_WIDTH, work_height)
+        work_title = label(self._work_display_card, "근무 카드", 0, 0, 300, size=13, bold=True)
+        place_label(
+            work_title, CARD_PADDING, work_height - CARD_PADDING - CARD_TITLE, 300, CARD_TITLE
+        )
+        row = form_row_y(work_height, 0)
+        caption = label(self._work_display_card, "퇴근 표시", 0, 0, FORM_LABEL_WIDTH - 8)
+        place_label(caption, CARD_PADDING, row, FORM_LABEL_WIDTH - 8, FORM_ROW)
+        self._departure_display = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            frame(FORM_CONTROL_X - 3, form_control_y(row, 26), 160, 26), False
+        )
+        self._departure_display.addItemsWithTitles_(["퇴근 시각", "남은 시간"])
+        self._departure_display.setTarget_(self._actions)
+        self._departure_display.setAction_("departureDisplay:")
+        self._work_display_card.addSubview_(self._departure_display)
         document.scrollPoint_((0, max(0, height - viewport)))
 
     def _build_notification_page(
@@ -349,15 +468,12 @@ class PreferencesWindow:
             viewport,
             channels,
             self._actions,
-            identity_height=144 if self._identity_controller else 0,
+            self.apply_departure_offsets,
+            permission=self._identity_controller is not None,
         )
-        if self._identity_controller is not None:
-            self._identity_view = NotificationIdentityView(
-                controls.fixed,
-                controls.fixed.frame()[1][1] - 8,
-                self.controller,
-                self._identity_controller,
-            )
+        if self._identity_controller is not None and controls.permission_row is not None:
+            parent, row_y = controls.permission_row
+            self._identity_view = NotificationCheckView(parent, row_y, self._identity_controller)
         self._enabled = controls.enabled
         self._channels = controls.channels
 
@@ -395,16 +511,19 @@ class PreferencesWindow:
         )
         self._runtime_save.setHidden_(not runtime_page or selected == SettingsPage.CATEGORIES)
         self._runtime_restart.setHidden_(not runtime_page)
-        self._reload.setHidden_(selected == SettingsPage.BACKUP)
+        # 백업·앱 정보에는 다시 불러올 저장 설정이 없다.
+        informational = selected in (SettingsPage.BACKUP, SettingsPage.ABOUT)
+        self._reload.setHidden_(informational)
+        self._status.setHidden_(selected == SettingsPage.ABOUT)
         self._reload.setFrame_(frame(438 if runtime_page else 624, 18.5, 110, 26))
         place_label(self._status, 188, 22, 238 if runtime_page else 402, 19)
         self._render_state = None
         self.render()
 
-    def show(self, *, screen: bool = False) -> None:
-        """일반 열기는 선택을 유지하고 홈의 표시 설정은 화면 페이지를 연다."""
-        if screen:
-            self._sidebar.select(SettingsPage.SCREEN)
+    def show(self, *, page: SettingsPage | None = None) -> None:
+        """일반 열기는 선택을 유지하고, 요청한 페이지가 있으면 그 페이지를 연다."""
+        if page is not None:
+            self._sidebar.select(page)
         self.render()
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self._window.makeKeyAndOrderFront_(None)
@@ -423,6 +542,15 @@ class PreferencesWindow:
                 if item.key in (*SECTIONS, *registered) and item.key not in visible_keys
             )
             self.controller.change(replace(value, sections=(*sections, *omitted)))
+        self.render()
+
+    def change_departure_display(self) -> None:
+        """고른 퇴근 표시 방식만 바꾸고 나머지 설정은 그대로 둔다."""
+        value = self.controller.value
+        index = self._departure_display.indexOfSelectedItem()
+        if value is None or not 0 <= index < len(DEPARTURE_DISPLAYS):
+            return
+        self.controller.change(replace(value, departure_display=DEPARTURE_DISPLAYS[index]))
         self.render()
 
     def apply_departure_offsets(self) -> None:
@@ -494,10 +622,89 @@ class PreferencesWindow:
             return
         try:
             token = validated_secret(view.token.stringValue()) if action == "save" else None
-            controller.perform(action, token)
+            if token is not None:
+                self._submit_token(token)
+            else:
+                controller.perform(action, token)
         except CredentialError:
             controller.error_code, controller.error = "invalid", "토큰 형식을 확인하세요."
         self.render()
+
+    def start_token_capture(self, url: str = PERSONAL_TOKEN_URL) -> None:
+        """토큰 페이지를 열고 이후 새로 복사한 토큰을 자동으로 확인·저장한다."""
+        if self._credentials_controller is None or self._open_url is None:
+            return
+        self._token_capture.start()
+        self._open_url(url)
+        self.render()
+
+    def cancel_token_capture(self) -> None:
+        """토큰 복사 감지만 멈추고 입력·저장 상태는 그대로 둔다."""
+        self._token_capture.stop()
+        self.render()
+
+    def _submit_token(self, token: CredentialSecret) -> None:
+        """저장 전 상태로 처음 등록·만료 교체인지 판단하고 확인 후 저장을 요청한다."""
+        controller = self._credentials_controller
+        if controller is None:
+            return
+        state = controller.state
+        self._restart_after_token = (
+            state is None
+            or not state.configured
+            or state.verification == "failed"
+            or controller.error_code == "unauthorized"
+        )
+        controller.perform("save", token)
+        self._token_saving = controller.busy
+
+    def _watch_token(self) -> None:
+        """감지한 토큰을 저장하고, 실패하면 다음 복사를 기다리고, 성공하면 다시 시작한다."""
+        controller = self._credentials_controller
+        capture = self._token_capture
+        if controller is None:
+            return
+        if self._token_saving and not controller.busy:
+            self._token_saving = False
+            if controller.error is None:
+                capture.clear_captured()
+                capture.stop()
+                self._restart_for_token()
+                self._refresh_account()
+            else:
+                capture.resume()
+        # 저장할 수 없는 동안 읽으면 복사한 토큰을 놓치므로 편집 가능할 때만 확인한다.
+        if controller.editable and not controller.input_dirty:
+            token = capture.poll()
+            if token is not None:
+                self._submit_token(token)
+                if not self._token_saving:
+                    capture.resume()
+        if self._credentials_view is not None:
+            self._credentials_view.capturing = capture.active
+
+    def _refresh_account(self) -> None:
+        """새 토큰의 사람 목록과 서버가 채운 본인 ID를 다시 읽는다. 편집 중인 초안은 두고 넘어간다."""
+        if self._runtime_form is not None:
+            self._runtime_form.forget_people()
+        runtime = self._runtime_controller
+        if runtime is not None and not runtime.dirty:
+            runtime.reload()
+
+    def _restart_for_token(self) -> None:
+        """처음 등록·만료 교체만 다른 편집이 없을 때 자동으로 적용하고 평소 변경은 버튼을 기다린다."""
+        controller = self._credentials_controller
+        runtime = self._runtime_controller
+        restart, self._restart_after_token = self._restart_after_token, False
+        if (
+            restart
+            and controller is not None
+            and controller.restart_required
+            and runtime is not None
+            and not self._other_edits_pending()
+            and not self._restart_edits_pending()
+        ):
+            runtime.restart(provider_pending=True)
 
     def save_runtime(self) -> None:
         """입력 오류는 폼에 남기고 검증된 값만 저장 작업자에게 전달한다."""
@@ -513,8 +720,11 @@ class PreferencesWindow:
         controller = self._runtime_controller
         if controller is None or self._runtime_form is None:
             return
-        self._runtime_form.render()
         credentials = self._credentials_controller
+        # 토큰이 있을 때만 사람 목록을 읽어 사용자 칸을 이름 메뉴로 바꾼다.
+        if credentials is not None and credentials.state and credentials.state.configured:
+            self._runtime_form.load_people()
+        self._runtime_form.render()
         if self._credentials_view is not None:
             self._credentials_view.render()
         links = self._page_links_controller
@@ -621,8 +831,6 @@ class PreferencesWindow:
         slack = self._slack_controller
         return bool(
             self.controller.dirty
-            # 알림 이름·아이콘은 적용 전까지 제어기가 아닌 뷰에만 초안이 있다.
-            or (self._identity_view and self._identity_view.dirty)
             or (runtime and (runtime.dirty or runtime.restarting))
             or (credentials and credentials.input_dirty)
             or (links and links.dirty)
@@ -683,6 +891,8 @@ class PreferencesWindow:
 
     def tick(self) -> None:
         """닫힌 창에서는 완료된 작업만 회수하고 화면은 다시 열 때 갱신한다."""
+        # 토큰 감지는 브라우저로 넘어가 창이 가려지거나 닫혀도 계속한다.
+        self._watch_token()
         visible = self._window.isVisible()
         if self._backup_view is not None:
             self._backup_view.tick(visible=visible and self._selected_page == SettingsPage.BACKUP)
@@ -759,11 +969,31 @@ class PreferencesWindow:
         self._render_state = state
         editable = value is not None and controller.error is None and not controller.loading
         sections = source_sections(value.sections, display) if value is not None else ()
-        rows_height = min(max(2, len(sections)), self._screen_max_rows) * 32
+        rows_height = min(max(2, len(sections)), self._screen_max_rows) * SECTION_ROW
         self._sections.resize(self._screen_rows_top, rows_height)
+        card_top = self._screen_rows_top + CARD_TITLE_GAP + CARD_TITLE + CARD_PADDING
         self._screen_card.setFrame_(
-            frame(16, self._screen_rows_top - rows_height - 12, 552, rows_height + 56)
+            frame(
+                CARD_PADDING,
+                self._screen_rows_top - rows_height - CARD_PADDING,
+                CARD_WIDTH,
+                card_top - self._screen_rows_top + rows_height + CARD_PADDING,
+            )
         )
+        work_height = self._work_display_card.frame()[1][1]
+        self._work_display_card.setFrame_(
+            frame(
+                CARD_PADDING,
+                self._screen_rows_top - rows_height - CARD_PADDING - CARD_GAP - work_height,
+                CARD_WIDTH,
+                work_height,
+            )
+        )
+        self._departure_display.setEnabled_(editable)
+        if value is not None:
+            self._departure_display.selectItemAtIndex_(
+                DEPARTURE_DISPLAYS.index(value.departure_display)
+            )
         self._sections.update(
             sections,
             editable,
@@ -777,8 +1007,7 @@ class PreferencesWindow:
         self._enabled.setEnabled_(editable and not alert_settings_pending)
         for control in (
             *self._channels.values(),
-            self._notification_view.departure,
-            self._notification_view.apply_departure,
+            *self._notification_view.departure_controls,
         ):
             control.setEnabled_(
                 editable

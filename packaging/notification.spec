@@ -14,4 +14,4 @@ a = Analysis([entry], pathex=[str(Path(SPECPATH).parent)], binaries=[], datas=[]
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='NotificationAgent', debug=False, bootloader_ignore_signals=False, strip=False, upx=False, console=False, argv_emulation=False)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='NotificationAgent')
-app = BUNDLE(coll, name='NotificationAgent.app', icon=str(icon), bundle_identifier=profile.identifier + ".notifications", version='1.0', info_plist={'CFBundleName':'Maeng Mate','CFBundleDisplayName':'Maeng Mate','LSUIElement':True,'NSPrincipalClass':'NSApplication','NSAppleScriptEnabled':False})
+app = BUNDLE(coll, name='NotificationAgent.app', icon=str(icon), bundle_identifier=profile.identifier + ".notifications", version='1.0', info_plist={'CFBundleName':'Catch','CFBundleDisplayName':'Catch','LSUIElement':True,'NSPrincipalClass':'NSApplication','NSAppleScriptEnabled':False})

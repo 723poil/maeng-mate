@@ -31,10 +31,6 @@ class MacNotificationApp:
         self._active: NotificationIdentity | None = None
         self._revision = -1
 
-    def read_icon(self, path: str) -> bytes:
-        """선택 이미지의 원본 위치는 저장하지 않는다."""
-        return icon_png(path)
-
     def _register(self) -> None:
         """로컬 서명을 갱신하고 같은 식별자의 앱 정보만 다시 등록한다."""
         for command in (
@@ -118,7 +114,8 @@ class MacNotificationApp:
         """긴 대기·등록 뒤 실행권을 재검증하고 같은 잠금 안에서 발신한다."""
         with self._lock:
             saved = preferences()
-            self.apply(saved.notification_identity, saved.revision)
+            # 발신 앱 이름·아이콘은 더 이상 사용자가 바꾸지 않으므로 앱 기본값을 쓴다.
+            self.apply(NotificationIdentity(), saved.revision)
             if not authorize(job):
                 return "cancelled"
             return self.request(job.id, job.title, job.body, url=job.url)

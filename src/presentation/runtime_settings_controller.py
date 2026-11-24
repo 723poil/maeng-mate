@@ -187,8 +187,9 @@ class SettingsEditor[Value, State: EditableSettingsState]:
             return "수정 중"
         if self.state is not None and self.state.restart_required:
             return "저장됨 · 다시 시작 후 적용"
+        # 한 번도 저장하지 않아 기본값을 쓰는 상태는 사용자가 할 일이 없으므로 따로 알리지 않는다.
         if self.state is not None and not self.state.initialized:
-            return "미저장"
+            return ""
         return "저장됨"
 
     def close(self) -> None:

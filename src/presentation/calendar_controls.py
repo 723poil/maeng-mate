@@ -14,7 +14,6 @@ from AppKit import (
     NSProgressIndicator,
     NSProgressIndicatorStyleSpinning,
     NSScrollView,
-    NSTextAlignmentCenter,
     NSTextField,
     NSView,
 )
@@ -86,10 +85,12 @@ class CalendarToolbar:
         self._actions = CalendarControlActions.alloc().init()
         self._actions.owner = self
         if compact:
-            label(parent, "캘린더", x + 12, y + 6, 52, size=13, bold=True)
+            # 작은 카드는 월 제목을 다른 카드 제목처럼 왼쪽에 두고, 이동 묶음(‹ 오늘 ›)과
+            # 표시 항목·큰 캘린더 아이콘을 오른쪽에 모은다. 새로고침은 패널 머리의 버튼이 맡는다.
+            self.month = label(parent, "", x + 14, y + 4, 150, size=13, bold=True)
             if open_filters is not None:
                 self.filter_button = button(
-                    parent, "", x + 70, y, 24, self._actions, "filters:", bordered=False
+                    parent, "", x + width - 66, y, 26, self._actions, "filters:", bordered=False
                 )
                 self.filter_button.setImage_(
                     NSImage.imageWithSystemSymbolName_accessibilityDescription_(
@@ -97,10 +98,7 @@ class CalendarToolbar:
                     )
                 )
                 self.filter_button.setToolTip_("표시 항목")
-            center = width / 2
-            self.month = label(parent, "", x + center - 52, y + 6, 104, size=12, bold=True)
-            self.month.setAlignment_(NSTextAlignmentCenter)
-            coordinates = (center - 82, center + 58, width - 146, width - 82)
+            coordinates = (width - 170, width - 98, width - 146, -1)
         else:
             self.month = label(parent, "", x, y + 3, 154, size=20, bold=True)
             coordinates = (230, 266, 160, 308)
@@ -114,15 +112,30 @@ class CalendarToolbar:
         self._next = button(
             parent, "", x + coordinates[1], y, 24, self._actions, "next:", bordered=False
         )
-        self._today = button(parent, "오늘", x + coordinates[2], y, 58, self._actions, "today:")
-        self._refresh = button(
-            parent, "", x + coordinates[3], y, 24, self._actions, "refresh:", bordered=False
+        self._today = button(
+            parent,
+            "오늘",
+            x + coordinates[2],
+            y,
+            48 if compact else 58,
+            self._actions,
+            "today:",
+            bordered=not compact,
         )
-        for control, icon, title in (
+        self._refresh = (
+            None
+            if compact
+            else button(
+                parent, "", x + coordinates[3], y, 24, self._actions, "refresh:", bordered=False
+            )
+        )
+        icons = [
             (self._previous, "chevron.left", "이전 달"),
             (self._next, "chevron.right", "다음 달"),
-            (self._refresh, "arrow.clockwise", "캘린더 새로고침"),
-        ):
+        ]
+        if self._refresh is not None:
+            icons.append((self._refresh, "arrow.clockwise", "캘린더 새로고침"))
+        for control, icon, title in icons:
             control.setImage_(
                 NSImage.imageWithSystemSymbolName_accessibilityDescription_(icon, title)
             )
@@ -138,7 +151,7 @@ class CalendarToolbar:
                 "open:",
             )
         self._spinner = NSProgressIndicator.alloc().initWithFrame_(
-            frame(x + width - 20 if not compact else x + width - 55, y + 7, 12, 12)
+            frame(x + width - 20 if not compact else x + 120, y + 7, 12, 12)
         )
         self._spinner.setStyle_(NSProgressIndicatorStyleSpinning)
         self._spinner.setDisplayedWhenStopped_(False)
@@ -152,7 +165,13 @@ class CalendarToolbar:
             f"{int(data.month[:4])}년 {int(data.month[5:])}월" if data else ""
         )
         for control in (self._previous, self._next, self._today, self._refresh):
-            control.setEnabled_(not self.controller.busy)
+            if control is not None:
+                control.setEnabled_(not self.controller.busy)
+        if self._compact:
+            # 진행 표시는 월 제목 글자 바로 뒤에 둔다.
+            (month_x, _), _ = self.month.frame()
+            (_, spinner_y), size = self._spinner.frame()
+            self._spinner.setFrame_(((month_x + self.month.fittingSize()[0] + 6, spinner_y), size))
         if self.controller.busy:
             self._spinner.startAnimation_(None)
         else:

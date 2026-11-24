@@ -7,5 +7,5 @@ from dataclasses import dataclass, field
 class NotificationIdentity:
     """시스템 식별자와 분리해 변경하는 사용자 표시 값이다."""
 
-    name: str = "Maeng Mate"
+    name: str = "Catch"
     icon_png: bytes | None = field(default=None, repr=False)

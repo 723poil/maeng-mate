@@ -31,5 +31,5 @@ class KeychainAccount(Enum):
             state_directory() / f"{self.account}-keychain.lock",
             service=f"{current_profile().identifier}.credentials",
             account=self.account,
-            label=f"Maeng Mate · {self.label}",
+            label=f"Catch · {self.label}",
         )

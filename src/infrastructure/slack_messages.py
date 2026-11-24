@@ -19,7 +19,7 @@ class SlackMessages:
 
     def send_test(self, token: CredentialSecret, user_id: str) -> None:
         """테스트는 고정 문구만 사용한다."""
-        self.send(token, user_id, "Maeng Mate — 테스트 알림입니다.")
+        self.send(token, user_id, "Catch — 테스트 알림입니다.")
 
     def send(
         self, token: CredentialSecret, user_id: str, text: str, *, url: str | None = None

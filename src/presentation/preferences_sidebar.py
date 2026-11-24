@@ -23,6 +23,7 @@ from src.presentation.native_views import frame, label, symbol
 class SettingsPage(Enum):
     """설정 페이지의 식별자·표시명·아이콘을 사이드바 표시 순서로 정의한다."""
 
+    ABOUT = ("앱 정보", "info.circle")
     SCREEN = ("화면", "rectangle.grid.1x2")
     NOTIFICATIONS = ("알림", "bell")
     WORK_RULES = ("근무 규칙", "clock")

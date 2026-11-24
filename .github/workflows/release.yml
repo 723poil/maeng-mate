@@ -110,12 +110,12 @@ jobs:
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          dmg="Maeng-Mate-${VERSION}-macOS-arm64.dmg"
+          dmg="Catch-${VERSION}-macOS-arm64.dmg"
           shasum -a 256 -c "$dmg.sha256"
           mount_dir=$(mktemp -d)
           hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "$dmg"
           trap 'hdiutil detach "$mount_dir"' EXIT
-          app="$mount_dir/Maeng Mate.app"
+          app="$mount_dir/Catch.app"
           codesign --verify --deep --strict "$app"
           "$app/Contents/MacOS/MaengMate" --check | jq -e --arg version "$VERSION" '.ok and .architecture == "arm64" and .version == $version'
       - name: Sign and verify update feed
@@ -155,13 +155,13 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
           tag="v$VERSION"
-          dmg="Maeng-Mate-${VERSION}-macOS-arm64.dmg"
+          dmg="Catch-${VERSION}-macOS-arm64.dmg"
           (cd dist && sha256sum -c "$dmg.sha256")
           if git show-ref --verify --quiet "refs/tags/$tag"; then
             test "$(git cat-file -t "refs/tags/$tag")" = tag
             test "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)"
           else
-            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' tag -a "$tag" -m "Release Maeng Mate $VERSION"
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' tag -a "$tag" -m "Release Catch $VERSION"
             git push origin "refs/tags/$tag"
           fi
           if draft=$(gh release view "$tag" --json isDraft --jq .isDraft); then
@@ -170,7 +170,7 @@ jobs:
               exit 0
             fi
           else
-            gh release create "$tag" --verify-tag --draft --title "Maeng Mate $tag" --notes-file "docs/releases/$VERSION.md"
+            gh release create "$tag" --verify-tag --draft --title "Catch $tag" --notes-file "docs/releases/$VERSION.md"
           fi
           gh release upload "$tag" "dist/$dmg" "dist/$dmg.sha256" dist/appcast.xml --clobber
           gh release edit "$tag" --draft=false

@@ -53,10 +53,6 @@ def parse_identity(value: object) -> NotificationIdentity:
 class NotificationBranding(Protocol):
     """설정 화면과 파일·서명·OS 등록 구현 사이의 경계다."""
 
-    def read_icon(self, path: str) -> bytes:
-        """선택한 로컬 이미지를 크기가 제한된 PNG로 변환한다."""
-        ...
-
     def apply(self, identity: NotificationIdentity, revision: int = 0) -> None:
         """같은 앱 식별자를 유지하며 이름·아이콘을 반영한다."""
         ...

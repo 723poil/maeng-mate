@@ -1,7 +1,7 @@
 """시작 경계에서만 Notion 비밀값을 해석하고 어댑터를 조립한다."""
 
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from src.application.credentials import CredentialError, CredentialSecret
 from src.application.notion_credentials import NotionCredentialsService
@@ -9,6 +9,7 @@ from src.bootstrap.environment import ConfigError
 from src.bootstrap.keychain import KeychainAccount
 from src.domain.models import SourceMapping
 from src.infrastructure.notion.connection import NotionConnection
+from src.infrastructure.notion.directory import NotionDirectoryReader
 
 
 def load_notion_environment(
@@ -31,7 +32,11 @@ def load_notion_environment(
 
 
 def build_notion_credentials(
-    token: str | None, sources: Sequence[SourceMapping], *, legacy_token: str | None = None
+    token: str | None,
+    sources: Sequence[SourceMapping],
+    *,
+    legacy_token: str | None = None,
+    owner_found: Callable[[str], None] | None = None,
 ) -> NotionCredentialsService | None:
     """UI에는 상태 포트만 전달하고 실제 비밀값은 서버에 남긴다."""
     if sys.platform != "darwin":
@@ -42,4 +47,6 @@ def build_notion_credentials(
         NotionConnection(sources),
         legacy=CredentialSecret(legacy_token) if legacy_token else None,
         active=active,
+        directory=NotionDirectoryReader(),
+        owner_found=owner_found,
     )

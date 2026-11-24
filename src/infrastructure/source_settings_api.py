@@ -10,10 +10,12 @@ from src.application.source_settings import (
     SourceSchema,
     SourceSettingsError,
     SourceSettingsState,
+    SourceTable,
     draft_payload,
     parse_active_display,
     parse_schemas,
     parse_source_draft,
+    parse_tables,
 )
 from src.application.work_settings import parse_categories
 from src.domain.event_classification import EVENT_CLASSIFICATION
@@ -96,3 +98,13 @@ class SourceSettingsApi:
             return parse_schemas(raw.get("schemas"))
         except (ValueError, KeyError):
             raise SourceSettingsError("칼럼 응답을 읽지 못했습니다.") from None
+
+    def tables(self, provider: str) -> tuple[SourceTable, ...]:
+        """연동에 공유된 원본 표 목록을 한 번 읽는다."""
+        raw = self._request("GET", f"{PATH}/tables?provider={provider}")
+        if not isinstance(raw, dict):
+            raise SourceSettingsError("표 목록 응답을 읽지 못했습니다.")
+        try:
+            return parse_tables(raw.get("tables"))
+        except ValueError:
+            raise SourceSettingsError("표 목록 응답을 읽지 못했습니다.") from None

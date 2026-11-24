@@ -1,24 +1,39 @@
-"""알림 설정을 채널별 스위치 행과 복수 시각 선택으로 구성한다."""
+"""알림 설정을 설정 간격 체계의 카드로 구성한다."""
 
-from AppKit import (
-    NSBox,
-    NSBoxSeparator,
-    NSScrollView,
-    NSSwitch,
-    NSView,
-)
+from collections.abc import Callable
+
+from AppKit import NSPopUpButton, NSScrollView, NSSwitch, NSView
 from Foundation import NSObject
 
 from src.application.notifications import NotificationChannel
 from src.domain.category_event_alerts import EVENT_ALERT_TRIGGERS
-from src.domain.notification_timing import departure_minutes
 from src.domain.source_display import SourceCategory
-from src.presentation.category_sheet_controls import field
-from src.presentation.native_views import button, card, frame, label, place_label
+from src.presentation.native_views import (
+    CARD_GAP,
+    CARD_PADDING,
+    CARD_TITLE,
+    CARD_WIDTH,
+    FORM_CONTROL_X,
+    FORM_LABEL_WIDTH,
+    FORM_ROW,
+    card,
+    card_height,
+    form_control_y,
+    form_dividers,
+    form_row_y,
+    frame,
+    label,
+    place_label,
+)
 
-ROW_HEIGHT = 34
-GROUP_GAP = 12
-HEADING_HEIGHT = 22
+# 페이지 맨 위 카드와 스크롤 영역 위쪽 사이 여백이다.
+PAGE_TOP = 8.0
+# 퇴근 알림으로 고를 수 있는 기본 시각(분 전)이다. 예전에 저장한 다른 값은 항목으로 덧붙인다.
+DEPARTURE_PRESETS = (0, 5, 10, 15, 30, 60)
+DEPARTURE_WIDTH = 160.0
+# 기본 스위치의 크기다.
+SWITCH_WIDTH = 40.0
+SWITCH_HEIGHT = 22.0
 
 
 def category_alert_choices(category: SourceCategory) -> dict[str, tuple[str, tuple[str, ...]]]:
@@ -36,8 +51,34 @@ def category_alert_choices(category: SourceCategory) -> dict[str, tuple[str, tup
     return choices
 
 
+def departure_choice_title(offsets: tuple[int, ...]) -> str:
+    """선택 메뉴 한 항목의 이름이다. 여러 시각이면 늦은 것부터 이어 쓴다."""
+    if not offsets:
+        return "받지 않음"
+    return ", ".join(departure_title(minutes) for minutes in sorted(offsets, reverse=True))
+
+
+def departure_title(minutes: int) -> str:
+    """퇴근 알림 칩의 짧은 이름이다."""
+    if minutes == 0:
+        return "정시"
+    if minutes % 60 == 0:
+        return f"{minutes // 60}시간 전"
+    return f"{minutes}분 전"
+
+
+class DepartureActions(NSObject):
+    """퇴근 알림 시각을 고르면 바로 저장을 요청한다."""
+
+    owner: "NotificationPreferences"
+
+    def departure_(self, sender: object) -> None:
+        """선택 메뉴 변경을 설정 화면에 전달한다."""
+        self.owner.departure_changed()
+
+
 class NotificationPreferences:
-    """채널 수에 맞춰 내용 높이를 계산하는 알림 설정 본문이다."""
+    """알림 사용·권한, 전달 채널, 퇴근 알림, 카테고리 규칙을 카드로 쌓는다."""
 
     def __init__(
         self,
@@ -45,69 +86,128 @@ class NotificationPreferences:
         viewport: float,
         channels: tuple[NotificationChannel, ...],
         actions: NSObject,
+        departure_changed: Callable[[], None],
         *,
-        identity_height: float = 0,
+        permission: bool = False,
     ) -> None:
-        """등록된 채널을 개별 행으로 만들고 알림 종류를 한 열로 쌓는다."""
+        """고정 카드는 한 번 만들고 카테고리 카드만 바뀔 때 다시 그린다."""
         self._actions = actions
+        self._departure_changed = departure_changed
+        self._departure_actions = DepartureActions.alloc().init()
+        self._departure_actions.owner = self
         self._page, self._viewport = page, viewport
-        # 전체 사용과 그룹 제목·행·간격을 같은 계산식으로 배치한다.
-        required = 8 + 40 + GROUP_GAP + HEADING_HEIGHT + len(channels) * ROW_HEIGHT + GROUP_GAP
-        self._base_height = (
-            float(required) + identity_height + HEADING_HEIGHT + ROW_HEIGHT + GROUP_GAP
-        )
         self.document = NSView.alloc().initWithFrame_(frame(0, 0, 584, viewport))
         page.setDocumentView_(self.document)
-        self.fixed = NSView.alloc().initWithFrame_(frame(0, 0, 584, self._base_height))
-        self.document.addSubview_(self.fixed)
+
+        general_rows = 2 if permission else 1
+        self._general = self._card("알림", general_rows)
+        self.enabled = self._switch_row(self._general, "알림 사용", 0, general_rows)
+        # 권한 확인 줄은 알림 설정 화면이 제어기와 함께 채운다.
+        self.permission_row: tuple[NSView, float] | None = (
+            (self._general, form_row_y(card_height(general_rows), 1)) if permission else None
+        )
+
+        self._channels_card = self._card("전달 채널", max(1, len(channels)))
+        self.channels = {
+            channel.key: self._switch_row(self._channels_card, channel.title, index, len(channels))
+            for index, channel in enumerate(channels)
+        }
+
+        self._departure = self._card("퇴근 알림", 1)
+        departure_label = label(self._departure, "알림 시각", 0, 0, FORM_LABEL_WIDTH - 8)
+        place_label(
+            departure_label,
+            CARD_PADDING,
+            form_row_y(card_height(1), 0),
+            FORM_LABEL_WIDTH - 8,
+            FORM_ROW,
+        )
+        self.departure = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            frame(
+                FORM_CONTROL_X - 3,
+                form_control_y(form_row_y(card_height(1), 0), 26),
+                DEPARTURE_WIDTH,
+                26,
+            ),
+            False,
+        )
+        self.departure.setTarget_(self._departure_actions)
+        self.departure.setAction_("departure:")
+        self.departure.setAccessibilityLabel_("퇴근 알림 시각")
+        self._departure.addSubview_(self.departure)
+        self._choices: list[tuple[int, ...]] = []
+        self._shown_offsets: tuple[int, ...] | None = None
+        self.show_offsets(())
+
         self.groups = NSView.alloc().initWithFrame_(frame(0, 0, 584, 0))
         self.document.addSubview_(self.groups)
         self._categories: tuple[SourceCategory, ...] | None = None
         self.inactive_rules: set[str] = set()
         self.source_types: dict[tuple[str, tuple[str, ...]], NSSwitch] = {}
-        top = self._base_height - 8 - identity_height
-        card(self.fixed, 16, top - 40, 552, 40)
-        self.enabled = self._switch_row(self.fixed, "알림 사용", top, 40)
-        top -= 40 + GROUP_GAP
-        self._heading(self.fixed, "전달 채널", top)
-        top -= HEADING_HEIGHT
-        self.channels = self._rows(
-            self.fixed, tuple((channel.key, channel.title) for channel in channels), top
-        )
-        top -= len(channels) * ROW_HEIGHT + GROUP_GAP
-        self._heading(self.fixed, "퇴근 예정 알림 · 몇 분 전", top)
-        top -= HEADING_HEIGHT
-        card(self.fixed, 16, top - ROW_HEIGHT, 552, ROW_HEIGHT)
-        self.departure = field(self.fixed, "", 28, top - 29, 412, "여러 시각은 쉼표로 구분")
-        self.departure.setTarget_(actions)
-        self.departure.setAction_("applyDeparture:")
-        self.apply_departure = button(
-            self.fixed, "적용", 458, top - 29, 96, actions, "applyDeparture:"
-        )
-        self._shown_offsets: tuple[int, ...] | None = None
         self.update_categories(())
 
+    @property
+    def departure_controls(self) -> tuple[NSPopUpButton, ...]:
+        """알림 사용 여부에 따라 함께 켜고 끄는 퇴근 알림 입력이다."""
+        return (self.departure,)
+
+    def _card(self, title: str, rows: int) -> NSView:
+        """제목과 rows줄짜리 카드를 담은 뷰를 만든다. 위치는 배치 때 정한다."""
+        height = card_height(rows)
+        view = NSView.alloc().initWithFrame_(frame(CARD_PADDING, 0, CARD_WIDTH, height))
+        self.document.addSubview_(view)
+        card(view, 0, 0, CARD_WIDTH, height)
+        heading = label(view, title, 0, 0, 300, size=13, bold=True)
+        place_label(heading, CARD_PADDING, height - CARD_PADDING - CARD_TITLE, 300, CARD_TITLE)
+        form_dividers(view, height, rows)
+        return view
+
+    def _switch_row(self, parent: NSView, title: str, row: int, rows: int) -> NSSwitch:
+        """이름은 왼쪽, 기본 스위치는 카드 오른쪽 여백에 맞춘다."""
+        y = form_row_y(card_height(rows), row)
+        caption = label(parent, title, 0, 0, 300)
+        place_label(caption, CARD_PADDING, y, 300, FORM_ROW)
+        control = NSSwitch.alloc().initWithFrame_(
+            frame(
+                CARD_WIDTH - CARD_PADDING - SWITCH_WIDTH,
+                y + (FORM_ROW - SWITCH_HEIGHT) / 2,
+                SWITCH_WIDTH,
+                SWITCH_HEIGHT,
+            )
+        )
+        control.setTarget_(self._actions)
+        control.setAction_("changed:")
+        control.setAccessibilityLabel_(title)
+        parent.addSubview_(control)
+        return control
+
+    def departure_changed(self) -> None:
+        """선택 메뉴에서 고른 값을 설정 화면에 저장하게 한다."""
+        self._departure_changed()
+
     def read_offsets(self) -> tuple[int, ...]:
-        """빈 입력은 모두 해제하고 중복되거나 유효하지 않은 시각은 저장하지 않는다."""
-        raw = self.departure.stringValue().strip()
-        offsets = []
-        for item in raw.split(",") if raw else ():
-            minutes = departure_minutes("departure_" + item.strip())
-            if minutes is None:
-                raise ValueError("퇴근 알림 시각을 0~1439분 사이의 정수로 입력하세요.")
-            if minutes in offsets:
-                raise ValueError("같은 퇴근 알림 시각이 두 번 입력되었습니다.")
-            offsets.append(minutes)
+        """선택한 퇴근 알림 시각을 늦은 것부터 반환한다."""
+        index = self.departure.indexOfSelectedItem()
+        offsets = self._choices[index] if 0 <= index < len(self._choices) else ()
         return tuple(sorted(offsets, reverse=True))
 
     def show_offsets(self, offsets: tuple[int, ...]) -> None:
-        """다른 스위치가 갱신될 때 적용 전 입력을 덮어쓰지 않는다."""
-        if offsets != self._shown_offsets:
-            self._shown_offsets = offsets
-            self.departure.setStringValue_(", ".join(map(str, offsets)))
+        """저장된 값을 선택하고, 기본 항목에 없는 값(여러 시각 포함)은 항목을 덧붙여 보존한다."""
+        if offsets == self._shown_offsets:
+            return
+        self._shown_offsets = offsets
+        current = tuple(sorted(offsets, reverse=True))
+        self._choices = [(), *((minutes,) for minutes in DEPARTURE_PRESETS)]
+        if current not in self._choices:
+            self._choices.append(current)
+        self.departure.removeAllItems()
+        self.departure.addItemsWithTitles_(
+            [departure_choice_title(choice) for choice in self._choices]
+        )
+        self.departure.selectItemAtIndex_(self._choices.index(current))
 
     def update_categories(self, categories: tuple[SourceCategory, ...]) -> None:
-        """저장된 카테고리 규칙을 표시하고 기존 폼과 스크롤 위치를 유지한다."""
+        """카테고리 규칙 카드를 다시 그리고 기존 폼과 스크롤 위치를 유지한다."""
         if categories == self._categories:
             return
         old_height = self.document.frame()[1][1]
@@ -123,74 +223,53 @@ class NotificationPreferences:
             for entry in category.configuration.alerts
             if not entry.rule.enabled
         }
-        ordered: list[tuple[str, str, dict[str, tuple[str, tuple[str, ...]]]]] = []
-        for category in categories:
-            choices = category_alert_choices(category)
-            if choices:
-                ordered.append((category.key, category.name, choices))
-        extra = 58 + sum(
-            HEADING_HEIGHT + len(rows) * ROW_HEIGHT + GROUP_GAP for _, _, rows in ordered
+        ordered = [
+            (category.key, category.name, choices)
+            for category in categories
+            if (choices := category_alert_choices(category))
+        ]
+        fixed = (self._general, self._channels_card, self._departure)
+        fixed_height = PAGE_TOP + sum(view.frame()[1][1] + CARD_GAP for view in fixed)
+        group_heights = [card_height(len(rows)) for _, _, rows in ordered]
+        # 규칙이 하나도 없을 때만 규칙을 만드는 곳을 한 줄로 알려 준다.
+        groups_height = (
+            sum(height + CARD_GAP for height in group_heights) if ordered else FORM_ROW + CARD_GAP
         )
-        height = max(self._viewport, self._base_height + extra)
+        height = max(self._viewport, fixed_height + groups_height)
         self.document.setFrameSize_((584, height))
-        self.fixed.setFrame_(frame(0, height - self._base_height, 584, self._base_height))
-        self.groups.setFrame_(frame(0, height - self._base_height - extra, 584, extra))
-        label(self.groups, "카테고리별 알림", 28, extra - 25, 312, bold=True)
-        label(
-            self.groups,
-            "규칙을 추가하거나 채널을 바꾸려면 ‘카테고리 열기’를 누르세요.",
-            28,
-            extra - 46,
-            410,
-            size=11,
-            secondary=True,
-        )
-        button(self.groups, "카테고리 열기", 430, extra - 32, 126, self._actions, "ruleSources:")
-        top = extra - 58
-        for key, title, rows in ordered:
-            self._heading(self.groups, title, top)
-            top -= HEADING_HEIGHT
-            controls = self._rows(
-                self.groups, tuple((choice, row[0]) for choice, row in rows.items()), top
+        top = height - PAGE_TOP
+        for view in fixed:
+            view_height = view.frame()[1][1]
+            view.setFrame_(frame(CARD_PADDING, top - view_height, CARD_WIDTH, view_height))
+            top -= view_height + CARD_GAP
+        self.groups.setFrame_(frame(0, top - groups_height, 584, groups_height))
+        top = groups_height
+        if not ordered:
+            hint = label(
+                self.groups,
+                "알림 규칙은 카테고리 설정에서 만들 수 있습니다.",
+                0,
+                0,
+                CARD_WIDTH - CARD_PADDING,
+                size=12,
+                secondary=True,
             )
-            for key_id in controls.keys() & self.inactive_rules:
-                controls[key_id].setToolTip_("카테고리 설정에서 이 규칙 사용을 켜세요.")
-            self.source_types.update(
-                {(key, kinds): controls[choice] for choice, (_, kinds) in rows.items()}
+            place_label(hint, CARD_PADDING * 2, top - FORM_ROW, CARD_WIDTH - CARD_PADDING, FORM_ROW)
+        for (key, title, rows), group_height in zip(ordered, group_heights, strict=True):
+            view = NSView.alloc().initWithFrame_(
+                frame(CARD_PADDING, top - group_height, CARD_WIDTH, group_height)
             )
-            top -= len(rows) * ROW_HEIGHT + GROUP_GAP
+            self.groups.addSubview_(view)
+            card(view, 0, 0, CARD_WIDTH, group_height)
+            form_dividers(view, group_height, len(rows))
+            heading = label(view, title, 0, 0, 300, size=13, bold=True)
+            place_label(
+                heading, CARD_PADDING, group_height - CARD_PADDING - CARD_TITLE, 300, CARD_TITLE
+            )
+            for index, (choice, (name, kinds)) in enumerate(rows.items()):
+                control = self._switch_row(view, name, index, len(rows))
+                if choice in self.inactive_rules:
+                    control.setToolTip_("카테고리 설정에서 이 규칙 사용을 켜세요.")
+                self.source_types[(key, kinds)] = control
+            top -= group_height + CARD_GAP
         self.document.scrollPoint_((0, max(0, height - self._viewport - offset)))
-
-    def _heading(self, parent: NSView, title: str, top: float) -> None:
-        """그룹 제목과 짧은 안내를 동일한 기준선에 맞춘다."""
-        label(parent, title, 28, top - 18, 520, size=12, bold=True, secondary=True)
-
-    def _rows(
-        self, parent: NSView, items: tuple[tuple[str, str], ...], top: float
-    ) -> dict[str, NSSwitch]:
-        """각 채널·종류를 이름과 오른쪽 스위치의 독립적인 행으로 표시한다."""
-        if not items:
-            return {}
-        card(parent, 16, top - len(items) * ROW_HEIGHT, 552, len(items) * ROW_HEIGHT)
-        controls: dict[str, NSSwitch] = {}
-        for index, (key, title) in enumerate(items):
-            row_top = top - index * ROW_HEIGHT
-            controls[key] = self._switch_row(parent, title, row_top, ROW_HEIGHT)
-            if index:
-                divider = NSBox.alloc().initWithFrame_(frame(28, row_top, 528, 1))
-                divider.setBoxType_(NSBoxSeparator)
-                parent.addSubview_(divider)
-        return controls
-
-    def _switch_row(self, parent: NSView, title: str, top: float, height: float) -> NSSwitch:
-        """이름과 기본 macOS 스위치를 같은 세로 중앙에 배치한다."""
-        caption = label(parent, title, 28, top - height, 450, size=13)
-        place_label(caption, 28, top - height, 450, height)
-        control = NSSwitch.alloc().initWithFrame_(
-            frame(512, top - height + (height - 26) / 2, 44, 26)
-        )
-        control.setTarget_(self._actions)
-        control.setAction_("changed:")
-        control.setAccessibilityLabel_(title)
-        parent.addSubview_(control)
-        return control

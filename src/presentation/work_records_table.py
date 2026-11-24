@@ -105,7 +105,7 @@ class RecordsTableActions(NSObject):
             and item.revision
             and item.leave not in {LeaveType.NONE, LeaveType.UNSELECTED}
         ):
-            badge = SettingsBadge(cell, 6, 10, min(104, width - 12))
+            badge = SettingsBadge(cell, 6, 10, min(104, width - 12), align="left")
             badge.update(LEAVE_LABELS[item.leave], "blue")
         else:
             value = self.owner.cell_text(item, key)

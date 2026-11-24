@@ -153,7 +153,7 @@ def _creation_time(data: bytes, *, has_rules: bool) -> str:
         or not isinstance(value["createdAt"], str)
         or value["workRules"] is not has_rules
     ):
-        raise ValueError("지원하는 Maeng Mate 백업 파일을 선택하세요.")
+        raise ValueError("지원하는 Catch 백업 파일을 선택하세요.")
     created = datetime.fromisoformat(value["createdAt"])
     if created.utcoffset() != timedelta(0):
         raise ValueError("백업 생성 시각을 확인하세요.")

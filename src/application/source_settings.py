@@ -36,6 +36,9 @@ from src.domain.source_display import SourceCategory, SourceDisplay
 from src.domain.source_roles import ROLE_TEMPLATES, STATUS
 from src.domain.source_scope import field_parts
 
+# 표 목록 한 번에 보여 줄 최대 개수다. 더 많으면 Notion 검색 결과의 최근 편집 순으로 자른다.
+MAX_SOURCE_TABLES = 300
+
 
 class SourceSettingsError(ValueError):
     """연결·입력 오류를 원본 응답과 분리한다."""
@@ -73,11 +76,23 @@ class SourceSchema:
     parent_numbers: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class SourceTable:
+    """연동이 읽을 수 있는 원본 표 하나의 ID와 이름이다."""
+
+    id: str = field(repr=False)
+    title: str
+
+
 class SourceCatalog(Protocol):
     """프로바이더의 메타데이터 조회를 편집 화면에서 분리한다."""
 
     def inspect(self, reference: str, *, rounds: bool) -> tuple[SourceSchema, ...]:
         """입력한 참조에서 선택 가능한 스키마를 읽는다."""
+        ...
+
+    def tables(self) -> tuple[SourceTable, ...]:
+        """주소를 몰라도 고를 수 있도록 연동에 공유된 표 목록을 읽는다."""
         ...
 
 
@@ -178,6 +193,10 @@ class SourceSettingsClient(Protocol):
 
     def inspect(self, provider: str, reference: str, *, rounds: bool) -> tuple[SourceSchema, ...]:
         """선택한 프로바이더에서 속성을 조회한다."""
+        ...
+
+    def tables(self, provider: str) -> tuple[SourceTable, ...]:
+        """선택한 프로바이더에서 연결할 수 있는 표 목록을 읽는다."""
         ...
 
 
@@ -357,6 +376,12 @@ class SourceSettingsService:
         if provider not in self._catalogs:
             raise SourceSettingsError("이 소스에서는 칼럼을 불러올 수 없습니다.")
         return self._catalogs[provider].inspect(reference, rounds=rounds)
+
+    def tables(self, provider: str) -> tuple[SourceTable, ...]:
+        """제공된 프로바이더에서만 표 목록을 읽는다."""
+        if provider not in self._catalogs:
+            raise SourceSettingsError("이 소스에서는 표 목록을 불러올 수 없습니다.")
+        return self._catalogs[provider].tables()
 
     def save(self, value: CollectionDraft) -> SourceSettingsState:
         """카테고리와 수집 연결을 독립적으로 검증하고 한 문서에 저장한다."""
@@ -655,6 +680,26 @@ def schema_payload(schema: SourceSchema) -> dict[str, object]:
         "roundTitles": list(schema.round_titles),
         "parentNumbers": list(schema.parent_numbers),
     }
+
+
+def tables_payload(tables: tuple[SourceTable, ...]) -> list[dict[str, str]]:
+    """표 목록을 관리자 화면 응답으로 바꾼다."""
+    return [{"id": table.id, "title": table.title} for table in tables]
+
+
+def parse_tables(value: object) -> tuple[SourceTable, ...]:
+    """표 목록 응답을 검사한 뒤 타입을 좁힌다."""
+    if not isinstance(value, list) or len(value) > MAX_SOURCE_TABLES:
+        raise ValueError("표 목록 응답을 확인하세요.")
+    tables = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"id", "title"}:
+            raise ValueError("표 목록 응답을 확인하세요.")
+        identifier, title = item["id"], item["title"]
+        if not isinstance(identifier, str) or not identifier or not isinstance(title, str):
+            raise ValueError("표 목록 응답을 확인하세요.")
+        tables.append(SourceTable(identifier, title[:200]))
+    return tuple(tables)
 
 
 def parse_schemas(value: object) -> tuple[SourceSchema, ...]:

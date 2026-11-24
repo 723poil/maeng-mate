@@ -29,9 +29,9 @@ exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='MaengMate', debug=Fal
           bootloader_ignore_signals=False, strip=False, upx=False, console=False,
           argv_emulation=False, target_arch=None, codesign_identity=None)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='MaengMate')
-app = BUNDLE(coll, name='Maeng Mate.app', icon=str(assets / 'MaengMate.icns'),
+app = BUNDLE(coll, name='Catch.app', icon=str(assets / 'MaengMate.icns'),
     bundle_identifier=profile.identifier, version=os.environ['MAENG_MATE_BUILD_VERSION'],
-    info_plist={'CFBundleName': 'Maeng Mate', 'CFBundleDisplayName': 'Maeng Mate',
+    info_plist={'CFBundleName': 'Catch', 'CFBundleDisplayName': 'Catch',
                 'CFBundleVersion': os.environ['MAENG_MATE_BUILD_VERSION'],
                 **({'SUPublicEDKey': os.environ['SPARKLE_PUBLIC_ED_KEY'],
                     'SUFeedURL': os.environ['SPARKLE_FEED_URL'],

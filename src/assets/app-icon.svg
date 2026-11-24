@@ -1,24 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="cover" x2=".85" y2="1">
-      <stop stop-color="#30baca"/>
-      <stop offset=".48" stop-color="#147eac"/>
-      <stop offset="1" stop-color="#214483"/>
-    </linearGradient>
-    <linearGradient id="paper" x2=".85" y2=".8">
-      <stop stop-color="#f4ffff"/>
-      <stop offset="1" stop-color="#a3e6ee"/>
-    </linearGradient>
+    <clipPath id="tile">
+      <rect x="96" y="96" width="832" height="832" rx="191"/>
+    </clipPath>
   </defs>
-  <rect x="96" y="106" width="832" height="832" rx="191" fill="#114767" opacity=".16"/>
-  <rect x="96" y="96" width="832" height="832" rx="191" fill="url(#cover)"/>
-  <rect x="100" y="100" width="824" height="824" rx="188" fill="none" stroke="#fff" stroke-opacity=".16" stroke-width="6"/>
-  <!-- 큰 아이콘은 책등의 그림자와 두 장의 종이 색으로 깊이를 표현한다. -->
-  <g transform="translate(192 224) scale(32)">
-    <path fill="#083c69" opacity=".27" transform="translate(0 .3)"
-      d="M1 2.7Q1 1.8 2 2L7.9 3.4Q9.2 3.7 9.2 5V16L2 14.3Q1 14.1 1 13Z M10.8 5Q10.8 3.7 12.1 3.4L18 2Q19 1.8 19 2.7V13Q19 14.1 18 14.3L10.8 16Z"/>
-    <path fill="url(#paper)" d="M1 2.7Q1 1.8 2 2L7.9 3.4Q9.2 3.7 9.2 5V16L2 14.3Q1 14.1 1 13Z"/>
-    <path fill="#fff" d="M10.8 5Q10.8 3.7 12.1 3.4L18 2Q19 1.8 19 2.7V13Q19 14.1 18 14.3L10.8 16Z"/>
-    <path fill="none" stroke="#167fa3" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M12.6 8.5L14.4 10.2L17.4 6"/>
+  <!-- 흰 바탕이 밝은 배경에 묻히지 않도록 옅은 그림자와 테두리로 경계를 남긴다. -->
+  <rect x="96" y="106" width="832" height="832" rx="191" fill="#110e16" opacity=".14"/>
+  <rect x="96" y="96" width="832" height="832" rx="191" fill="#fcfcfd"/>
+  <!-- 고양이는 타일 아래쪽에서 올라오며 타일 모서리에서 잘린다. -->
+  <g clip-path="url(#tile)">
+    <path fill="#110e16" d="M150 925C154 906 158 888 163 866C168 844 174 811 179 792C184 773 185 769 190 754C195 739 200 723 209 701C218 679 231 647 243 621C255 595 268 567 279 547C290 527 298 515 306 502C314 489 323 478 329 471C335 464 338 461 342 458C346 455 349 455 352 454C355 453 359 453 362 453C365 453 365 453 368 455C371 457 376 460 381 466C386 472 390 478 396 493C402 508 415 542 420 553C425 564 423 557 424 559Q488 544 552 559C560 546 578 517 588 501C598 485 607 472 613 465C619 458 620 459 623 457C626 455 630 454 633 453C636 452 640 453 643 454C646 455 647 453 652 458C657 463 665 473 671 482C677 491 682 501 686 510C690 519 692 524 697 538C702 552 707 566 714 592C721 618 732 668 737 696C742 724 744 736 747 760C750 784 754 824 756 842C758 836 760 832 762 821C764 810 767 795 769 778C771 761 771 738 772 718C773 698 774 672 775 658C776 644 779 640 781 634C783 628 782 628 786 624C790 620 798 610 803 607C808 604 809 604 813 603C817 602 823 601 828 602C833 603 838 604 842 607C846 610 852 614 855 619C858 624 861 629 863 638C865 647 866 657 865 674C864 691 863 713 860 738C857 763 850 800 846 825C842 850 837 868 833 887C829 906 824 928 822 940V960H150Z"/>
+    <circle cx="366" cy="710" r="71.5" fill="#fcfcfd"/>
+    <circle cx="572" cy="710" r="71.5" fill="#fcfcfd"/>
+    <circle cx="366" cy="709" r="44" fill="#110e16"/>
+    <circle cx="572" cy="709" r="44" fill="#110e16"/>
   </g>
+  <rect x="98" y="98" width="828" height="828" rx="189" fill="none" stroke="#110e16" stroke-opacity=".1" stroke-width="4"/>
 </svg>

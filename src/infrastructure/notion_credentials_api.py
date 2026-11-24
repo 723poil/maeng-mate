@@ -4,6 +4,7 @@ import httpx
 
 from src.application.credentials import CredentialError, CredentialSecret
 from src.application.notion_credentials import NotionCredentialState, parse_credential_state
+from src.application.notion_people import MAX_PEOPLE, NotionPeople, parse_people
 from src.infrastructure.local_http import local_client, response_json
 
 
@@ -31,6 +32,22 @@ class NotionCredentialsApi:
     def delete(self, revision: int) -> NotionCredentialState:
         """현재 버전에 한해서 삭제한다."""
         return self._request("DELETE", {"revision": revision})
+
+    def people(self) -> NotionPeople:
+        """토큰 주인과 사람 목록을 읽고 실패는 고정 분류로만 알린다."""
+        try:
+            with local_client(self._address, self._api_token, timeout=25) as client:
+                response = client.get("/v1/notion/people")
+                payload: object = response_json(response, max_bytes=MAX_PEOPLE * 512)
+                if response.status_code != 200:
+                    detail = payload.get("detail") if isinstance(payload, dict) else None
+                    code = detail.get("code") if isinstance(detail, dict) else None
+                    raise CredentialError(code if isinstance(code, str) else "unavailable")
+                return parse_people(payload)
+        except httpx.TimeoutException:
+            raise CredentialError("timeout") from None
+        except (httpx.HTTPError, ValueError):
+            raise CredentialError("unavailable") from None
 
     def _request(
         self, method: str, body: dict[str, object] | None, *, action: str = ""

@@ -1,12 +1,34 @@
-"""기존 업무·QA·회의 링크를 같은 Notion 페이지에서 편집한다."""
+"""연결한 Notion 표마다 ‘원본 ↗’으로 열 페이지 주소를 편집한다."""
 
-from AppKit import NSFont, NSNoBorder, NSScrollView, NSTextField, NSView
+from AppKit import NSFont, NSTextField, NSView
 from Foundation import NSNotification, NSObject
 
 from src.application.notion_page_links import PageLinksError, page_url
-from src.presentation.native_views import button, card, frame, label
+from src.presentation.native_views import (
+    BUTTON_BEZEL_INSET,
+    CARD_GAP,
+    CARD_PADDING,
+    CARD_TITLE,
+    CARD_WIDTH,
+    FORM_CONTROL_X,
+    FORM_LABEL_WIDTH,
+    FORM_ROW,
+    button,
+    card,
+    card_height,
+    form_dividers,
+    form_row_y,
+    frame,
+    place_label,
+)
+from src.presentation.notion_credentials_view import TOKEN_HEIGHT, TOKEN_TOP
 from src.presentation.notion_page_links_controller import NotionPageLinksController
+from src.presentation.runtime_settings_form import card_title, form_field, row_caption
 from src.presentation.source_help import SourceHelpLabel
+
+# 링크 카드는 토큰 카드 바로 아래에 온다.
+LINKS_TOP = TOKEN_TOP + TOKEN_HEIGHT + CARD_GAP
+SAVE_WIDTH = 88.0
 
 
 class PageLinksActions(NSObject):
@@ -31,67 +53,93 @@ class PageLinksActions(NSObject):
 
 
 class NotionPageLinksView:
-    """주소가 많으면 카드 내부만 스크롤하며 초안을 보존한다."""
+    """표가 많으면 카드와 함께 페이지 문서를 늘려 초안을 보존한다."""
 
     def __init__(self, document: NSView, controller: NotionPageLinksController) -> None:
-        """계정·인증 카드 아래에 같은 간격과 기본 입력 높이를 적용한다."""
+        """토큰 카드 아래에 표마다 한 줄씩 주소 입력을 놓는다."""
         self.controller = controller
         self._generation = -1
-        self._top = document.frame()[1][1] - 254
-        self._max_height = max(110.0, self._top - 8)
-        self._box = card(document, 16, self._top - 82, 552, 82)
-        label(document, "페이지 링크", 28, self._top - 28, 400, size=13, bold=True)
+        self._document = document
+        self._section = NSView.alloc().initWithFrame_(frame(CARD_PADDING, 0, CARD_WIDTH, 0))
+        document.addSubview_(self._section)
         self._actions = PageLinksActions.alloc().init()
         self._actions.owner = self
-        self.save = button(document, "저장", 486, self._top - 31, 70, self._actions, "save:")
-        self._scroll = NSScrollView.alloc().initWithFrame_(frame(28, self._top - 70, 528, 34))
-        self._scroll.setHasVerticalScroller_(True)
-        self._scroll.setAutohidesScrollers_(True)
-        self._scroll.setDrawsBackground_(False)
-        self._scroll.setBorderType_(NSNoBorder)
-        document.addSubview_(self._scroll)
+        # 하단 공통 저장과 구분되도록 이름에 대상을 붙이고, 줄을 다시 그려도 같은 버튼을 쓴다.
+        self.save = button(self._section, "링크 저장", 0, 0, SAVE_WIDTH, self._actions, "save:")
         self.fields: dict[str, NSTextField] = {}
         self.labels: dict[str, SourceHelpLabel] = {}
         self.render()
 
+    def _resize_document(self, content: float) -> None:
+        """문서 높이를 내용에 맞추고 위쪽 카드와 보던 위치를 그대로 둔다."""
+        document = self._document
+        clip = document.superview()
+        old_height = document.frame()[1][1]
+        viewport = clip.bounds()[1][1] if clip is not None else old_height
+        old_origin = clip.bounds()[0][1] if clip is not None else 0.0
+        height = max(viewport, content)
+        delta = height - old_height
+        if not delta:
+            return
+        document.setFrameSize_((document.frame()[1][0], height))
+        # 페이지의 카드는 모두 문서 위쪽 기준이므로 늘어난 만큼 함께 올려 위 여백을 유지한다.
+        for view in document.subviews():
+            (x, y), (width, view_height) = view.frame()
+            view.setFrame_(frame(x, y + delta, width, view_height))
+        document.scrollPoint_((0, max(0, min(height - viewport, old_origin + delta))))
+
     def _fill(self) -> None:
         """새 확정 응답에서만 입력을 채워 편집 중 주소가 되돌아가지 않게 한다."""
         state = self.controller.state
-        count = len(state.sources) if state else 0
-        height = min(self._max_height, 48 + max(1, count) * 34)
-        self._box.setFrame_(frame(16, self._top - height, 552, height))
-        viewport = height - 48
-        self._scroll.setFrame_(frame(28, self._top - height + 12, 528, viewport))
-        document_height = max(viewport, max(1, count) * 34)
-        content = NSView.alloc().initWithFrame_(frame(0, 0, 528, document_height))
+        sources = state.sources if state else ()
+        rows = max(1, len(sources))
+        height = card_height(rows)
+        self._resize_document(LINKS_TOP + height + CARD_PADDING)
         self.fields = {}
         self.hide_help()
         self.labels = {}
-        if not count:
-            label(
-                content,
-                "등록된 페이지 링크 없음" if state else "불러오는 중…",
-                0,
-                document_height - 27,
-                528,
-                secondary=True,
+        section = self._section
+        section.setSubviews_([])
+        section.setFrame_(
+            frame(
+                CARD_PADDING,
+                self._document.frame()[1][1] - LINKS_TOP - height,
+                CARD_WIDTH,
+                height,
             )
-        for index, source in enumerate(state.sources if state else ()):
-            y = document_height - (index + 1) * 34
-            caption = SourceHelpLabel.alloc().initWithFrame_(frame(0, y + 7, 104, 20))
+        )
+        card(section, 0, 0, CARD_WIDTH, height)
+        form_dividers(section, height, rows)
+        card_title(section, "페이지 링크", height)
+        self.save.setFrame_(
+            frame(
+                CARD_WIDTH - CARD_PADDING - SAVE_WIDTH + BUTTON_BEZEL_INSET,
+                height - CARD_PADDING - CARD_TITLE - 3,
+                SAVE_WIDTH,
+                26,
+            )
+        )
+        section.addSubview_(self.save)
+        if not sources:
+            row_caption(
+                section, "연결한 표가 없습니다." if state else "불러오는 중…", form_row_y(height, 0)
+            )
+        for index, source in enumerate(sources):
+            row = form_row_y(height, index)
+            caption = SourceHelpLabel.alloc().initWithFrame_(
+                frame(CARD_PADDING, row, FORM_LABEL_WIDTH - 8, 20)
+            )
             caption.configureTitle_summary_(source.label, source.summary)
-            content.addSubview_(caption)
+            caption.setFont_(NSFont.systemFontOfSize_(12))
+            place_label(caption, CARD_PADDING, row, FORM_LABEL_WIDTH - 8, FORM_ROW)
+            section.addSubview_(caption)
             self.labels[source.source_id] = caption
-            field = NSTextField.textFieldWithString_(source.url or "")
-            field.setFont_(NSFont.systemFontOfSize_(13))
-            field_height = min(28.0, field.fittingSize()[1])
-            field.setFrame_(frame(116, y + (34 - field_height) / 2, 412, field_height))
-            field.setPlaceholderString_("Notion 페이지 주소")
+            field = form_field(
+                section, row, CARD_WIDTH - CARD_PADDING - FORM_CONTROL_X, "Notion 페이지 주소"
+            )
+            field.setStringValue_(source.url or "")
             field.setDelegate_(self._actions)
-            content.addSubview_(field)
             self.fields[source.source_id] = field
-        self._scroll.setDocumentView_(content)
-        content.scrollPoint_((0, max(0, document_height - viewport)))
 
     def hide_help(self) -> None:
         """행을 갱신하기 전에 표시 중인 안내와 예약을 닫는다."""

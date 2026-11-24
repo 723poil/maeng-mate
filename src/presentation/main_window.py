@@ -82,7 +82,7 @@ class MainWindow:
         screen = NSScreen.mainScreen()
         sw, sh = screen.visibleFrame()[1] if screen else (1100, 740)
         self.width, self.height = min(1080.0, sw - 16), min(700.0, sh - 16)
-        self.window = auxiliary_window("맹메이트", self.width, self.height)
+        self.window = auxiliary_window("Catch", self.width, self.height)
         self.target, self.calendar_factory, self.compact_factory = target, calendar, compact
         self.actions = WindowActions.alloc().init()
         self.actions.owner = self
@@ -265,7 +265,7 @@ class MainWindow:
                 self.compact.resize(y)
                 header = self.compact.view
             else:
-                card(doc, 0, y, w, height)
+                card(doc, 0, y, w, height, glass=True)
                 header = label(doc, item.title, 12, top - 26, w - 132, size=13, bold=True)
                 if item.key == "work":
                     button(doc, "기록 ↗", w - 90, top - 32, 80, self.target, "records:")

@@ -10,7 +10,7 @@ from AppKit import NSAlert, NSApplication, NSButton, NSView
 from Foundation import NSObject
 
 from src.application.app_updates import AppUpdates
-from src.presentation.native_views import button, label
+from src.presentation.native_views import button
 
 
 class UpdateAction(NSObject):
@@ -53,21 +53,9 @@ class UpdateChecks:
         self.manual = False
         self.next_check = 0.0
 
-    def attach(self, parent: NSView) -> None:
+    def attach(self, parent: NSView, x: float, y: float, width: float) -> None:
         """설정을 처음 열 때 기존 조회에 수동 확인 버튼을 연결한다."""
-        version_text = f"버전 {self.current}"
-        if self.actions.is_development:
-            version_text += " · 개발용"
-        label(
-            parent,
-            version_text,
-            20,
-            35,
-            155,
-            size=12,
-            secondary=True,
-        )
-        self.button = button(parent, "업데이트 확인…", 14, 7, 120, self.target, "checkUpdate:")
+        self.button = button(parent, "업데이트 확인…", x, y, width, self.target, "checkUpdate:")
 
     def start(self) -> None:
         """서명된 배포 앱은 Sparkle에 조회 일정을 맡긴다."""

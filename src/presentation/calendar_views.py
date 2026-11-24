@@ -51,7 +51,7 @@ class CompactCalendarView:
             frame(inset, 0, content_width, COMPACT_CALENDAR_HEIGHT)
         )
         parent.addSubview_(self.view)
-        card(self.view, 0, 0, content_width, COMPACT_CALENDAR_HEIGHT)
+        card(self.view, 0, 0, content_width, COMPACT_CALENDAR_HEIGHT, glass=True)
         self.filter_popover = CalendarFilterPopover(preferences, toggle, choices)
         self.filters = self.filter_popover.filters
         self.toolbar = CalendarToolbar(
@@ -153,12 +153,12 @@ class CalendarPage:
             compact=False,
             open_filters=self.filter_popover.show,
         )
-        card(content, 0, 28, grid_width + 12, height - 72)
+        card(content, 0, 28, grid_width + 12, height - 72, glass=True)
         self.grid = CalendarGrid(
             content, 6, 36, grid_width, (height - 112) / 6, controller, compact=False
         )
         x = width - detail_width
-        card(content, x, 28, detail_width, height - 72)
+        card(content, x, 28, detail_width, height - 72, glass=True)
         self._day = label(content, "", x + 8, height - 74, detail_width - 16, size=15, bold=True)
         scroll = NSScrollView.alloc().initWithFrame_(
             frame(x + 6, 34, detail_width - 12, height - 120)

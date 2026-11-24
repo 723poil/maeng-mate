@@ -1,5 +1,6 @@
 """근무 선택과 스크롤 일정을 한 화면에 모은 macOS 팝오버다."""
 
+import math
 import time
 import webbrowser
 from collections.abc import Callable
@@ -72,7 +73,7 @@ from src.domain.daily_work import (
     WorkRules,
     parse_clock,
 )
-from src.domain.preferences import SECTIONS, Preferences, SectionPreference
+from src.domain.preferences import SECTIONS, DepartureDisplay, Preferences, SectionPreference
 from src.domain.source_display import SourceDisplay, display_groups
 from src.domain.work_dates import SEOUL
 from src.presentation.calendar_controller import CalendarController
@@ -122,6 +123,18 @@ def local_day() -> str:
     return datetime.now(SEOUL).date().isoformat()
 
 
+def remaining_label(departure: datetime, now: datetime) -> str | None:
+    """퇴근까지 남은 시간을 ‘2시간 13분’ 꼴로 만든다. 이미 지났으면 None이다."""
+    # 30초 남아도 0분이 되지 않도록 분 단위는 올림한다.
+    minutes = math.ceil((departure - now).total_seconds() / 60)
+    if minutes <= 0:
+        return None
+    hours, rest = divmod(minutes, 60)
+    if not hours:
+        return f"{rest}분"
+    return f"{hours}시간 {rest}분" if rest else f"{hours}시간"
+
+
 def clock_label(value: datetime | None) -> str:
     """표시 시점은 서울 시간으로 통일한다."""
     return value.astimezone(SEOUL).strftime("%H:%M") if value else "—"
@@ -152,6 +165,10 @@ class Callbacks(NSObject):
     def calendar_(self, sender: object) -> None:
         """메인 표시와 별개로 캘린더 창을 연다."""
         self.owner.open_calendar()
+
+    def toggleDeparture_(self, sender: object) -> None:
+        """근무 카드의 큰 시각을 누르면 퇴근 시각과 남은 시간 표시를 바꾼다."""
+        self.owner.toggle_departure_display()
 
     def records_(self, sender: object) -> None:
         """근무 카드에서 별도 출퇴근 기록 창을 연다."""
@@ -353,6 +370,8 @@ class MenuBarApp:
         self._dirty = False
         self._save_blocked = False
         self._last_edit = 0.0
+        # 남은 시간 표시를 1분마다 다시 그리기 위해 마지막으로 그린 분을 기억한다.
+        self._countdown_minute = 0
         self._base: DayUpdate | None = None
         self._next_refresh = time.monotonic() + 15
         self._maximum_height = 660.0
@@ -471,7 +490,7 @@ class MenuBarApp:
         self._body_scroll.setDocumentView_(self._body)
         view.addSubview_(self._body_scroll)
         view = self._body
-        card(view, 16, 443, POPOVER_WIDTH - 32, 112)
+        card(view, 16, 443, POPOVER_WIDTH - 32, 112, glass=True)
         symbol(view, "clock", 30, 525)
         label(view, "근무", ENTRY_TITLE_X, 525, 140, size=13, bold=True)
         self._records_button = button(
@@ -488,6 +507,13 @@ class MenuBarApp:
             view, "", POPOVER_WIDTH - 222, 488, 180, size=10, secondary=True
         )
         self._departure_warning.setAlignment_(NSTextAlignmentRight)
+        # 큰 시각과 제목을 누르면 퇴근 시각과 남은 시간 표시를 바꾼다. 투명 버튼을 위에 둔다.
+        self._departure_toggle = button(
+            view, "", 30, 482, 220, self._callbacks, "toggleDeparture:", bordered=False
+        )
+        self._departure_toggle.setTransparent_(True)
+        self._departure_toggle.setToolTip_("눌러서 퇴근 시각과 남은 시간을 바꿉니다")
+        self._departure_toggle.setAccessibilityLabel_("퇴근 표시 바꾸기")
         # 입력은 테두리 없는 한 줄 문장으로 두고 누른 부분만 편집 상태가 된다.
         label(view, "출근", 30, 455, 30, size=13, secondary=True)
         self.arrival = self._time_picker(60, 453, 50, view)
@@ -738,10 +764,22 @@ class MenuBarApp:
             displayed = snapshot.day.departure
         else:
             displayed = self._preview(update, snapshot.day.rules).departure
-        self._departure_title.setStringValue_("퇴근" if actual is not None else "퇴근 예정")
         departure = clock_label(displayed) if displayed else "--:--"
+        title = "퇴근" if actual is not None else "퇴근 예정"
         if displayed and displayed.astimezone(SEOUL).date().isoformat() != update.day:
             departure = displayed.astimezone(SEOUL).strftime("%m/%d %H:%M")
+        # 남은 시간 표시는 실제 퇴근 전, 예정 시각이 아직 남았을 때만 쓴다. 지나면 시각으로 돌아간다.
+        remaining = (
+            remaining_label(displayed, datetime.now(SEOUL))
+            if self._preferences.departure_display == "remaining"
+            and actual is None
+            and displayed is not None
+            else None
+        )
+        if remaining is not None:
+            departure, title = remaining, "퇴근까지"
+        self._countdown_minute = int(time.time() // 60)
+        self._departure_title.setStringValue_(title)
         self._departure.setFont_(NSFont.boldSystemFontOfSize_(18 if "/" in departure else 30))
         (x, y), (width, height) = self._departure.frame()
         place_label(self._departure, x, y + height / 2 - 18.5, width, 37)
@@ -761,13 +799,38 @@ class MenuBarApp:
         self._departure_warning.setToolTip_(OVERNIGHT_DEPARTURE_REASON if overnight else None)
         self._departure.setToolTip_(OVERNIGHT_DEPARTURE_REASON if overnight else None)
 
+    def toggle_departure_display(self) -> None:
+        """메뉴바에서 바꾼 표시 방식을 설정에 저장하고 바로 다시 그린다."""
+        value = self._preferences_controller.value
+        if value is None:
+            return
+        display: DepartureDisplay = (
+            "time" if self._preferences.departure_display == "remaining" else "remaining"
+        )
+        self._preferences_controller.change(replace(value, departure_display=display))
+        # 불러오는 중·오류로 저장 초안이 바뀌지 않았으면 화면도 그대로 둔다.
+        value = self._preferences_controller.value
+        if value is None or value.departure_display != display:
+            return
+        self._preferences = replace(self._preferences, departure_display=display)
+        self._forecast()
+
     def _place_departure_title(self) -> None:
         """글자 폭에 맞춰 붙는 요소를 다시 맞춘다. 카드 배치가 바뀐 뒤에도 호출한다."""
         # 퇴근 제목은 시각의 실제 글자 폭 바로 뒤에 붙여 한 덩어리로 읽히게 한다.
         (x, _), _ = self._departure.frame()
         (_, y), (width, height) = self._departure_title.frame()
-        place_label(
-            self._departure_title, x + self._departure.fittingSize()[0] + 6, y, width, height
+        title_x = x + self._departure.fittingSize()[0] + 6
+        place_label(self._departure_title, title_x, y, width, height)
+        # 누르는 영역은 큰 시각부터 제목 끝까지만 덮어 오른쪽 경고 도움말을 가리지 않는다.
+        (_, departure_y), (_, departure_height) = self._departure.frame()
+        self._departure_toggle.setFrame_(
+            frame(
+                x,
+                departure_y,
+                title_x + self._departure_title.fittingSize()[0] - x,
+                departure_height,
+            )
         )
         # 테두리 없는 메뉴는 선택한 이름 폭에 맞춰야 화살표가 글자 옆에 붙는다.
         (leave_x, leave_y), (_, leave_height) = self.leave.frame()
@@ -820,6 +883,12 @@ class MenuBarApp:
 
     def tick(self) -> None:
         """저장 중 바뀐 선택은 이전 응답으로 되돌리지 않고 다음 버전으로 저장한다."""
+        # 남은 시간 표시는 분이 바뀔 때마다 다시 계산한다.
+        if (
+            self._preferences.departure_display == "remaining"
+            and int(time.time() // 60) != self._countdown_minute
+        ):
+            self._forecast()
         if self._panel_requested and self._panel_requested():
             self.open_main()
         if self._calendar_controller is not None:
@@ -868,10 +937,7 @@ class MenuBarApp:
                 self._resize_lists()
                 self._render()
         if self._identity_controller is not None:
-            saved = self._preferences_controller.confirmed
-            self._identity_controller.tick(
-                saved.notification_identity if saved else None, saved.revision if saved else 0
-            )
+            self._identity_controller.tick()
         if self._app_updates:
             self._app_updates.tick()
         if self._settings_window is not None:

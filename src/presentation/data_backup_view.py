@@ -8,6 +8,7 @@ from AppKit import (
     NSAlert,
     NSAlertSecondButtonReturn,
     NSAlertStyleWarning,
+    NSButton,
     NSModalResponseOK,
     NSOpenPanel,
     NSSavePanel,
@@ -18,7 +19,26 @@ from Foundation import NSObject
 
 from src.application.data_backup import BackupPreview, DataBackupActions, DataBackupError
 from src.application.runtime_settings_service import RestartOperation
-from src.presentation.native_views import button, card, frame, label
+from src.presentation.native_views import (
+    BUTTON_BEZEL_INSET,
+    CARD_PADDING,
+    CARD_WIDTH,
+    FORM_LABEL_WIDTH,
+    FORM_ROW,
+    button,
+    card,
+    form_control_y,
+    form_divider,
+    frame,
+    label,
+    place_label,
+)
+
+# 페이지 맨 위 카드와 스크롤 영역 위쪽 사이 여백이다.
+PAGE_TOP = 8.0
+# 버튼은 같은 폭으로 카드 오른쪽 끝에 붙인다(테두리가 프레임 안쪽에 그려진다).
+ACTION_WIDTH = 124.0
+ACTION_X = CARD_WIDTH - CARD_PADDING - ACTION_WIDTH + BUTTON_BEZEL_INSET
 
 
 class BackupButtons(NSObject):
@@ -41,7 +61,7 @@ class DataBackupView:
     def __init__(
         self,
         page: NSScrollView,
-        height: float,
+        viewport: float,
         actions: DataBackupActions,
         pending_edits: Callable[[], bool],
     ) -> None:
@@ -54,32 +74,27 @@ class DataBackupView:
         self._restore: RestartOperation | None = None
         self._choosing = False
         self.message = ""
-        document = NSView.alloc().initWithFrame_(frame(0, 0, 584, height))
+        document = NSView.alloc().initWithFrame_(frame(0, 0, 584, viewport))
         page.setDocumentView_(document)
         self._buttons = BackupButtons.alloc().init()
         self._buttons.owner = self
-        card(document, 16, height - 157, 552, 149)
-        label(document, "백업 파일", 28, height - 40, 390, size=13, bold=True)
-        label(
-            document,
-            "출퇴근 기록, 수집한 업무 데이터, 앱 설정과 근무 규칙을 저장합니다.",
-            28,
-            height - 68,
-            520,
+        # 제목 없이 ‘백업’·‘복원’ 두 줄만 둔다. 줄 이름과 버튼 외의 설명은 두지 않는다.
+        height = 2 * FORM_ROW
+        group = NSView.alloc().initWithFrame_(
+            frame(CARD_PADDING, viewport - PAGE_TOP - height, CARD_WIDTH, height)
         )
-        label(
-            document,
-            "Notion·Slack 인증 정보와 MCP 접근 권한은 이 Mac에서 관리합니다.",
-            28,
-            height - 91,
-            520,
-            secondary=True,
-        )
-        self._save = button(
-            document, "백업하기…", 28, height - 137, 108, self._buttons, "saveBackup:"
-        )
-        self._open = button(
-            document, "백업 불러오기…", 146, height - 137, 124, self._buttons, "openBackup:"
+        document.addSubview_(group)
+        card(group, 0, 0, CARD_WIDTH, height)
+        form_divider(group, FORM_ROW)
+        self._save = self._row(group, "백업", "백업하기…", FORM_ROW, "saveBackup:")
+        self._open = self._row(group, "복원", "백업 불러오기…", 0, "openBackup:")
+
+    def _row(self, parent: NSView, name: str, title: str, y: float, action: str) -> NSButton:
+        """왼쪽에 줄 이름, 카드 오른쪽 끝에 실행 버튼을 둔다."""
+        caption = label(parent, name, 0, 0, FORM_LABEL_WIDTH - 8)
+        place_label(caption, CARD_PADDING, y, FORM_LABEL_WIDTH - 8, FORM_ROW)
+        return button(
+            parent, title, ACTION_X, form_control_y(y, 26), ACTION_WIDTH, self._buttons, action
         )
 
     @property

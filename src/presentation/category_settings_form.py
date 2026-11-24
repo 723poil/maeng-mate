@@ -10,11 +10,11 @@ from AppKit import (
     NSAlertFirstButtonReturn,
     NSAlertSecondButtonReturn,
     NSAlertStyleWarning,
-    NSBox,
-    NSBoxSeparator,
     NSButton,
     NSImage,
+    NSLineBreakByTruncatingTail,
     NSScrollView,
+    NSTextAlignmentRight,
     NSTextField,
     NSView,
 )
@@ -32,9 +32,40 @@ from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.domain.source_display import SourceCategory
 from src.presentation.alert_source_scope_editor import AlertSource
 from src.presentation.category_configuration_sheet import CategoryConfigurationSheet
-from src.presentation.native_views import button, card, frame, label, place_label
+from src.presentation.native_views import (
+    BUTTON_BEZEL_INSET,
+    CARD_PADDING,
+    CARD_TITLE,
+    CARD_WIDTH,
+    FORM_ROW,
+    button,
+    card,
+    card_height,
+    form_control_y,
+    form_dividers,
+    form_row_y,
+    frame,
+    icon_button,
+    label,
+    place_label,
+)
 from src.presentation.preferences_controller import PreferencesController
 from src.presentation.source_settings_form import SourceEditor
+
+# 페이지 맨 위 카드와 스크롤 영역 위쪽 사이 여백이다.
+PAGE_TOP = 8.0
+# 추가·삭제 아이콘 버튼은 근무 규칙의 휴게 줄과 같은 26pt 정사각형이다.
+ICON_SIZE = 26.0
+# 줄 오른쪽 조작과 연결 수 사이의 눈에 보이는 간격이다.
+CONTROL_GAP = 8.0
+SETTINGS_WIDTH = 80.0
+COUNT_WIDTH = 96.0
+# 삭제 아이콘은 카드 오른쪽 여백에 붙이고, 설정 버튼은 테두리 기준으로 그 왼쪽에 둔다.
+REMOVE_X = CARD_WIDTH - CARD_PADDING - ICON_SIZE
+SETTINGS_X = REMOVE_X - CONTROL_GAP - SETTINGS_WIDTH + BUTTON_BEZEL_INSET
+# 연결 수는 설정 버튼 테두리 왼쪽에 오른쪽 정렬하고, 이름은 남은 폭을 쓴다.
+COUNT_X = SETTINGS_X + BUTTON_BEZEL_INSET - CONTROL_GAP - COUNT_WIDTH
+NAME_WIDTH = COUNT_X - CONTROL_GAP - CARD_PADDING
 
 
 @dataclass(frozen=True)
@@ -157,55 +188,84 @@ class CategorySettingsForm:
         self._draw()
 
     def _draw(self) -> None:
-        """이름과 연결 수를 읽는 흐름과 오른쪽 조작을 분리한다."""
+        """카테고리 한 줄에 이름·연결 수·설정·삭제를 두고 카드 높이를 목록 길이에 맞춘다."""
         previous_height = self._document.frame()[1][1]
         origin = self._page.contentView().bounds()[0][1]
         offset = max(0.0, previous_height - self._viewport - origin)
         self.rows.clear()
         self._document.setSubviews_([])
-        panel_height = 54 + max(1, len(self._categories)) * 42
-        height = max(self._viewport, panel_height + 16)
+        # 카테고리가 없어도 안내 한 줄이 들어가도록 최소 한 줄 높이를 둔다.
+        rows = max(1, len(self._categories))
+        panel_height = card_height(rows)
+        height = max(self._viewport, PAGE_TOP + panel_height + CARD_PADDING)
         self._document.setFrameSize_((584, height))
-        card(self._document, 16, height - panel_height - 8, 552, panel_height)
-        label(self._document, "등록 카테고리", 28, height - 38, 200, bold=True)
-        self._add = button(self._document, "+ 추가", 454, height - 42, 100, self._actions, "add:")
+        panel = NSView.alloc().initWithFrame_(
+            frame(CARD_PADDING, height - PAGE_TOP - panel_height, CARD_WIDTH, panel_height)
+        )
+        self._document.addSubview_(panel)
+        card(panel, 0, 0, CARD_WIDTH, panel_height)
+        form_dividers(panel, panel_height, len(self._categories))
+        title = label(panel, "내 카테고리", 0, 0, 300, size=13, bold=True)
+        place_label(title, CARD_PADDING, panel_height - CARD_PADDING - CARD_TITLE, 300, CARD_TITLE)
+        # 추가 아이콘은 제목 줄 높이의 가운데에 둔다.
+        title_button_y = panel_height - CARD_PADDING - CARD_TITLE + (CARD_TITLE - ICON_SIZE) / 2
+        self._add = icon_button(
+            panel, "plus", "카테고리 추가", REMOVE_X, title_button_y, self._actions, "add:"
+        )
+        self._add.setFrame_(frame(REMOVE_X, title_button_y, ICON_SIZE, ICON_SIZE))
         if not self._categories:
-            label(
-                self._document,
-                "카테고리를 추가하면 수집 소스에서 선택할 수 있습니다.",
-                28,
-                height - 82,
-                520,
+            # 빈 목록은 빈 줄 대신 다음에 할 일을 첫 줄에 한 번만 알린다.
+            hint_width = CARD_WIDTH - 2 * CARD_PADDING
+            hint = label(
+                panel,
+                "카테고리를 추가하면 수집 소스에서 고를 수 있습니다.",
+                0,
+                0,
+                hint_width,
                 secondary=True,
             )
+            place_label(hint, CARD_PADDING, form_row_y(panel_height, 0), hint_width, FORM_ROW)
         for index, item in enumerate(self._categories):
-            top = height - 59 - index * 42
-            separator = NSBox.alloc().initWithFrame_(frame(28, top, 528, 1))
-            separator.setBoxType_(NSBoxSeparator)
-            self._document.addSubview_(separator)
-            name = label(self._document, item.name, 28, top - 40, 248, size=13)
-            place_label(name, 28, top - 40, 248, 40)
-            name.setToolTip_(item.name)
-            used = self._usage[item.id]
-            count = label(
-                self._document,
-                f"소스 {used}개" if used else "연결 없음",
-                288,
-                top - 40,
-                94,
-                secondary=True,
-            )
-            place_label(count, 288, top - 40, 94, 40)
-            rename = button(self._document, "설정…", 391, top - 34, 88, self._actions, "rename:")
-            remove = button(self._document, "삭제", 490, top - 34, 64, self._actions, "remove:")
-            for control in (rename, remove):
-                control.setTag_(index)
-            if used:
-                remove.setToolTip_(
-                    "연결된 소스를 다른 카테고리로 옮기거나 제거한 뒤 이 카테고리를 삭제할 수 있습니다."
-                )
-            self.rows.append(CategoryRow(rename, remove, used))
+            self.rows.append(self._row(panel, index, item, form_row_y(panel_height, index)))
         self._document.scrollPoint_((0, max(0, height - self._viewport - offset)))
+
+    def _row(self, panel: NSView, index: int, item: SourceCategory, y: float) -> CategoryRow:
+        """이름은 왼쪽, 연결 수는 설정 버튼 앞, 삭제 아이콘은 카드 오른쪽 끝에 둔다."""
+        name = label(panel, item.name, 0, 0, NAME_WIDTH, size=13)
+        # 긴 이름은 한 줄에서 말줄임하고 전체 이름은 도움말로 보여 준다.
+        name.cell().setLineBreakMode_(NSLineBreakByTruncatingTail)
+        place_label(name, CARD_PADDING, y, NAME_WIDTH, FORM_ROW)
+        name.setToolTip_(item.name)
+        used = self._usage[item.id]
+        count = label(
+            panel, f"표 {used}개 연결" if used else "연결한 표 없음", 0, 0, 0, secondary=True
+        )
+        count.setAlignment_(NSTextAlignmentRight)
+        place_label(count, COUNT_X, y, COUNT_WIDTH, FORM_ROW)
+        # 설정 버튼과 삭제 아이콘은 모두 26pt 높이라 같은 y로 줄 가운데에 둔다.
+        control_y = form_control_y(y, ICON_SIZE)
+        rename = button(
+            panel, "설정…", SETTINGS_X, control_y, SETTINGS_WIDTH, self._actions, "rename:"
+        )
+        rename.setAccessibilityLabel_(f"{item.name} 설정")
+        remove = icon_button(
+            panel,
+            "minus.circle",
+            f"{item.name} 삭제",
+            REMOVE_X,
+            control_y,
+            self._actions,
+            "remove:",
+        )
+        remove.setFrame_(frame(REMOVE_X, control_y, ICON_SIZE, ICON_SIZE))
+        for control in (rename, remove):
+            control.setTag_(index)
+        if used:
+            # 연결한 표가 있으면 삭제를 막고, 흐린 아이콘 위에서 푸는 방법을 알려 준다.
+            remove.setToolTip_(
+                "연결한 표를 다른 카테고리로 옮기거나 연결을 해제하면 삭제할 수 있습니다."
+            )
+        return CategoryRow(rename, remove, used)
 
     def edit_name(self, index: int | None) -> None:
         """추가와 이름 변경은 같은 대화상자에서 한 번에 저장한다."""

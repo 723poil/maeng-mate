@@ -1,7 +1,7 @@
 """Notion의 데이터 소스 메타데이터만 관리자 편집용으로 확인한다."""
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import replace
 from urllib.parse import quote
 
@@ -9,9 +9,11 @@ import httpx
 
 from src.application.credentials import CredentialError, CredentialSecret
 from src.application.source_settings import (
+    MAX_SOURCE_TABLES,
     SourceColumn,
     SourceSchema,
     SourceSettingsError,
+    SourceTable,
     notion_reference,
 )
 from src.infrastructure.notion.errors import SourceError
@@ -29,11 +31,19 @@ class NotionCatalog:
     def inspect(self, reference: str, *, rounds: bool) -> tuple[SourceSchema, ...]:
         """임의 네트워크 주소를 호출하지 않고 Notion 참조만 검증한다."""
         identifier = notion_reference(reference)
+        return self._call(lambda token: self._read(token, identifier, rounds))
+
+    def tables(self) -> tuple[SourceTable, ...]:
+        """연동에 공유된 표를 최근 편집 순으로 읽는다."""
+        return self._call(self._search)
+
+    def _call[T](self, work: Callable[[str], Coroutine[object, object, T]]) -> T:
+        """토큰 확인과 Notion 오류의 사용자 문구 변환을 두 조회가 공유한다."""
         try:
             token = self._token()
             if token is None:
                 raise SourceSettingsError("연동 → Notion에서 토큰을 먼저 등록하세요.")
-            return asyncio.run(self._read(token.value, identifier, rounds))
+            return asyncio.run(work(token.value))
         except CredentialError:
             raise SourceSettingsError("Notion 토큰을 읽지 못했습니다.") from None
         except (TimeoutError, SourceError) as error:
@@ -43,11 +53,44 @@ class NotionCatalog:
                 "not_found": "원본 표 주소와 Notion 연결 권한을 확인하세요.",
                 "permission_denied": "원본 표를 Notion 연동에 공유하세요.",
                 "rate_limited": "Notion 요청 한도에 도달했습니다. 잠시 후 다시 조회하세요.",
-                "timeout": "Notion 응답이 늦습니다. 잠시 후 ‘표 불러오기’를 다시 누르세요.",
+                "timeout": "Notion 응답이 늦습니다. 잠시 후 다시 시도하세요.",
             }
             raise SourceSettingsError(
-                messages.get(code, "Notion 칼럼을 조회하지 못했습니다.")
+                messages.get(code, "Notion에서 표 정보를 읽지 못했습니다.")
             ) from None
+
+    async def _search(self, token: str) -> tuple[SourceTable, ...]:
+        """검색 API로 데이터 소스만 골라 페이지를 넘기며 정해진 개수까지 모은다."""
+        tables: list[SourceTable] = []
+        async with (
+            asyncio.timeout(18),
+            httpx.AsyncClient(trust_env=False, follow_redirects=False) as client,
+        ):
+            api = NotionReadApi(token, client)
+            cursor: str | None = None
+            while len(tables) < MAX_SOURCE_TABLES:
+                body: dict[str, object] = {
+                    "filter": {"property": "object", "value": "data_source"},
+                    "sort": {"timestamp": "last_edited_time", "direction": "descending"},
+                    "page_size": 100,
+                }
+                if cursor is not None:
+                    body["start_cursor"] = cursor
+                page = await api.request("/search", body)
+                for item in array(page.get("results")):
+                    raw = record(item)
+                    identifier = raw.get("id")
+                    if raw.get("in_trash") is True or not isinstance(identifier, str):
+                        continue
+                    title = "".join(
+                        text(record(part).get("plain_text")) for part in array(raw.get("title"))
+                    ).strip()
+                    tables.append(SourceTable(identifier, title or "제목 없는 표"))
+                next_cursor = page.get("next_cursor")
+                if page.get("has_more") is not True or not isinstance(next_cursor, str):
+                    break
+                cursor = next_cursor
+        return tuple(tables[:MAX_SOURCE_TABLES])
 
     async def _read(self, token: str, identifier: str, rounds: bool) -> tuple[SourceSchema, ...]:
         """읽기 제한을 두고 임시 HTTP 클라이언트를 닫는다."""

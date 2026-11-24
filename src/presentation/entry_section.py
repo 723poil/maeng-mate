@@ -34,7 +34,7 @@ class EntrySection:
         self._title_width = title_width
         self.view = NSView.alloc().initWithFrame_(frame(0, 0, width, 0))
         parent.addSubview_(self.view)
-        self.card = card(self.view, 16, 0, width - 32, 100)
+        self.card = card(self.view, 16, 0, width - 32, 100, glass=True)
         self.icon = symbol(self.view, icon, 30, 0)
         self.title = label(self.view, title, ENTRY_TITLE_X, 0, title_width, size=13, bold=True)
         self.board = button(

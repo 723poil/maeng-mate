@@ -265,7 +265,7 @@ class MainWindow:
                 self.compact.resize(y)
                 header = self.compact.view
             else:
-                card(doc, 0, y, w, height)
+                card(doc, 0, y, w, height, glass=True)
                 header = label(doc, item.title, 12, top - 26, w - 132, size=13, bold=True)
                 if item.key == "work":
                     button(doc, "기록 ↗", w - 90, top - 32, 80, self.target, "records:")

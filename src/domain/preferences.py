@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 from src.domain.calendar import CalendarPreferences
 from src.domain.notification_identity import NotificationIdentity
@@ -31,6 +32,11 @@ class SectionPreference:
     visible: bool = True
 
 
+# 근무 카드의 퇴근 표시 방식: 퇴근 시각(18:00) 또는 퇴근까지 남은 시간(2시간 13분)이다.
+type DepartureDisplay = Literal["time", "remaining"]
+DEPARTURE_DISPLAYS: tuple[DepartureDisplay, ...] = ("time", "remaining")
+
+
 @dataclass(frozen=True)
 class Preferences:
     """현재 확정 버전과 화면·채널·알림 종류별 선택이다."""
@@ -45,6 +51,7 @@ class Preferences:
     notification_identity: NotificationIdentity = NotificationIdentity()
     calendar: CalendarPreferences = CalendarPreferences()
     muted_source_notifications: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    departure_display: DepartureDisplay = "time"
 
     @property
     def departure_offsets(self) -> tuple[int, ...]:

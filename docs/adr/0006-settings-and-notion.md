@@ -18,7 +18,7 @@
 | SQLite `runtime_settings` | 비밀값 없는 조회 정책, 유효시간, Notion·Slack 계정 식별자 |
 | SQLite `work_settings` | 소스 속성 매핑, 페이지 링크, QA 표시, 보관 확인값, 이전 근무 규칙 |
 | Application Support의 `work-rules.json` | 근무 규칙 편집값. 파일 권한 600. [ADR 0004](0004-attendance.md) |
-| SQLite `app_preferences`, `collection_preferences` | 화면 순서와 표시, 캘린더·알림·발신 앱 선택, 수집 주기 |
+| SQLite `app_preferences`, `collection_preferences` | 화면 순서와 표시, 캘린더·알림 선택, 수집 주기 (예전 발신 앱 이름·아이콘 값은 남아 있어도 적용하지 않는다) |
 | 사용자 Keychain | 앱 내부 관리 키, Notion 토큰, Slack 봇·앱 토큰 |
 
 `src/bootstrap/keychain.py`가 네 계정의 저장 키·표시명·잠금 경로를 정한다. 개발 실행본과 배포 앱의 설치 점검, 설정 편집, 자동 발송이 같은 계정 정의를 사용한다. 메뉴바 시작, 설정 자동 조회와 재시도에서는 승인 창을 띄우지 않는다. 저장된 연동 키에 접근할 수 없으면 사용자가 해당 Notion 또는 Slack 설정에서 `다시 불러오기`를 눌러 그 연동의 키만 승인할 수 있다.

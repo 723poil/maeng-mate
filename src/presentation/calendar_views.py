@@ -3,6 +3,7 @@
 from collections.abc import Callable
 
 from AppKit import (
+    NSColor,
     NSLineBreakByTruncatingTail,
     NSNoBorder,
     NSScrollView,
@@ -66,7 +67,7 @@ class CompactCalendarView:
         self.grid = CalendarGrid(
             self.view, 10, 68, content_width - 20, 32, controller, compact=True
         )
-        self._day = label(self.view, "", 14, 48, content_width - 28, size=11, bold=True)
+        self._day = label(self.view, "", 14, 48, content_width - 28, size=12, bold=True)
         self._first = label(self.view, "", 14, 28, content_width - 28, size=11)
         self._second = label(self.view, "", 14, 10, content_width - 28, size=11, secondary=True)
 
@@ -102,19 +103,23 @@ class CompactCalendarView:
             return
         contents = self.controller.contents_on(day, preferences)
         items, record = contents.items, contents.attendance
-        self._day.setStringValue_(
-            f"{day.month}월 {day.day}일 · 일정 {len(items)}개"
-            + (" · " + self.controller.message if self.controller.message else "")
-        )
+        weekday = ("월", "화", "수", "목", "금", "토", "일")[day.weekday()]
+        # 일정 수는 아래 줄에서 바로 보이므로 제목에는 날짜만 둔다.
+        self._day.setStringValue_(f"{day.month}월 {day.day}일 {weekday}요일")
         lines = [item_summary(item, day) for item in items[:2]]
+        placeholder = not lines and record is None
         if lines:
             self._first.setStringValue_(lines[0])
             self._first.setToolTip_(lines[0])
         else:
+            # 일정이 없으면 조회 안내(연결 없음·실패)를, 그것도 없으면 짧은 빈 표시를 쓴다.
             self._first.setStringValue_(
-                attendance_summary(record) if record else "표시할 일정 없음"
+                attendance_summary(record) if record else self.controller.message or "일정 없음"
             )
             self._first.setToolTip_(attendance_hint(record) if record else None)
+        self._first.setTextColor_(
+            NSColor.secondaryLabelColor() if placeholder else NSColor.labelColor()
+        )
         self._second.setStringValue_(lines[1] if len(lines) > 1 else "")
 
 

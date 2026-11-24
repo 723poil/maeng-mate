@@ -401,10 +401,10 @@ class PreferencesWindow:
         self._render_state = None
         self.render()
 
-    def show(self, *, screen: bool = False) -> None:
-        """일반 열기는 선택을 유지하고 홈의 표시 설정은 화면 페이지를 연다."""
-        if screen:
-            self._sidebar.select(SettingsPage.SCREEN)
+    def show(self, *, page: SettingsPage | None = None) -> None:
+        """일반 열기는 선택을 유지하고, 요청한 페이지가 있으면 그 페이지를 연다."""
+        if page is not None:
+            self._sidebar.select(page)
         self.render()
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self._window.makeKeyAndOrderFront_(None)

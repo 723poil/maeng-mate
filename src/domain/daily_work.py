@@ -147,13 +147,14 @@ class WorkRules:
         }
 
 
-# 처음 실행할 때는 입력한 출근 시각을 사용하고, 고정 휴게는 사용자가 지정한다.
+# 처음 실행할 때는 입력한 출근 시각을 사용한다. 8시간 근무에는 1시간 휴게가 필요하므로
+# 점심 12~13시를 기본으로 두고, 다른 휴게는 사용자가 지정한다.
 DEFAULT_WORK_RULES = WorkRules(
     daily_minutes=480,
     half_minutes=240,
     quarter_minutes=120,
-    lunch_start=None,
-    lunch_end=None,
+    lunch_start=time(12),
+    lunch_end=time(13),
     arrival_start=time(0),
     arrival_end=time(23, 59),
     early_half_departure=False,

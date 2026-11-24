@@ -4,7 +4,15 @@ from AppKit import NSView
 from Foundation import NSObject
 
 from src.presentation.entry_list import EntryList
-from src.presentation.native_views import button, card, frame, label, place_label, symbol
+from src.presentation.native_views import (
+    ENTRY_TITLE_X,
+    button,
+    card,
+    frame,
+    label,
+    place_label,
+    symbol,
+)
 
 
 class EntrySection:
@@ -28,7 +36,7 @@ class EntrySection:
         parent.addSubview_(self.view)
         self.card = card(self.view, 16, 0, width - 32, 100)
         self.icon = symbol(self.view, icon, 30, 0)
-        self.title = label(self.view, title, 56, 0, title_width, size=13, bold=True)
+        self.title = label(self.view, title, ENTRY_TITLE_X, 0, title_width, size=13, bold=True)
         self.board = button(
             self.view, "원본 ↗", width - 130, 0, 62, target, open_action, bordered=False
         )
@@ -47,7 +55,7 @@ class EntrySection:
             return
         self.card.setFrame_(frame(16, 0, width - 32, height))
         self.icon.setFrame_(frame(30, height - 30, 19, 19))
-        place_label(self.title, 56, height - 30, self._title_width, 20)
+        place_label(self.title, ENTRY_TITLE_X, height - 30, self._title_width, 20)
         self.board.setFrame_(frame(width - 130, height - 33, 62, 26))
         self.expand.setFrame_(frame(width - 67, height - 33, 44, 26))
         self.entries.resize(27, 12, width - 54, max(1.0, height - 54))

@@ -151,11 +151,11 @@ def test_native_menu_renders_and_saves_attendance(
         assert status.title() == ""
         assert status.image().isTemplate()
         assert status.toolTip() == status.accessibilityLabel() == "Catch · 수집 대기"
-        assert app._view.frame().size.width == 520
+        assert app._view.frame().size.width == 480
         app._apply_source_display(display)
         task_card = app._custom_sections[tasks_card.key]
         meeting_card = app._custom_sections[meetings_card.key]
-        assert task_card.entries._scroll.frame().size.width == 466
+        assert task_card.entries._scroll.frame().size.width == 426
         # Finder만 메인 창을 열며, 사이드바와 본문은 숨긴 카테고리를 제외한다.
         from dataclasses import replace
 

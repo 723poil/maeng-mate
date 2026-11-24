@@ -95,6 +95,8 @@ async def test_saved_rules_recalculate_today_and_pending_reminders(tmp_path: Pat
     previous = await store.correct(
         DayRecord(today - timedelta(days=1), attendance=now - timedelta(days=1)), 0
     )
+    # 기본값의 점심과 무관하게 점심 없는 규칙에서 점심 있는 규칙으로 바꾸는 재계산을 본다.
+    no_lunch = replace(DEFAULT_WORK_RULES, lunch_start=None, lunch_end=None)
     lunch = replace(DEFAULT_WORK_RULES, lunch_start=time(12), lunch_end=time(13))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -109,7 +111,7 @@ async def test_saved_rules_recalculate_today_and_pending_reminders(tmp_path: Pat
             )
             assert response.status_code == 200 and response.json()["restartRequired"] is False
 
-        await save_rules(0, DEFAULT_WORK_RULES)
+        await save_rules(0, no_lunch)
         assert (await client.get("/v1/day")).json()["revision"] == 0
         body = {
             "date": today.isoformat(),
@@ -141,7 +143,7 @@ async def test_saved_rules_recalculate_today_and_pending_reminders(tmp_path: Pat
         await save_rules(2, lunch)
         assert (await store.read(today)).revision == 2
         finished = await store.correct(replace(revised, checkout_at=now, overtime=True), 2)
-        await save_rules(3, DEFAULT_WORK_RULES)
-        assert await store.read(today) == replace(finished, revision=4, rules=DEFAULT_WORK_RULES)
+        await save_rules(3, no_lunch)
+        assert await store.read(today) == replace(finished, revision=4, rules=no_lunch)
         assert not await database.fetch("SELECT id FROM notification_jobs WHERE state='pending'")
         assert await store.read(previous.day) == previous

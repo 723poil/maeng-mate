@@ -16,8 +16,10 @@ from AppKit import (
     NSControlSizeRegular,
     NSDatePicker,
     NSDatePickerElementFlagHourMinute,
-    NSDatePickerStyleTextFieldAndStepper,
+    NSDatePickerStyleTextField,
     NSFont,
+    NSFontWeightMedium,
+    NSFontWeightSemibold,
     NSImage,
     NSMenu,
     NSMenuItem,
@@ -28,6 +30,7 @@ from AppKit import (
     NSScreen,
     NSScrollView,
     NSStatusBar,
+    NSTextAlignmentRight,
     NSTextField,
     NSVariableStatusItemLength,
     NSView,
@@ -85,6 +88,7 @@ from src.presentation.glass_panel import GlassPanel
 from src.presentation.main_window import HomeCard, MainWindow
 from src.presentation.mcp_settings_controller import McpSettingsController
 from src.presentation.native_views import (
+    ENTRY_TITLE_X,
     button,
     card,
     frame,
@@ -97,6 +101,7 @@ from src.presentation.notification_identity_controller import NotificationIdenti
 from src.presentation.notion_credentials_controller import NotionCredentialsController
 from src.presentation.notion_page_links_controller import NotionPageLinksController
 from src.presentation.preferences_controller import PreferencesController
+from src.presentation.preferences_sidebar import SettingsPage
 from src.presentation.preferences_window import PreferencesWindow
 from src.presentation.runtime_settings_controller import RuntimeSettingsController, SettingsEditor
 from src.presentation.slack_settings_controller import SlackSettingsController
@@ -108,7 +113,7 @@ from src.presentation.work_records_window import WorkRecordsWindow
 from src.presentation.work_rules_form import WorkRulesEditor
 
 type Preview = Callable[[DayUpdate, WorkRules | None], DepartureResult]
-POPOVER_WIDTH = 520
+POPOVER_WIDTH = 480
 INTERVAL_MINUTES = (1, 5, 10, 15, 30, 60)
 
 
@@ -175,6 +180,7 @@ class Callbacks(NSObject):
     def changed_(self, sender: object) -> None:
         """선택 변경은 즉시 계산하고 잠시 뒤 자동 저장한다."""
         self.owner.mark_dirty()
+        self.owner._place_departure_title()
 
     def open_(self, sender: NSButton) -> None:
         """검증한 원천 링크를 연다."""
@@ -197,6 +203,10 @@ class Callbacks(NSObject):
     def settings_(self, sender: object) -> None:
         """독립된 설정 창을 연다."""
         self.owner.open_settings()
+
+    def connect_(self, sender: object) -> None:
+        """빈 상태의 연결 버튼은 다음에 할 일이 있는 설정 페이지를 바로 연다."""
+        self.owner.open_connection_settings()
 
     def quit_(self, sender: object) -> None:
         """메뉴바 프로세스만 종료한다."""
@@ -382,7 +392,9 @@ class MenuBarApp:
     def _build(self) -> None:
         """고정 기능을 배치하고 카테고리 카드는 확인한 소스로 따로 만든다."""
         view = self._view
-        self._date = label(view, "오늘", 22, 615, POPOVER_WIDTH - 202, size=17, bold=True)
+        self._date = label(view, "오늘", 22, 615, POPOVER_WIDTH - 202, size=14)
+        # 날짜는 패널의 기준 정보일 뿐이라 아래 카드 제목과 비슷한 무게로 둔다.
+        self._date.setFont_(NSFont.systemFontOfSize_weight_(14, NSFontWeightMedium))
         home_button = button(
             view, "", POPOVER_WIDTH - 170, 614, 26, self._callbacks, "home:", bordered=False
         )
@@ -431,7 +443,16 @@ class MenuBarApp:
         self._collection_detail = label(
             view, "", 48, 565, POPOVER_WIDTH - 225, size=11, secondary=True
         )
-        label(view, "수집 주기", POPOVER_WIDTH - 170, 584, 60, size=11, secondary=True)
+        self._interval_label = label(
+            view, "수집 주기", POPOVER_WIDTH - 170, 584, 60, size=11, secondary=True
+        )
+        # 연결한 표가 없으면 상태 줄 전체를 이 버튼 하나로 바꾼다. 버튼 테두리 안쪽 여백을 빼고
+        # 위 날짜 글자와 왼쪽 끝을 맞추고, 상태 두 줄이 차지하던 높이의 가운데에 둔다.
+        self._connect_button = button(
+            view, "Notion 연결…", 16, 571, 118, self._callbacks, "connect:"
+        )
+        self._connect_button.setHidden_(True)
+        self._empty = False
         self._interval = self._selector(
             POPOVER_WIDTH - 112, 577, 90, [f"{minutes}분" for minutes in INTERVAL_MINUTES]
         )
@@ -452,24 +473,41 @@ class MenuBarApp:
         view = self._body
         card(view, 16, 443, POPOVER_WIDTH - 32, 112)
         symbol(view, "clock", 30, 525)
-        label(view, "근무", 56, 525, 140, size=13, bold=True)
+        label(view, "근무", ENTRY_TITLE_X, 525, 140, size=13, bold=True)
         self._records_button = button(
             view, "기록 ↗", POPOVER_WIDTH - 92, 520, 66, self._callbacks, "records:", bordered=False
         )
         self._records_button.setEnabled_(self._records_controller is not None)
         # 저장 실패·휴무처럼 사용자가 알아야 하는 상태만 제목 옆에 표시한다.
         self._work_message = label(view, "", 96, 525, POPOVER_WIDTH - 196, size=11, secondary=True)
-        label(view, "출근", 30, 500, 100, size=11, secondary=True)
-        self._departure_title = label(view, "퇴근 예정", 382, 500, 108, size=11, secondary=True)
-        self.arrival = self._time_picker(28, 465, 88, view)
-        self._set_arrival(9, 0)
-        self._departure = label(view, "--:--", 382, 460.5, 108, size=24, bold=True)
+        # 카드의 주인공은 퇴근 시각이다. 제목은 실제 글자 폭 바로 뒤에 붙여 한 덩어리로 읽힌다.
+        self._departure = label(view, "--:--", 30, 482, 220, size=30, bold=True)
         self._departure.setTextColor_(NSColor.tertiaryLabelColor())
-        self._departure_warning = label(view, "", 372, 445, 138, size=9, secondary=True)
-        label(view, "근무 형태", 142, 500, 100, size=11, secondary=True)
-        self.leave = self._selector(
-            140, 461, 200, [LEAVE_LABELS[leave] for leave in SELECTABLE_LEAVES], parent=view
+        self._departure_title = label(view, "퇴근 예정", 120, 487, 80, size=12, secondary=True)
+        self._departure_warning = label(
+            view, "", POPOVER_WIDTH - 222, 488, 180, size=10, secondary=True
         )
+        self._departure_warning.setAlignment_(NSTextAlignmentRight)
+        # 입력은 테두리 없는 한 줄 문장으로 두고 누른 부분만 편집 상태가 된다.
+        label(view, "출근", 30, 455, 30, size=13, secondary=True)
+        self.arrival = self._time_picker(60, 453, 50, view)
+        self._set_arrival(9, 0)
+        label(view, "·", 112, 455, 10, size=13, secondary=True)
+        self.leave = self._selector(
+            120,
+            451,
+            140,
+            [
+                # 휴가가 없는 날을 '출근'으로 쓰면 앞의 출근 시각과 겹쳐 읽혀 이 화면에서만 바꿔 부른다.
+                "일반 근무" if leave == LeaveType.NONE else LEAVE_LABELS[leave]
+                for leave in SELECTABLE_LEAVES
+            ],
+            parent=view,
+        )
+        self.leave.setBordered_(False)
+        # 연차인 날은 근무 카드로 출근을 기록하지 않으므로 고를 수 없게 숨긴다. 기록 창에서 연차로
+        # 정한 날도 같은 이름으로 보여야 해서 항목을 지우지 않고 숨겨 목록 위치를 유지한다.
+        self.leave.itemAtIndex_(SELECTABLE_LEAVES.index(LeaveType.FULL)).setHidden_(True)
         self._work_frames = [(control, control.frame()) for control in view.subviews()]
         if self._calendar_controller is not None:
             self._calendar_view = CompactCalendarView(
@@ -579,6 +617,7 @@ class MenuBarApp:
                         place_label(control, x, y + bottom - 443, width, control_height)
                     else:
                         control.setFrame_(frame(x, y + bottom - 443, width, control_height))
+                self._place_departure_title()
                 if item.visible:
                     top -= 124
             elif item.key == "calendar":
@@ -620,14 +659,18 @@ class MenuBarApp:
         return view
 
     def _time_picker(self, x: float, y: float, width: float, parent: NSView) -> NSDatePicker:
-        """출근 시각은 키보드와 스테퍼로 고치는 기본 macOS 시간 입력을 사용한다."""
-        view = NSDatePicker.alloc().initWithFrame_(frame(x, y, width, 24))
-        view.setDatePickerStyle_(NSDatePickerStyleTextFieldAndStepper)
+        """출근 시각은 글자처럼 보이다가 누르면 시·분을 키보드와 방향키로 고치는 기본 입력이다."""
+        view = NSDatePicker.alloc().initWithFrame_(frame(x, y, width, 22))
+        view.setDatePickerStyle_(NSDatePickerStyleTextField)
         view.setDatePickerElements_(NSDatePickerElementFlagHourMinute)
+        view.setBezeled_(False)
+        view.setBordered_(False)
+        view.setDrawsBackground_(False)
         # 퇴근 예정과 같은 24시간 표기를 쓰고 기기 시간대와 무관하게 서울 시각으로 읽는다.
         view.setLocale_(NSLocale.localeWithLocaleIdentifier_("en_GB"))
         view.setTimeZone_(NSTimeZone.timeZoneWithName_(SEOUL.key))
-        view.setFont_(NSFont.systemFontOfSize_(13))
+        # 숫자 폭이 같은 글꼴로 시각을 바꿔도 뒤의 근무 형태가 흔들리지 않는다.
+        view.setFont_(NSFont.monospacedDigitSystemFontOfSize_weight_(13, NSFontWeightSemibold))
         view.setControlSize_(NSControlSizeRegular)
         view.setTarget_(self._callbacks)
         view.setAction_("changed:")
@@ -667,7 +710,6 @@ class MenuBarApp:
         """반복 열기 요청에서도 이미 열린 패널을 유지한다."""
         if not self._panel.is_visible():
             self._resize_lists()
-            self._application.activateIgnoringOtherApps_(True)
             self._panel.show(self._status_item.button())
             self._next_refresh = 0
             self._render_calendars()
@@ -700,10 +742,11 @@ class MenuBarApp:
         departure = clock_label(displayed) if displayed else "--:--"
         if displayed and displayed.astimezone(SEOUL).date().isoformat() != update.day:
             departure = displayed.astimezone(SEOUL).strftime("%m/%d %H:%M")
-        self._departure.setFont_(NSFont.boldSystemFontOfSize_(14 if "/" in departure else 24))
+        self._departure.setFont_(NSFont.boldSystemFontOfSize_(18 if "/" in departure else 30))
         (x, y), (width, height) = self._departure.frame()
-        place_label(self._departure, x, y + height / 2 - 15.5, width, 31)
+        place_label(self._departure, x, y + height / 2 - 18.5, width, 37)
         self._departure.setStringValue_(departure)
+        self._place_departure_title()
         overnight = (
             actual is None
             and displayed is not None
@@ -717,6 +760,18 @@ class MenuBarApp:
         self._departure_warning.setStringValue_("익일 확정 불가 · 알림 없음" if overnight else "")
         self._departure_warning.setToolTip_(OVERNIGHT_DEPARTURE_REASON if overnight else None)
         self._departure.setToolTip_(OVERNIGHT_DEPARTURE_REASON if overnight else None)
+
+    def _place_departure_title(self) -> None:
+        """글자 폭에 맞춰 붙는 요소를 다시 맞춘다. 카드 배치가 바뀐 뒤에도 호출한다."""
+        # 퇴근 제목은 시각의 실제 글자 폭 바로 뒤에 붙여 한 덩어리로 읽히게 한다.
+        (x, _), _ = self._departure.frame()
+        (_, y), (width, height) = self._departure_title.frame()
+        place_label(
+            self._departure_title, x + self._departure.fittingSize()[0] + 6, y, width, height
+        )
+        # 테두리 없는 메뉴는 선택한 이름 폭에 맞춰야 화살표가 글자 옆에 붙는다.
+        (leave_x, leave_y), (_, leave_height) = self.leave.frame()
+        self.leave.setFrame_(frame(leave_x, leave_y, self.leave.fittingSize()[0] + 4, leave_height))
 
     def _set_message(self, value: str) -> None:
         """조치가 필요한 안내만 제목 옆에 표시하고 빈 값은 이전 안내를 지운다."""
@@ -911,6 +966,10 @@ class MenuBarApp:
         if self._controller.refresh():
             self._next_refresh = time.monotonic() + 15
             self._render_activity()
+        # 작은 달력에는 따로 새로고침 버튼을 두지 않으므로 패널 새로고침이 달력도 다시 읽는다.
+        if manual and self._calendar_controller is not None and not self._calendar_controller.busy:
+            self._calendar_controller.refresh()
+            self._render_calendars()
 
     def change_interval(self) -> None:
         """기록 저장과 겹치지 않게 새 주기를 저장하고 즉시 반응을 보인다."""
@@ -927,8 +986,9 @@ class MenuBarApp:
         loading = controller.busy and controller.operation in {"fetch", "interval"}
         collecting = snapshot is not None and snapshot.collection.running and controller.connected
         active = loading or collecting
-        self._collection_icon.setHidden_(active)
-        self._spinner.setHidden_(not active)
+        # 연결 전에는 상태 줄 대신 연결 버튼만 두므로 상태 아이콘·진행 표시도 숨긴다.
+        self._collection_icon.setHidden_(active or self._empty)
+        self._spinner.setHidden_(not active or self._empty)
         if active:
             self._spinner.startAnimation_(None)
         else:
@@ -1038,8 +1098,23 @@ class MenuBarApp:
             title = "수집 대기"
         self._collection.setStringValue_(title)
         self._collection.setToolTip_(title)
+        # 연결한 표가 없으면 수집 상태·시각·주기가 의미 없으므로 연결 버튼 하나만 남긴다.
+        empty = title == "수집 소스 없음"
+        self._empty = empty
+        self._connect_button.setHidden_(not empty)
+        for control in (
+            self._collection,
+            self._collection_detail,
+            self._interval_label,
+            self._interval,
+        ):
+            control.setHidden_(empty)
         self._collection_icon.setContentTintColor_(
-            NSColor.systemOrangeColor() if attention else NSColor.systemGreenColor()
+            NSColor.secondaryLabelColor()
+            if empty
+            else NSColor.systemOrangeColor()
+            if attention
+            else NSColor.systemGreenColor()
         )
         detail = f"최근 {clock_label(collection.last_success)}  ·  다음 {clock_label(collection.next_at)}"
         if (
@@ -1358,7 +1433,7 @@ class MenuBarApp:
             self._records_window = WorkRecordsWindow(self._records_controller)
         self._records_window.show()
 
-    def open_settings(self, *, screen: bool = False) -> None:
+    def open_settings(self, *, screen: bool = False, page: SettingsPage | None = None) -> None:
         """메뉴바를 닫고 재사용 가능한 설정 창을 표시한다."""
         self._panel.hide()
         if self._settings_window is None:
@@ -1378,7 +1453,14 @@ class MenuBarApp:
                 self._data_backup,
                 self._app_updates,
             )
-        self._settings_window.show(screen=screen)
+        self._settings_window.show(page=SettingsPage.SCREEN if screen else page)
+
+    def open_connection_settings(self) -> None:
+        """토큰이 없으면 Notion 인증부터, 있으면 표를 연결할 수집 소스 페이지를 연다."""
+        controller = self._notion_credentials_controller
+        state = controller.state if controller is not None else None
+        configured = state is not None and state.configured
+        self.open_settings(page=SettingsPage.SOURCES if configured else SettingsPage.NOTION)
 
     def _update_pending(self) -> bool:
         """설정 창을 열기 전에도 메뉴바와 기록 창의 편집·저장을 보호한다."""

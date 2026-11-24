@@ -83,6 +83,10 @@ def icon_button(
     return control
 
 
+# 카드 머리의 아이콘(x=30) 뒤 제목 위치다. 심볼은 19pt 칸보다 작게 그려지므로 칸 끝보다 앞당긴다.
+ENTRY_TITLE_X = 50
+
+
 def symbol(parent: NSView, name: str, x: float, y: float) -> NSImageView:
     """외부 이미지 없이 SF Symbols로 섹션을 구별한다."""
     view = NSImageView.alloc().initWithFrame_(frame(x, y, 19, 19))
@@ -123,9 +127,10 @@ def card_background(appearance: NSAppearance) -> NSColor:
     mode = appearance.bestMatchFromAppearancesWithNames_(
         [NSAppearanceNameAqua, NSAppearanceNameDarkAqua]
     )
-    return NSColor.colorWithCalibratedWhite_alpha_(
-        0.12 if mode == NSAppearanceNameDarkAqua else 1.0, 0.90
-    )
+    # 카드가 유리 배경을 덮지 않고 비쳐 보이도록 옅게 칠한다. 어두운 모드는 살짝 더 어둡게,
+    # 밝은 모드는 살짝 더 밝게 얹어 유리 위에 한 겹 더 얹은 느낌을 낸다.
+    dark = mode == NSAppearanceNameDarkAqua
+    return NSColor.colorWithCalibratedWhite_alpha_(0.0 if dark else 1.0, 0.22 if dark else 0.45)
 
 
 def card(
@@ -159,6 +164,6 @@ def card(
         if canvas
         else NSColor.colorWithName_dynamicProvider_(None, card_background)
     )
-    view.setBorderColor_(NSColor.labelColor().colorWithAlphaComponent_(0.08))
+    view.setBorderColor_(NSColor.labelColor().colorWithAlphaComponent_(0.12))
     parent.addSubview_(view)
     return view

@@ -82,7 +82,7 @@ class MainWindow:
         screen = NSScreen.mainScreen()
         sw, sh = screen.visibleFrame()[1] if screen else (1100, 740)
         self.width, self.height = min(1080.0, sw - 16), min(700.0, sh - 16)
-        self.window = auxiliary_window("맹메이트", self.width, self.height)
+        self.window = auxiliary_window("Catch", self.width, self.height)
         self.target, self.calendar_factory, self.compact_factory = target, calendar, compact
         self.actions = WindowActions.alloc().init()
         self.actions.owner = self

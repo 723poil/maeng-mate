@@ -13,8 +13,10 @@ from AppKit import (
     NSBezelStyleRounded,
     NSButton,
     NSColor,
-    NSControlSizeLarge,
-    NSControlSizeSmall,
+    NSControlSizeRegular,
+    NSDatePicker,
+    NSDatePickerElementFlagHourMinute,
+    NSDatePickerStyleTextFieldAndStepper,
     NSFont,
     NSImage,
     NSMenu,
@@ -31,7 +33,15 @@ from AppKit import (
     NSView,
     NSWorkspace,
 )
-from Foundation import NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
+from Foundation import (
+    NSDate,
+    NSLocale,
+    NSObject,
+    NSRunLoop,
+    NSRunLoopCommonModes,
+    NSTimer,
+    NSTimeZone,
+)
 
 from src.application.ai_skills import SkillInstaller
 from src.application.app_updates import AppUpdates
@@ -161,13 +171,6 @@ class Callbacks(NSObject):
     def interval_(self, sender: object) -> None:
         """선택한 수집 주기를 즉시 저장한다."""
         self.owner.change_interval()
-
-    def now_(self, sender: object) -> None:
-        """현재 시각도 선택 변경과 동일하게 계산·저장한다."""
-        current = datetime.now(SEOUL)
-        self.owner.hour.selectItemAtIndex_(current.hour)
-        self.owner.minute.selectItemAtIndex_(current.minute)
-        self.owner.mark_dirty()
 
     def changed_(self, sender: object) -> None:
         """선택 변경은 즉시 계산하고 잠시 뒤 자동 저장한다."""
@@ -332,9 +335,7 @@ class MenuBarApp:
         menu.addItem_(app_item)
         app_menu = NSMenu.alloc().init()
         app_menu.addItem_(
-            NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "맹메이트 종료", "terminate:", "q"
-            )
+            NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Catch 종료", "terminate:", "q")
         )
         app_item.setSubmenu_(app_menu)
         self._application.setMainMenu_(menu)
@@ -350,11 +351,9 @@ class MenuBarApp:
         )
         status_button = self._status_item.button()
         # 템플릿의 투명 영역을 살려 메뉴바 배경과 선택 상태에 맞게 시스템이 채색한다.
-        mark_file = (
-            "MenuMarkDev.svg" if app_updates and app_updates.is_development else "MenuMark.svg"
-        )
+        # 개발용도 같은 도안을 쓰고 도움말·VoiceOver 이름과 설정의 버전 표시로 구분한다.
         mark = NSImage.alloc().initWithContentsOfFile_(
-            str(Path(__file__).with_name("assets") / mark_file)
+            str(Path(__file__).with_name("assets") / "MenuMark.svg")
         )
         if mark is None:
             raise RuntimeError("메뉴바 아이콘을 불러오지 못했습니다.")
@@ -436,7 +435,6 @@ class MenuBarApp:
         self._interval = self._selector(
             POPOVER_WIDTH - 112, 577, 90, [f"{minutes}분" for minutes in INTERVAL_MINUTES]
         )
-        self._interval.setControlSize_(0)
         self._interval.setFont_(NSFont.systemFontOfSize_(12))
         self._interval.setAction_("interval:")
         self._interval.selectItemAtIndex_(INTERVAL_MINUTES.index(15))
@@ -459,29 +457,18 @@ class MenuBarApp:
             view, "기록 ↗", POPOVER_WIDTH - 92, 520, 66, self._callbacks, "records:", bordered=False
         )
         self._records_button.setEnabled_(self._records_controller is not None)
-        self._work_message = label(view, "", 196, 525, POPOVER_WIDTH - 306, size=11, secondary=True)
-        self._message = label(view, "", 441, 500.5, 61, size=10, secondary=True)
-        label(view, "출근", 30, 500, 150, size=11, secondary=True)
-        self._departure_title = label(view, "퇴근 예정", 382, 500, 60, size=11, secondary=True)
-        self.hour = self._selector(
-            28, 461, 70, [f"{hour:02d}시" for hour in range(24)], parent=view
-        )
-        self.minute = self._selector(
-            98, 461, 70, [f"{minute:02d}분" for minute in range(60)], parent=view
-        )
-        for selector in (self.hour, self.minute):
-            selector.setControlSize_(NSControlSizeSmall)
-            selector.setFont_(NSFont.systemFontOfSize_(12))
-        self.hour.selectItemAtIndex_(9)
-        self.minute.selectItemAtIndex_(0)
-        self._now = button(view, "지금", 172, 463, 44, self._callbacks, "now:")
-        self._now.setControlSize_(NSControlSizeSmall)
-        self._now.setFont_(NSFont.systemFontOfSize_(11))
+        # 저장 실패·휴무처럼 사용자가 알아야 하는 상태만 제목 옆에 표시한다.
+        self._work_message = label(view, "", 96, 525, POPOVER_WIDTH - 196, size=11, secondary=True)
+        label(view, "출근", 30, 500, 100, size=11, secondary=True)
+        self._departure_title = label(view, "퇴근 예정", 382, 500, 108, size=11, secondary=True)
+        self.arrival = self._time_picker(28, 465, 88, view)
+        self._set_arrival(9, 0)
         self._departure = label(view, "--:--", 382, 460.5, 108, size=24, bold=True)
+        self._departure.setTextColor_(NSColor.tertiaryLabelColor())
         self._departure_warning = label(view, "", 372, 445, 138, size=9, secondary=True)
-        label(view, "휴가", 226, 500, 100, size=11, secondary=True)
+        label(view, "근무 형태", 142, 500, 100, size=11, secondary=True)
         self.leave = self._selector(
-            224, 461, 144, [LEAVE_LABELS[leave] for leave in SELECTABLE_LEAVES], parent=view
+            140, 461, 200, [LEAVE_LABELS[leave] for leave in SELECTABLE_LEAVES], parent=view
         )
         self._work_frames = [(control, control.frame()) for control in view.subviews()]
         if self._calendar_controller is not None:
@@ -497,10 +484,8 @@ class MenuBarApp:
         self._empty_view = label(
             view, "설정 → 화면에서 표시할 카드를 선택하세요.", 26, 20, 460, secondary=True
         )
-        self.hour.setEnabled_(False)
-        self.minute.setEnabled_(False)
+        self.arrival.setEnabled_(False)
         self.leave.setEnabled_(False)
-        self._now.setEnabled_(False)
 
     def _resize_lists(self, *, animated: bool = False) -> None:
         """표시하는 카테고리만 계산하고 확대·축소를 같은 높이 기준으로 전환한다."""
@@ -623,16 +608,41 @@ class MenuBarApp:
     def _selector(
         self, x: float, y: float, width: float, titles: list[str], *, parent: NSView | None = None
     ) -> NSPopUpButton:
-        """시·분과 휴가는 기본 macOS 선택 컨트롤을 사용한다."""
+        """근무 형태와 수집 주기는 기본 macOS 선택 컨트롤을 사용한다."""
         view = NSPopUpButton.alloc().initWithFrame_pullsDown_(frame(x, y, width, 30), False)
         view.addItemsWithTitles_(titles)
         view.setFont_(NSFont.systemFontOfSize_(13))
-        view.setControlSize_(NSControlSizeLarge)
+        view.setControlSize_(NSControlSizeRegular)
         view.setBezelStyle_(NSBezelStyleRounded)
         view.setTarget_(self._callbacks)
         view.setAction_("changed:")
         (parent if parent is not None else self._view).addSubview_(view)
         return view
+
+    def _time_picker(self, x: float, y: float, width: float, parent: NSView) -> NSDatePicker:
+        """출근 시각은 키보드와 스테퍼로 고치는 기본 macOS 시간 입력을 사용한다."""
+        view = NSDatePicker.alloc().initWithFrame_(frame(x, y, width, 24))
+        view.setDatePickerStyle_(NSDatePickerStyleTextFieldAndStepper)
+        view.setDatePickerElements_(NSDatePickerElementFlagHourMinute)
+        # 퇴근 예정과 같은 24시간 표기를 쓰고 기기 시간대와 무관하게 서울 시각으로 읽는다.
+        view.setLocale_(NSLocale.localeWithLocaleIdentifier_("en_GB"))
+        view.setTimeZone_(NSTimeZone.timeZoneWithName_(SEOUL.key))
+        view.setFont_(NSFont.systemFontOfSize_(13))
+        view.setControlSize_(NSControlSizeRegular)
+        view.setTarget_(self._callbacks)
+        view.setAction_("changed:")
+        parent.addSubview_(view)
+        return view
+
+    def _set_arrival(self, hour: int, minute: int) -> None:
+        """시·분만 쓰는 입력이므로 날짜는 고정 기준일로 채운다."""
+        moment = datetime(2001, 1, 1, hour, minute, tzinfo=SEOUL)
+        self.arrival.setDateValue_(NSDate.dateWithTimeIntervalSince1970_(moment.timestamp()))
+
+    def _arrival(self) -> str:
+        """입력의 서울 시각을 저장 형식의 시:분으로 읽는다."""
+        seconds = self.arrival.dateValue().timeIntervalSince1970()
+        return datetime.fromtimestamp(seconds, SEOUL).strftime("%H:%M")
 
     def run(self) -> None:
         """가벼운 메인 타이머로 자동 저장 결과만 반영한다."""
@@ -669,8 +679,7 @@ class MenuBarApp:
         selected = self.leave.indexOfSelectedItem()
         if not 0 <= selected < len(SELECTABLE_LEAVES):
             return None
-        arrival = f"{self.hour.indexOfSelectedItem():02d}:{self.minute.indexOfSelectedItem():02d}"
-        return replace(self._base, attendance=arrival, leave=SELECTABLE_LEAVES[selected])
+        return replace(self._base, attendance=self._arrival(), leave=SELECTABLE_LEAVES[selected])
 
     def _forecast(self) -> None:
         """선택 즉시 예상시간을 표시하고 저장 결과를 기다리지 않는다."""
@@ -700,20 +709,19 @@ class MenuBarApp:
             and displayed is not None
             and displayed.astimezone(SEOUL).date().isoformat() != update.day
         )
+        # 아직 기록하지 않은 날의 예상은 흐리게 두어 별도 문구 없이 확정값과 구분한다.
+        recorded = actual is not None or self._dirty or snapshot.day.update.attendance is not None
+        self._departure.setTextColor_(
+            NSColor.labelColor() if recorded else NSColor.tertiaryLabelColor()
+        )
         self._departure_warning.setStringValue_("익일 확정 불가 · 알림 없음" if overnight else "")
         self._departure_warning.setToolTip_(OVERNIGHT_DEPARTURE_REASON if overnight else None)
         self._departure.setToolTip_(OVERNIGHT_DEPARTURE_REASON if overnight else None)
 
     def _set_message(self, value: str) -> None:
-        """짧은 상태는 제목 옆에, 긴 안내는 근무 카드 상단에 잘림 없이 표시한다."""
-        self._message.setStringValue_(f"({value})" if value else "")
-        # 글꼴의 실제 너비로 판단하고 다른 근무 입력의 프레임은 변경하지 않는다.
-        overflow = self._message.fittingSize()[0] > self._message.frame()[1][0]
-        if overflow:
-            self._message.setStringValue_("")
-        self._message.setToolTip_(value if value and not overflow else None)
-        self._work_message.setStringValue_(value if overflow else "")
-        self._work_message.setToolTip_(value if overflow else None)
+        """조치가 필요한 안내만 제목 옆에 표시하고 빈 값은 이전 안내를 지운다."""
+        self._work_message.setStringValue_(value)
+        self._work_message.setToolTip_(value or None)
 
     def mark_dirty(self) -> None:
         """빠른 연속 선택은 마지막 값으로 모으고 계산은 즉시 갱신한다."""
@@ -722,7 +730,7 @@ class MenuBarApp:
         self._dirty = True
         self._last_edit = time.monotonic()
         self._forecast()
-        self._set_message("저장 대기")
+        self._set_message("")
         self._render_activity()
 
     def _reset_workday(self, day: str) -> None:
@@ -736,12 +744,12 @@ class MenuBarApp:
         self._controller.conflict = False
         if not self._controller.busy:
             self._controller.snapshot = None
-        self.hour.selectItemAtIndex_(9)
-        self.minute.selectItemAtIndex_(0)
+        self._set_arrival(9, 0)
         self.leave.selectItemAtIndex_(0)
-        for control in (self.hour, self.minute, self.leave, self._now):
-            control.setEnabled_(False)
+        self.arrival.setEnabled_(False)
+        self.leave.setEnabled_(False)
         self._departure.setStringValue_("--:--")
+        self._departure.setTextColor_(NSColor.tertiaryLabelColor())
         self._departure_warning.setStringValue_("")
         self._departure_warning.setToolTip_(None)
         self._departure.setToolTip_(None)
@@ -750,7 +758,7 @@ class MenuBarApp:
         self._date.setStringValue_(
             f"{current.month}월 {current.day}일 {('월', '화', '수', '목', '금', '토', '일')[current.weekday()]}요일"
         )
-        self._set_message("미기록")
+        self._set_message("")
         for view in self._custom_sections.values():
             view.entries.update(())
         self._next_refresh = 0
@@ -843,15 +851,13 @@ class MenuBarApp:
                         selected.attendance != self._base.attendance
                         or selected.leave != self._base.leave
                     )
-                    self._set_message("저장 대기" if self._dirty else "저장됨")
+                    self._set_message("")
                 else:
                     self._save_blocked = True
             elif self._controller.error is None and not self._dirty:
                 snapshot = self._controller.snapshot
                 if snapshot is not None:
-                    self._set_message(
-                        "미기록" if snapshot.day.update.attendance is None else "저장됨"
-                    )
+                    self._set_message("")
             self._render()
             # 열린 패널에서 수집할 때만 다음 조회를 앞당겨 소스 전환과 종료를 따라간다.
             if (
@@ -870,7 +876,6 @@ class MenuBarApp:
         ):
             update = self._selection()
             if update is not None and self._controller.save(update):
-                self._set_message("저장 중…")
                 self._render_activity()
         if time.monotonic() >= self._next_refresh and not self._controller.busy and not self._dirty:
             self.refresh()
@@ -882,10 +887,7 @@ class MenuBarApp:
             error = self._notification_status()
             if error != self._notification_error:
                 self._notification_error = error
-                fallback = (
-                    "미기록" if self._base is None or self._base.attendance is None else "저장됨"
-                )
-                self._set_message(error or fallback)
+                self._set_message(error or "")
 
         if (
             self._main_window
@@ -950,18 +952,15 @@ class MenuBarApp:
         """조회한 확정 값을 표시하되 새 날짜를 자동 출근 기록하지 않는다."""
         base = snapshot.day.update
         clock = parse_clock(base.attendance or "09:00")
-        self.hour.selectItemAtIndex_(clock.hour)
-        self.minute.selectItemAtIndex_(clock.minute)
+        self._set_arrival(clock.hour, clock.minute)
         selected = base.leave if base.leave != LeaveType.UNSELECTED else LeaveType.NONE
         self.leave.selectItemAtIndex_(SELECTABLE_LEAVES.index(selected))
         self._base = base
-        if base.attendance is None:
-            self._set_message("미기록")
         self._forecast()
 
     def _set_status_description(self, state: str) -> None:
         """메뉴바 아이콘의 도움말과 VoiceOver에 같은 수집 상태를 제공한다."""
-        name = "Maeng Mate"
+        name = "Catch"
         if self._app_updates and self._app_updates.actions.is_development:
             name += " 개발용"
         description = f"{name} · {state}"
@@ -1078,10 +1077,8 @@ class MenuBarApp:
         ):
             self._set_message("휴무")
         enabled = controller.connected and not controller.conflict
-        self.hour.setEnabled_(enabled)
-        self.minute.setEnabled_(enabled)
+        self.arrival.setEnabled_(enabled)
         self.leave.setEnabled_(enabled)
-        self._now.setEnabled_(enabled)
         self._render_source_lists(snapshot)
 
     def _apply_source_display(self, display: tuple[SourceDisplay, ...]) -> None:

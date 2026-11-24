@@ -219,7 +219,7 @@ class PreferencesWindow:
         self._actions.owner = self
         screen = NSScreen.mainScreen()
         height = min(600.0, max(500.0, screen.visibleFrame()[1][1] - 60)) if screen else 600.0
-        self._window = auxiliary_window("Maeng Mate 설정", 760, height)
+        self._window = auxiliary_window("Catch 설정", 760, height)
         self._window.setCollectionBehavior_(
             NSWindowCollectionBehaviorMoveToActiveSpace
             | NSWindowCollectionBehaviorFullScreenAuxiliary

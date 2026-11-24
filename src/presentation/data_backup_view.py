@@ -98,7 +98,7 @@ class DataBackupView:
             panel = NSSavePanel.savePanel()
             panel.setAllowedFileTypes_(["maengbackup"])
             panel.setNameFieldStringValue_(
-                datetime.now().strftime("MaengMate-%Y%m%d-%H%M%S.maengbackup")
+                datetime.now().strftime("Catch-%Y%m%d-%H%M%S.maengbackup")
             )
             panel.setMessage_("백업을 저장할 위치와 새 파일 이름을 선택하세요.")
             if panel.runModal() != NSModalResponseOK:

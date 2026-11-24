@@ -39,9 +39,7 @@ def main() -> None:
             # 임시 Info.plist를 읽는 실제 frozen 프로필 선택 분기만 모사한다.
             isolated.enter_context(patch.object(sys, "frozen", True, create=True))
             isolated.enter_context(
-                patch.object(
-                    sys, "executable", str(root / "Maeng Mate.app/Contents/MacOS/MaengMate")
-                )
+                patch.object(sys, "executable", str(root / "Catch.app/Contents/MacOS/MaengMate"))
             )
         isolated.enter_context(
             patch("src.bootstrap.instance.application_directory", return_value=root)

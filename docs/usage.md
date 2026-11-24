@@ -21,13 +21,13 @@
 
 ### 목록 접근 발급·확인·폐기
 
-첫 버전의 접근 관리는 소유자 CLI로 제공한다. 대상 앱의 API가 실행 중이어야 한다. **배포 앱의 목록**을 관리할 때는 다음 실행 파일을 사용한다. 앱을 다른 위치에 설치했다면 실행 파일 경로도 그 위치로 바꾼다.
+첫 버전의 접근 관리는 소유자 CLI로 제공한다. 대상 앱의 API가 실행 중이어야 한다. **배포 앱의 목록**을 관리할 때는 다음 실행 파일을 사용한다. 앱을 다른 위치에 설치했다면 실행 파일 경로도 그 위치로 바꾼다. 이전 이름의 버전에서 앱 내 업데이트로 올라온 설치는 번들 이름이 `Maeng Mate.app`일 수 있다.
 
 ```sh
-"/Applications/Maeng Mate.app/Contents/MacOS/MaengMate" settings mcp-lists
-"/Applications/Maeng Mate.app/Contents/MacOS/MaengMate" settings mcp-lists --file list-access.json
-"/Applications/Maeng Mate.app/Contents/MacOS/MaengMate" settings mcp-lists --file list-tokens.json
-"/Applications/Maeng Mate.app/Contents/MacOS/MaengMate" settings mcp-lists --file list-revoke.json
+"/Applications/Catch.app/Contents/MacOS/MaengMate" settings mcp-lists
+"/Applications/Catch.app/Contents/MacOS/MaengMate" settings mcp-lists --file list-access.json
+"/Applications/Catch.app/Contents/MacOS/MaengMate" settings mcp-lists --file list-tokens.json
+"/Applications/Catch.app/Contents/MacOS/MaengMate" settings mcp-lists --file list-revoke.json
 ```
 
 위 명령은 차례로 선택지 조회, 새 발급, 원문 없는 토큰 목록, 폐기다. **개발용 목록**은 해당 소스 프로젝트에서 다음 명령을 사용한다.
@@ -64,7 +64,7 @@ stdio는 AI 클라이언트가 실행하는 명령을 다음처럼 설정한다.
 배포 앱:
 
 ```sh
-MCP_QUERY_MODE=lists LOCAL_API_PORT=43127 "/Applications/Maeng Mate.app/Contents/MacOS/MaengMate" mcp
+MCP_QUERY_MODE=lists LOCAL_API_PORT=43127 "/Applications/Catch.app/Contents/MacOS/MaengMate" mcp
 ```
 
 개발 소스(작업 디렉터리는 해당 프로젝트):
@@ -104,7 +104,7 @@ uv run maeng-mate sync  # Notion 한 번 수집
 
 ## macOS 팝오버
 
-앱을 열면 Dock에 맹메이트가 표시된다. 창을 닫은 뒤 Dock 아이콘을 누르면 홈이 다시 열린다. ⌘Q 또는 Dock의 **종료**는 화면과 메뉴바를 종료하고, 별도 상주 서버의 API와 수집은 계속 실행된다. 종료 후에도 같은 자리에서 열려면 Dock 아이콘의 **옵션 → Dock에 유지**를 선택한다. 사이드바에서 홈과 큰 캘린더를 전환하고, 홈 오른쪽 위 **홈 표시 설정** 아이콘에서 홈에 표시할 카드와 순서를 고른다. 메뉴바 아이콘을 누른 뒤 패널 상단의 집 모양 **홈 열기** 버튼으로도 같은 창을 열 수 있다.
+앱을 열면 Dock에 Catch가 표시된다. 창을 닫은 뒤 Dock 아이콘을 누르면 홈이 다시 열린다. ⌘Q 또는 Dock의 **종료**는 화면과 메뉴바를 종료하고, 별도 상주 서버의 API와 수집은 계속 실행된다. 종료 후에도 같은 자리에서 열려면 Dock 아이콘의 **옵션 → Dock에 유지**를 선택한다. 사이드바에서 홈과 큰 캘린더를 전환하고, 홈 오른쪽 위 **홈 표시 설정** 아이콘에서 홈에 표시할 카드와 순서를 고른다. 메뉴바 아이콘을 누른 뒤 패널 상단의 집 모양 **홈 열기** 버튼으로도 같은 창을 열 수 있다.
 
 macOS 26 기본 유리 효과를 투명 패널 하나에 표시한다. 카드 내부 불투명도는 90%다. 확대·축소는 상단 위치와 목록의 읽던 위치를 유지한다.
 
@@ -123,7 +123,7 @@ uv run --extra menubar maeng-mate menubar
 
 기록 목록은 토요일 파랑·일요일 빨강으로 휴무일도 표시한다. 평일은 야근, 주말은 주말근무 체크박스를 선택하고 저장한다. 체크한 날은 퇴근시간 옆에 같은 문구의 배지가 표시된다.
 
-출근 시·분과 휴가를 한 줄에서 선택하면 퇴근 예정을 계산하고 자동 저장한다. 처음에는 입력한 출근 시각을 기준으로 계산한다. **설정 → 근무 규칙**에서 휴게 구간과 휴가 차감 시간을 지정하면 퇴근 예정에 반영된다. 저장 상태는 퇴근 예정 옆 괄호에 표시한다. 출근·휴가·수정 이력은 SQLite에 남는다. 주말에도 실제 출근·퇴근을 입력할 수 있다. 예정 퇴근과 자동 퇴근 알림은 설정된 근무 요일에 동작한다. 날짜가 바뀌면 새 날짜의 미기록 상태로 전환하며 이전 기록은 보존한다.
+출근 시각과 근무 형태를 한 줄에서 고치면 퇴근 예정을 계산하고 자동 저장한다. 출근 시각은 숫자를 직접 입력하거나 화살표로 조정한다. 처음에는 입력한 출근 시각을 기준으로 계산한다. **설정 → 근무 규칙**에서 휴게 구간과 휴가 차감 시간을 지정하면 퇴근 예정에 반영된다. 아직 기록하지 않은 날의 퇴근 예정은 흐리게 표시하고, 저장에 실패하면 카드 제목 옆에 안내한다. 출근·휴가·수정 이력은 SQLite에 남는다. 주말에도 실제 출근·퇴근을 입력할 수 있다. 예정 퇴근과 자동 퇴근 알림은 설정된 근무 요일에 동작한다. 날짜가 바뀌면 새 날짜의 미기록 상태로 전환하며 이전 기록은 보존한다.
 
 같은 카테고리에 연결한 소스는 카드 하나에 모인다. `화면`에서 카드 순서와 표시 여부를 바꾸고, 항목을 눌러 원본을 연다.
 

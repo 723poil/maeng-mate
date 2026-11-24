@@ -39,7 +39,7 @@ class IdentityActions(NSObject):
 
     def reset_(self, sender: object) -> None:
         """이미지 선택과 이름을 기본값 초안으로 되돌린다."""
-        self.owner.name.setStringValue_("Maeng Mate")
+        self.owner.name.setStringValue_("Catch")
         self.owner._icon = None
         self.owner.dirty = True
         self.owner._preview()

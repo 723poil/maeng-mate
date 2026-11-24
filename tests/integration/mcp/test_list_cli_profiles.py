@@ -46,7 +46,7 @@ async def test_cli_lifecycle_with_temporary_profiles(tmp_path: Path, profile: st
     bootstrap = root / "bootstrap.json"
     bootstrap.write_text(json.dumps({"version": 2, "databasePath": str(database), "port": port}))
     bootstrap.chmod(0o600)
-    contents = root / "Maeng Mate.app/Contents"
+    contents = root / "Catch.app/Contents"
     contents.mkdir(parents=True)
     (contents / "Info.plist").write_bytes(plistlib.dumps({"SUPublicEDKey": "fixture-public-key"}))
     env = {

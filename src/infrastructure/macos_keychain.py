@@ -41,7 +41,7 @@ class MacKeychain:
         *,
         service: str = "local.maeng-mate.credentials",
         account: str = "notion",
-        label: str = "Maeng Mate · Notion",
+        label: str = "Catch · Notion",
     ) -> None:
         """앱 전용 항목과 보호된 잠금 경로를 주입한다."""
         self._lock_path = lock_path

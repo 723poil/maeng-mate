@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.bootstrap.app_settings import application_environment, save_bootstrap
+from src.bootstrap.backup_retention import prune_copies, register_copy
 from src.bootstrap.environment import ConfigError, required
 from src.bootstrap.executable import bundle_contents
 from src.bootstrap.instance import application_directory
@@ -55,6 +56,7 @@ def backup_database(path: str) -> None:
     target = directory / ("pre-install-" + stamp + ".sqlite3")
     try:
         copy_database(source, target)
+        register_copy(target, "pre-install")
     except (OSError, sqlite3.Error):
         raise ConfigError("기존 DB를 백업하지 못했습니다. 설치를 중단합니다.") from None
 
@@ -123,6 +125,7 @@ def record_installation() -> None:
         bundleRoot=str(contents), bundleBuild=(contents / "Resources/build-info.json").read_text()
     )
     write_private_file(manifest, json.dumps(value).encode())
+    prune_copies(support, "pre-install")
 
 
 def launch_action() -> str:

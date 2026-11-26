@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from src.application.data_backup import BackupPreview
 from src.bootstrap.app_settings import application_environment, data_environment
 from src.bootstrap.backup_commands import stage_archive
+from src.bootstrap.backup_retention import prune_copies
 from src.bootstrap.backup_transaction import (
     begin_restore,
     finish_restore,
@@ -111,6 +112,7 @@ def restore_selected(path: Path, preview: BackupPreview) -> None:
                     wait_ready(manager, root, values, expected)
                     ready_to_commit = True
                     finish_restore(home)
+                    prune_copies(home, "pre-restore")
             except Exception:
                 if ready_to_commit and not pending_restore(home):
                     # 확정 표식을 옮긴 이후의 디스크 오류를 롤백 성공으로 보고하지 않는다.

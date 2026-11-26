@@ -26,6 +26,8 @@ HTTP·MCP·메뉴바는 application의 `date_inputs`로 날짜와 월을 검증�
 
 ## 결과와 검증
 
+개인 오늘 조회·업무 검색·상태 목록은 HTTP 응답과 같은 공백 없는 UTF-8 JSON으로 크기를 잰다. 1 MiB까지 허용하고 초과하면 조회 오류를 반환한다. 카드 미리보기도 같은 인코딩으로 배열 괄호와 행 사이 쉼표를 포함해 예산을 계산한다.
+
 일시적인 표시 설정과 조회 요청은 수집·발송·근무 기록을 바꾸지 않는다. `src/application/use_cases/get_my_today.py`, `src/application/use_cases/search_my_tasks.py`, `src/application/calendar.py`, `src/presentation/calendar_views.py`에서 구현한다. 날짜 경계·종류 전환·두 화면의 필터 공유·원본 이동을 확인한다.
 
 ### 같은 원본 표의 복수 소스 설정

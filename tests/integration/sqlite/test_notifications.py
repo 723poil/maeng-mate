@@ -466,6 +466,18 @@ async def test_column_reminders_follow_source_dates_and_survive_restart(db: Data
     await queue.ack(old.id, old.token, "cancelled")
     await publish(None)
     assert await due_times() == {}
+    # 마지막 날에는 만료 자정이 범위를 넘는 당일 규칙만 빠지고 전날 예약은 남는다.
+    await publish("9999-12-30")
+    assert set(await due_times()) == {"전날", "당일"}
+    await publish("9999-12-31")
+    assert await due_times() == {"전날": datetime(9999, 12, 30, 0, 15, tzinfo=UTC)}
+    # 첫날의 전날은 없지만 인접 날짜부터는 전날 예약도 저장할 수 있다.
+    clock.value = datetime(1, 1, 1, tzinfo=UTC).timestamp()
+    await publish("0001-01-01")
+    assert set(await due_times()) == {"당일"}
+    await publish("0001-01-02")
+    assert set(await due_times()) == {"전날", "당일"}
+    clock.value = datetime(2026, 12, 31, tzinfo=UTC).timestamp()
     # 이미 지난 예약을 뒤늦게 추가하지 않는다.
     await publish("2026-12-29")
     assert await due_times() == {} and await queue.claim() == ()

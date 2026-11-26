@@ -315,13 +315,12 @@ def record_field_alerts(
             if rule.schedule is not None:
                 # 처음 본 미래 시각과 누락 후 다시 나타난 미래 시각도 한 번만 예약한다.
                 due = item.alert_due_at.get(rule.id)
-                if due is not None and (
-                    due.timestamp() >= now
-                    or (
-                        rule.item_filter == "meeting"
-                        and rule.schedule.mode == "before_start"
-                        and rule.schedule.expires_at(due) > observed
-                    )
+                if due is None or (expiry := rule.schedule.expires_at(due)) is None:
+                    continue
+                if due.timestamp() >= now or (
+                    rule.item_filter == "meeting"
+                    and rule.schedule.mode == "before_start"
+                    and expiry > observed
                 ):
                     enqueue_field_alert(
                         connection,
@@ -331,7 +330,7 @@ def record_field_alerts(
                         rule,
                         digest,
                         due.timestamp(),
-                        rule.schedule.expires_at(due).timestamp(),
+                        expiry.timestamp(),
                         scheduled=True,
                     )
             elif (

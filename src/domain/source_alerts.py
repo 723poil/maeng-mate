@@ -75,29 +75,37 @@ class AlertSchedule:
 
     def due_at(self, start: str) -> datetime | None:
         """날짜만 있는 항목에는 시작 시각을 추정하지 않는다."""
-        seoul = ZoneInfo("Asia/Seoul")
-        if "T" in start:
-            instant = datetime.fromisoformat(start)
-            if instant.tzinfo is None:
-                raise ValueError("시간대가 포함된 시작 시각이 필요합니다.")
-            if self.mode == "before_start":
-                return instant.astimezone(UTC) - timedelta(minutes=int(self.value))
-            day = instant.astimezone(seoul).date()
-        else:
-            if self.mode == "before_start":
-                return None
-            day = date.fromisoformat(start)
-        if self.mode == "previous_day":
-            day -= timedelta(days=1)
-        return datetime.combine(day, time.fromisoformat(self.value), seoul).astimezone(UTC)
+        # 유효한 원본도 시간대 변환이나 사전 간격 때문에 예약 범위를 벗어날 수 있다.
+        try:
+            seoul = ZoneInfo("Asia/Seoul")
+            if "T" in start:
+                instant = datetime.fromisoformat(start)
+                if instant.tzinfo is None:
+                    raise ValueError("시간대가 포함된 시작 시각이 필요합니다.")
+                if self.mode == "before_start":
+                    return instant.astimezone(UTC) - timedelta(minutes=int(self.value))
+                day = instant.astimezone(seoul).date()
+            else:
+                if self.mode == "before_start":
+                    return None
+                day = date.fromisoformat(start)
+            if self.mode == "previous_day":
+                day -= timedelta(days=1)
+            return datetime.combine(day, time.fromisoformat(self.value), seoul).astimezone(UTC)
+        except OverflowError:
+            return None
 
-    def expires_at(self, due: datetime) -> datetime:
+    def expires_at(self, due: datetime) -> datetime | None:
         """날짜 알림은 서울 자정까지, 사전 알림은 시작 전까지 전달 기회를 유지한다."""
-        if self.mode == "before_start":
-            return due + timedelta(minutes=max(1, int(self.value)))
-        seoul = ZoneInfo("Asia/Seoul")
-        following_day = due.astimezone(seoul).date() + timedelta(days=1)
-        return datetime.combine(following_day, time.min, seoul)
+        # 만료 경계를 표현할 수 없으면 기한을 임의로 줄이거나 무기한 발송하지 않는다.
+        try:
+            if self.mode == "before_start":
+                return due + timedelta(minutes=max(1, int(self.value)))
+            seoul = ZoneInfo("Asia/Seoul")
+            following_day = due.astimezone(seoul).date() + timedelta(days=1)
+            return datetime.combine(following_day, time.min, seoul)
+        except OverflowError:
+            return None
 
 
 @dataclass(frozen=True)

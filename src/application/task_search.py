@@ -103,11 +103,12 @@ class TaskSearch:
         ):
             raise TaskSearchInputError()
         section = payload.get("section", "all")
+        # 검색이 반환한 다음 위치는 전체 일치 건수와 관계없이 다시 요청할 수 있어야 한다.
         if (
             type(limit) is not int
             or not 1 <= limit <= 100
             or type(offset) is not int
-            or not 0 <= offset <= 100000
+            or offset < 0
             or section not in ("tasks", "qa", "all")
             or (start is not None and end is not None and start > end)
         ):

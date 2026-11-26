@@ -3,9 +3,10 @@
 from src.application.work_settings import Settings
 from src.bootstrap.environment import AppEnvironment
 from src.bootstrap.notification_channels import CHANNELS
+from src.domain.field_alerts import field_alert_scopes
+from src.domain.source_fingerprints import source_fingerprint
 from src.domain.work_dates import canonical_identity
 from src.infrastructure.sqlite.connection import Database
-from src.infrastructure.sqlite.field_alerts import field_alert_scopes
 from src.infrastructure.sqlite.legacy_delivery import legacy_bindings
 from src.infrastructure.sqlite.notification_keys import (
     failure_rule_scope,
@@ -16,7 +17,6 @@ from src.infrastructure.sqlite.notification_keys import (
 )
 from src.infrastructure.sqlite.notifications import SQLiteNotifications
 from src.infrastructure.sqlite.rule_delivery import category_rules
-from src.infrastructure.sqlite.serialization import source_fingerprint
 
 
 def build_notifications(

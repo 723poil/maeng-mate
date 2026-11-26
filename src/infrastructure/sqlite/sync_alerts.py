@@ -6,12 +6,12 @@ import sqlite3
 from src.application.models import SyncRun
 from src.application.work_settings import parse_settings
 from src.domain.source_alerts import SourceAlertRule
+from src.domain.source_fingerprints import source_fingerprint
 from src.infrastructure.sqlite.notification_keys import (
     failure_rule_scope,
     notification_key,
     sync_error_scope,
 )
-from src.infrastructure.sqlite.serialization import source_fingerprint
 
 
 def saved_failure_rules(

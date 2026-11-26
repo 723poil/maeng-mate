@@ -9,6 +9,7 @@ from src.application.models import SyncRun
 from src.application.notion_links import notion_link
 from src.application.work_settings import Settings, parse_settings
 from src.domain.event_classification import EVENT_CLASSIFICATION
+from src.domain.field_alerts import field_alert_scopes, includes_item
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
 from src.domain.notification_timing import calendar_alert_expiry
 from src.domain.source_alerts import (
@@ -19,44 +20,16 @@ from src.domain.source_alerts import (
     alert_body_token,
     alert_value_key,
 )
-from src.domain.work_dates import canonical_identity, seoul_clock, seoul_datetime
-from src.infrastructure.sqlite.decoding import decode_item
-from src.infrastructure.sqlite.notification_deliveries import logical_completed
-from src.infrastructure.sqlite.notification_keys import failure_rule_scope, notification_key
-from src.infrastructure.sqlite.serialization import (
+from src.domain.source_fingerprints import (
     alert_scope_fingerprint,
     fingerprint,
     source_fingerprint,
 )
+from src.domain.work_dates import canonical_identity, seoul_clock, seoul_datetime
+from src.infrastructure.sqlite.decoding import decode_item
+from src.infrastructure.sqlite.notification_deliveries import logical_completed
+from src.infrastructure.sqlite.notification_keys import failure_rule_scope, notification_key
 from src.infrastructure.sqlite.task_changes import notification_body
-
-
-def field_alert_scopes(source: SourceMapping, user: str | None) -> dict[str, SourceAlertRule]:
-    """규칙, 원본 매핑, 본인 범위를 한 발송 범위로 묶는다."""
-    identity = canonical_identity(user) if user else None
-    mapping = source_fingerprint(source)
-    return {
-        fingerprint(
-            (
-                source.source_id,
-                mapping,
-                identity if source.has_person_scope or rule.member == "self" else None,
-                rule.id,
-                rule.column_id,
-                rule.comparison_kind,
-                rule.target,
-                *((rule.member, rule.item_filter) if rule.member or rule.item_filter else ()),
-                *((rule.schedule.mode, rule.schedule.value) if rule.schedule else ()),
-                *((digest,) if (digest := alert_scope_fingerprint(rule)) else ()),
-            )
-        ): rule
-        for rule in source.alert_rules
-        if rule.enabled
-        and (
-            user is not None
-            or (rule.member != "self" and (rule.member is not None or not source.has_person_scope))
-        )
-    }
 
 
 def saved_rule_bindings(
@@ -130,22 +103,6 @@ def currently_saved_scopes(
     if current is None:
         return {}
     return {key: rule for key, rule in field_alert_scopes(current, user).items() if key in running}
-
-
-def includes_item(source: SourceMapping, item: WorkItem, user: str | None) -> bool:
-    """기존 본인 범위를 따라 취소 항목은 알림 기준에서 제외한다."""
-    if isinstance(item, CalendarEvent) and item.cancelled:
-        return False
-    if not source.has_person_scope:
-        return True
-    people = (
-        item.assignee_ids
-        if isinstance(item, Task)
-        else item.participant_ids
-        if isinstance(item, CalendarEvent)
-        else item.person_ids
-    )
-    return user is not None and canonical_identity(user) in map(canonical_identity, people)
 
 
 def seed_converted_baselines(

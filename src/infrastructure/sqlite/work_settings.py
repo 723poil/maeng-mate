@@ -25,13 +25,13 @@ from src.domain.preferences import (
     NOTIFICATION_TYPES,
 )
 from src.domain.source_display import SOURCE_CHANNELS
+from src.domain.source_fingerprints import source_fingerprint
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.field_alerts import retire_changed_rules
 from src.infrastructure.sqlite.legacy_delivery import legacy_bindings, retire_legacy_deliveries
 from src.infrastructure.sqlite.preference_document import read_preferences, write_preferences
 from src.infrastructure.sqlite.preferences import revoke_muted_deliveries
 from src.infrastructure.sqlite.rule_delivery import category_rules, channel_messages
-from src.infrastructure.sqlite.serialization import source_fingerprint
 from src.infrastructure.sqlite.work_reader import snapshot_header, source_versions
 
 _OBSERVED_CHOICES_QUERY = """

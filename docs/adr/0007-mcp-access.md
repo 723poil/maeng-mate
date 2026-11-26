@@ -36,4 +36,6 @@ AI 앱에서 본인의 업무와 오늘 근무를 조회한다. AI 연결의 발
 
 구현은 `application/mcp_lists.py`, `presentation/mcp_lists.py`, `mcp_lists_http.py`, `infrastructure/sqlite/mcp_lists.py`와 부트스트랩에 둔다. 검증은 임시 SQLite·가상 원천·실제 개발 API 프로세스에서 두 MCP 전송, 본인/담당자 연결 부재, 원형 값 보존, 허용 범위, 폐기, 오류 전달과 조회 전후 업무 저장 상태를 확인한다. 운영 계정 검증과 구별한다. 일반 일정·휴가·출퇴근, 임의 칼럼 검색 연산자, 네이티브 권한 편집기는 이 첫 범위에 포함하지 않는다.
 
+개인 업무 검색 도구 `search_my_tasks`는 SDK가 문자열을 JSON으로 다시 해석하기 전에 선언된 필드와 JSON 타입을 검사한다. HTTP와 같은 `TaskSearch.parse`가 범위와 기본값을 적용하며 잘못된 입력은 조회 포트 호출 전에 거부한다. 문자열 검색어 `"null"`도 그대로 보존한다.
+
 AI에서 조회해도 수집이나 알림이 시작되지 않는다. `src/presentation/mcp.py`, `src/application/mcp_access.py`, `src/bootstrap/wiring.py`, `src/infrastructure/ai_skills.py`에서 구현한다. 만료·폐기·관리 경로 차단, stdio 호환과 스킬 재설치를 확인한다.

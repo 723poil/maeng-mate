@@ -26,11 +26,11 @@ from AppKit import (
 )
 from Foundation import NSObject
 
-from src.application.source_settings import SourceSettingsClient, SourceSettingsError
-from src.application.work_settings import (
+from src.application.category_settings_codec import (
     category_configuration_payload,
     parse_category_configuration,
 )
+from src.application.source_settings import SourceSettingsClient, SourceSettingsError
 from src.domain.category_configuration import (
     CATEGORY_COLUMN_TYPES,
     CategoryAlert,

@@ -20,6 +20,7 @@ from AppKit import (
 )
 from Foundation import NSObject
 
+from src.application.category_settings_codec import category_bindings
 from src.application.source_edit import (
     EVENT_CHOICES,
     SourceEdit,
@@ -40,7 +41,6 @@ from src.application.source_settings import (
     SourceSettingsState,
     SourceTable,
 )
-from src.application.work_settings import category_bindings
 from src.domain.category_configuration import ColumnBinding
 from src.domain.display_columns import DISPLAY_COLUMN_TYPES
 from src.domain.models import SourceKind

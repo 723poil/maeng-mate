@@ -5,15 +5,13 @@ from dataclasses import replace
 from uuid import UUID, uuid5
 
 from src.application.category_column_types import LEGACY_CATEGORY_TYPES
-from src.application.work_settings import (
-    Settings,
+from src.application.category_settings_codec import (
     canonical_sources,
     category_bindings,
     category_documents,
     column_bindings_payload,
-    parse_settings,
-    source_documents,
 )
+from src.application.work_settings import Settings, parse_settings, source_documents
 from src.domain.category_configuration import (
     CategoryAlert,
     CategoryColumn,

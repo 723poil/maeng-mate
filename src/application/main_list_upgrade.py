@@ -3,12 +3,9 @@
 from dataclasses import replace
 from uuid import UUID
 
-from src.application.work_settings import (
-    category_documents,
-    main_list_payload,
-    parse_settings,
-    source_documents,
-)
+from src.application.category_settings_codec import category_documents
+from src.application.list_settings_codec import main_list_payload
+from src.application.work_settings import parse_settings, source_documents
 from src.domain.main_list import STATUS_GROUP_NAMES, ListFilter, ListSort, MainListRules
 from src.domain.models import SourceMapping
 from src.domain.task_display import QATaskDisplayPolicy, StatusTaskDisplayPolicy

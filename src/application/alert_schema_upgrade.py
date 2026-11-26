@@ -4,14 +4,13 @@ from dataclasses import replace
 from urllib.parse import unquote
 from uuid import UUID, uuid5
 
-from src.application.work_settings import (
+from src.application.category_settings_codec import (
     category_bindings,
     category_documents,
     inherited_options,
-    notification_events,
-    parse_settings,
-    source_documents,
 )
+from src.application.source_settings_codec import notification_events
+from src.application.work_settings import parse_settings, source_documents
 from src.domain.category_configuration import CategoryAlert, CategoryConfiguration
 from src.domain.category_event_alerts import EVENT_ALERT_TRIGGERS, CategoryEventAlert
 from src.domain.models import SourceMapping

@@ -1,6 +1,6 @@
 [project]
 name = "maeng-mate"
-version = "0.13.1"
+version = "0.13.2"
 description = "개인 PC 상주형 업무 비서"
 license = "MIT"
 license-files = ["LICENSE"]

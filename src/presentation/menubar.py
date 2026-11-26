@@ -65,7 +65,6 @@ from src.application.source_settings import SourceSettingsClient
 from src.application.work_records import WorkRecordsClient
 from src.application.work_rules_settings import WorkRulesClient
 from src.application.workday import LEAVE_LABELS, SELECTABLE_LEAVES
-from src.domain.calendar import CALENDAR_KINDS, CalendarPreferences
 from src.domain.daily_work import (
     OVERNIGHT_DEPARTURE_REASON,
     DepartureResult,
@@ -77,11 +76,10 @@ from src.domain.preferences import SECTIONS, DepartureDisplay, Preferences, Sect
 from src.domain.source_display import SourceDisplay, display_groups
 from src.domain.work_dates import SEOUL
 from src.presentation.calendar_controller import CalendarController
-from src.presentation.calendar_controls import CalendarFilterChoice, calendar_filter_choices
+from src.presentation.calendar_controls import calendar_filter_choices
+from src.presentation.calendar_screens import CalendarScreens
 from src.presentation.calendar_views import (
     COMPACT_CALENDAR_HEIGHT,
-    CalendarPage,
-    CompactCalendarView,
 )
 from src.presentation.desktop_controller import DesktopController
 from src.presentation.entry_section import EntrySection
@@ -310,7 +308,6 @@ class MenuBarApp:
             SettingsEditor(work_rules_client, restart_services) if work_rules_client else None
         )
         self._source_display: tuple[SourceDisplay, ...] = ()
-        self._calendar_choices = calendar_filter_choices(self._source_display)
         self._source_groups: dict[str, tuple[SourceDisplay, ...]] = {}
         self._section_order: tuple[SectionPreference, ...] = ()
         self._custom_sections: dict[str, EntrySection] = {}
@@ -340,13 +337,17 @@ class MenuBarApp:
             else None
         )
         self._records_window: WorkRecordsWindow | None = None
-        self._calendar_controller = (
+        self._main_window: MainWindow | None = None
+        self._calendars = CalendarScreens(
             CalendarController(calendar_client, notify_loaded=self._notify_calendar_loaded)
             if calendar_client
-            else None
+            else None,
+            self._preferences_controller,
+            self._compact_calendar_visible,
+            lambda: self._main_window,
+            self.open_calendar,
+            self._open_notion,
         )
-        self._main_window: MainWindow | None = None
-        self._calendar_view: CompactCalendarView | None = None
         self._today = today
         self._display_day = today()
         self._preview = preview
@@ -432,7 +433,7 @@ class MenuBarApp:
             NSImage.imageWithSystemSymbolName_accessibilityDescription_("calendar", "캘린더 열기")
         )
         calendar_button.setToolTip_("캘린더 열기")
-        calendar_button.setEnabled_(self._calendar_controller is not None)
+        calendar_button.setEnabled_(self._calendars.controller is not None)
         self._refresh_button = button(
             view, "", POPOVER_WIDTH - 74, 614, 26, self._callbacks, "refresh:", bordered=False
         )
@@ -538,16 +539,8 @@ class MenuBarApp:
         # 정한 날도 같은 이름으로 보여야 해서 항목을 지우지 않고 숨겨 목록 위치를 유지한다.
         self.leave.itemAtIndex_(SELECTABLE_LEAVES.index(LeaveType.FULL)).setHidden_(True)
         self._work_frames = [(control, control.frame()) for control in view.subviews()]
-        if self._calendar_controller is not None:
-            self._calendar_view = CompactCalendarView(
-                view,
-                POPOVER_WIDTH,
-                self._calendar_controller,
-                self._calendar_preferences,
-                self._toggle_calendar_filter,
-                self.open_calendar,
-                choices=self._calendar_filter_choices,
-            )
+        if self._calendars.controller is not None:
+            self._calendars.compact = self._calendars.compact_view(view, POPOVER_WIDTH, inset=16)
         self._empty_view = label(
             view, "설정 → 화면에서 표시할 카드를 선택하세요.", 26, 20, 460, secondary=True
         )
@@ -569,7 +562,7 @@ class MenuBarApp:
             121
             + (112 if "work" in visible else 0)
             + self._section_height * len(category_keys)
-            + (COMPACT_CALENDAR_HEIGHT if "calendar" in visible and self._calendar_view else 0)
+            + (COMPACT_CALENDAR_HEIGHT if "calendar" in visible and self._calendars.compact else 0)
             + max(0, len(visible) - 1) * 12,
         )
         target = {key: 144.0 if key in self._custom_expanded else 0.0 for key in category_keys}
@@ -650,10 +643,10 @@ class MenuBarApp:
                 if item.visible:
                     top -= 124
             elif item.key == "calendar":
-                if self._calendar_view is not None:
-                    self._calendar_view.set_hidden(not item.visible)
+                if self._calendars.compact is not None:
+                    self._calendars.compact.set_hidden(not item.visible)
                     if item.visible:
-                        self._calendar_view.resize(top - COMPACT_CALENDAR_HEIGHT)
+                        self._calendars.compact.resize(top - COMPACT_CALENDAR_HEIGHT)
                         top -= COMPACT_CALENDAR_HEIGHT + 12
             else:
                 section = self._custom_sections[item.key]
@@ -741,7 +734,7 @@ class MenuBarApp:
             self._resize_lists()
             self._panel.show(self._status_item.button())
             self._next_refresh = 0
-            self._render_calendars()
+            self._calendars.render()
 
     def _selection(self) -> DayUpdate | None:
         """처음 읽은 날짜·버전과 현재 선택값을 결합한다."""
@@ -894,10 +887,7 @@ class MenuBarApp:
             self._forecast()
         if self._panel_requested and self._panel_requested():
             self.open_main()
-        if self._calendar_controller is not None:
-            visible = self._compact_calendar_visible() or (self._main_calendar_visible())
-            self._calendar_controller.tick(visible=visible)
-            self._render_calendars()
+        self._calendars.tick()
         if self._records_controller is not None:
             self._records_controller.tick()
             if self._records_window is not None and self._records_window.is_visible():
@@ -1036,9 +1026,8 @@ class MenuBarApp:
             self._next_refresh = time.monotonic() + 15
             self._render_activity()
         # 작은 달력에는 따로 새로고침 버튼을 두지 않으므로 패널 새로고침이 달력도 다시 읽는다.
-        if manual and self._calendar_controller is not None and not self._calendar_controller.busy:
-            self._calendar_controller.refresh()
-            self._render_calendars()
+        if manual:
+            self._calendars.refresh()
 
     def change_interval(self) -> None:
         """기록 저장과 겹치지 않게 새 주기를 저장하고 즉시 반응을 보인다."""
@@ -1238,7 +1227,7 @@ class MenuBarApp:
     def _apply_source_display(self, display: tuple[SourceDisplay, ...]) -> None:
         """확정된 카테고리 카드만 배치에 추가한다."""
         self._source_display = display
-        self._calendar_choices = calendar_filter_choices(display)
+        self._calendars.choices = calendar_filter_choices(display)
         groups = display_groups(display)
         self._source_groups = groups
         # 숨김 선택은 뷰를 보존하고, 연결이 사라진 카드는 네이티브 컨트롤까지 제거한다.
@@ -1265,7 +1254,7 @@ class MenuBarApp:
         self._rendered_base_height = -1
         self._resize_lists()
         self._render()
-        self._render_calendars()
+        self._calendars.render()
 
     def open_source_board(self, index: int) -> None:
         """현재 카테고리에 유일한 원본 주소를 연다."""
@@ -1332,50 +1321,8 @@ class MenuBarApp:
 
     def _close_calendar_filters(self) -> None:
         """메인 창이 닫힐 때 필터 선택창을 화면에 남기지 않는다."""
-        if self._calendar_view is not None:
-            self._calendar_view.filter_popover.hide()
-
-    def _calendar_preferences(self) -> CalendarPreferences:
-        """저장 중에도 두 달력에서 최신 표시 선택을 사용한다."""
-        value = self._preferences_controller.value
-        return value.calendar if value is not None else CalendarPreferences()
-
-    def _calendar_filter_choices(self) -> tuple[CalendarFilterChoice, ...]:
-        """두 달력에 같은 카테고리 선택지를 제공한다."""
-        return self._calendar_choices
-
-    def _toggle_calendar_filter(self, key: str, visible: bool) -> None:
-        """카테고리와 출근 기록 표시만 저장한다."""
-        value = self._preferences_controller.value
-        if value is None or key not in {item.key for item in self._calendar_filter_choices()}:
-            return
-        preferences = value.calendar
-        if key == "attendance":
-            selected = set(preferences.visible_kinds)
-            if visible:
-                selected.add("attendance")
-            else:
-                selected.discard("attendance")
-            preferences = replace(
-                preferences,
-                visible_kinds=tuple(item for item in CALENDAR_KINDS if item in selected),
-            )
-        else:
-            hidden = set(preferences.hidden_categories)
-            shown = set(preferences.shown_categories)
-            if visible:
-                hidden.discard(key)
-                shown.add(key)
-            else:
-                hidden.add(key)
-                shown.discard(key)
-            preferences = replace(
-                preferences,
-                hidden_categories=tuple(sorted(hidden)),
-                shown_categories=tuple(sorted(shown)),
-            )
-        self._preferences_controller.change(replace(value, calendar=preferences))
-        self._render_calendars()
+        if self._calendars.compact is not None:
+            self._calendars.compact.filter_popover.hide()
 
     def _notify_calendar_loaded(self) -> None:
         """백그라운드 조회 결과는 AppKit 메인 스레드에서만 표시한다."""
@@ -1385,8 +1332,7 @@ class MenuBarApp:
 
     def calendar_loaded(self) -> None:
         """종료되거나 이미 반영된 월 응답은 다시 그리지 않는다."""
-        if self._calendar_controller is not None and self._calendar_controller.apply_completed():
-            self._render_calendars()
+        self._calendars.loaded()
 
     def _compact_calendar_visible(self) -> bool:
         """메뉴바 패널과 달력 카드가 동시에 표시될 때만 격자를 그린다."""
@@ -1394,66 +1340,20 @@ class MenuBarApp:
             item.key == "calendar" and item.visible for item in self._preferences.sections
         )
 
-    def _render_calendars(self) -> None:
-        """필터 입력과 조회 진행을 두 화면에서 즉시 반영한다."""
-        enabled = (
-            self._preferences_controller.value is not None
-            and not self._preferences_controller.loading
-            and self._preferences_controller.error is None
-        )
-        if self._calendar_view is not None and self._compact_calendar_visible():
-            self._calendar_view.render(enabled)
-        window = self._main_window
-        if window is not None and window.window.isVisible():
-            if window.calendar and window.page:
-                window.page.render(enabled)
-            elif not window.calendar and window.compact:
-                window.compact.render(enabled)
-
-    def _main_calendar_visible(self) -> bool:
-        """홈 달력이나 월간 화면이 실제로 보이는 동안만 자동 조회한다."""
-        window = self._main_window
-        return bool(window and window.window.isVisible() and (window.calendar or window.compact))
-
     def open_main(self, *, calendar: bool = False) -> None:
         """명시적인 실행 요청에서만 유리 창을 생성하고 앞으로 가져온다."""
         self._panel.hide()
         if self._main_window is None:
-            controller = self._calendar_controller
-
-            def month(parent: NSView) -> CalendarPage:
-                """메뉴바와 같은 월 조회 및 필터를 연결한다."""
-                assert controller is not None
-                return CalendarPage(
-                    parent,
-                    controller,
-                    self._calendar_preferences,
-                    self._toggle_calendar_filter,
-                    self._open_notion,
-                    choices=self._calendar_filter_choices,
-                )
-
-            def compact(parent: NSView, width: float) -> CompactCalendarView:
-                """선택된 홈 달력 카드는 메뉴바와 같은 컨트롤을 쓴다."""
-                assert controller is not None
-                return CompactCalendarView(
-                    parent,
-                    width,
-                    controller,
-                    self._calendar_preferences,
-                    self._toggle_calendar_filter,
-                    self.open_calendar,
-                    inset=0,
-                    choices=self._calendar_filter_choices,
-                )
-
+            calendars = self._calendars
             self._main_window = MainWindow(
-                self._callbacks, month if controller else None, compact if controller else None
+                self._callbacks,
+                calendars.month_view if calendars.controller else None,
+                calendars.compact_view if calendars.controller else None,
             )
         self._render_home()
         self._main_window.show(calendar)
         self._next_refresh = 0
-        self._render_calendars()
+        self._calendars.render()
 
     def _render_home(self) -> None:
         """확정 설정과 현재 스냅샷에서 홈에 선택된 카드만 전달한다."""
@@ -1475,7 +1375,7 @@ class MenuBarApp:
                         )
                     )
                 elif key == "calendar":
-                    if self._calendar_controller:
+                    if self._calendars.controller:
                         cards.append(HomeCard(key, "캘린더"))
                 else:
                     title = self._source_groups[key][0].title
@@ -1493,13 +1393,12 @@ class MenuBarApp:
 
     def open_calendar(self) -> None:
         """같은 메인 창에서 선택 날짜의 큰 달력을 연다."""
-        if self._calendar_controller is not None:
+        if self._calendars.controller is not None:
             self.open_main(calendar=True)
 
     def _records_saved(self, day: date) -> None:
         """오늘 정정은 다음 조회로 반영하고 메뉴바의 미저장 입력은 보존한다."""
-        if self._calendar_controller is not None:
-            self._calendar_controller.invalidate()
+        self._calendars.records_saved()
         if day.isoformat() == self._today():
             self._next_refresh = 0
 
@@ -1577,8 +1476,8 @@ class MenuBarApp:
         self._controller.close()
         if self._main_window is not None:
             self._main_window.window.close()
-        if self._calendar_controller is not None:
-            self._calendar_controller.close()
+        if self._calendars.controller is not None:
+            self._calendars.controller.close()
         if self._records_window is not None:
             self._records_window.close()
         if self._records_controller is not None:

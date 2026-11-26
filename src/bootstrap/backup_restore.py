@@ -28,7 +28,7 @@ from src.bootstrap.instance import (
     project_root,
     stop_owned_process,
 )
-from src.bootstrap.service import LABELS, preflight, start_apps, wait_ready
+from src.bootstrap.service_startup import LABELS, preflight, start_apps, wait_ready
 from src.infrastructure.macos_launchd import MacLaunchd
 from src.infrastructure.sqlite.restore_notifications import prepare_restored_notifications
 

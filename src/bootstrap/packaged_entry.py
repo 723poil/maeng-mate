@@ -18,10 +18,10 @@ def main() -> None:
         command_main()
         return
     from src.bootstrap.environment import ConfigError
-    from src.bootstrap.packaged_app import launch
+    from src.bootstrap.service import run_service
 
     try:
-        launch()
+        run_service("finder")
     except Exception as error:
         from AppKit import NSAlert, NSApplication, NSApplicationActivationPolicyAccessory
 

@@ -1,6 +1,6 @@
 """실제 Cocoa 팝오버에서 사용하는 메서드의 타입 계약이다."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Protocol, Self
 
 from Foundation import NSURL, NSData, NSDate, NSIndexSet, NSLocale, NSObject, NSTimeZone
@@ -418,6 +418,9 @@ class NSWorkspace(NSObject):
     """움직임 줄이기 접근성 설정을 읽는다."""
     @classmethod
     def sharedWorkspace(cls) -> NSWorkspace: ...
+    def URLsForApplicationsWithBundleIdentifier_(self, identifier: str) -> Sequence[NSURL]:
+        """번들 식별자로 등록된 앱 경로를 조회한다."""
+        ...
     def accessibilityDisplayShouldReduceMotion(self) -> bool: ...
     def openURL_(self, url: NSURL) -> bool: ...
 

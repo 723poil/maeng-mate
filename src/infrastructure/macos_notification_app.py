@@ -9,6 +9,8 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from AppKit import NSWorkspace
+
 from src.application.notification_identity import identity_payload, validate_identity
 from src.application.notifications import NotificationJob
 from src.application.notion_links import notion_link
@@ -33,12 +35,33 @@ class MacNotificationApp:
 
     def _register(self) -> None:
         """로컬 서명을 갱신하고 같은 식별자의 앱 정보만 다시 등록한다."""
-        for command in (
+        result = subprocess.run(
             ["/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(self._bundle)],
-            [LSREGISTER, "-f", str(self._bundle)],
-        ):
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode:
+            raise ValueError("알림 앱에 서명하지 못했습니다.")
+        self._register_sender()
+
+    def _register_sender(self) -> None:
+        """현재 발신자를 등록하고 같은 식별자의 구형 배포 빌드 등록만 해제한다."""
+        workspace = NSWorkspace.sharedWorkspace()
+        commands = [[LSREGISTER, "-f", str(self._bundle)]]
+        # 구형 패키지의 동봉 앱과 빌드 중간 산출물은 설치용 원본이다.
+        # 다른 프로필·임의 설치 경로와 앱 파일은 보존한다.
+        for url in workspace.URLsForApplicationsWithBundleIdentifier_(self._identifier):
+            path = Path(url.path())
+            if path == self._bundle or path.name != "NotificationAgent.app":
+                continue
+            if path.parts[-4:-1] == ("Maeng Mate.app", "Contents", "Resources") or path.parts[
+                -4:-1
+            ] == ("build", "distribution", "notification-dist"):
+                commands.append([LSREGISTER, "-u", str(path)])
+        for command in commands:
             result = subprocess.run(command, capture_output=True, timeout=30, check=False)
-            if result.returncode != 0:
+            if result.returncode:
                 raise ValueError("알림 앱을 등록하지 못했습니다.")
 
     def apply(self, identity: NotificationIdentity, revision: int = 0) -> None:
@@ -82,6 +105,8 @@ class MacNotificationApp:
                 and marker.is_file()
                 and marker.read_text() == fingerprint
             ):
+                # 업데이트 전 등록이 남아 있으면 파일이 같아도 OS가 예전 앱을 선택한다.
+                self._register_sender()
                 self._active = identity
                 self._revision = revision
                 return

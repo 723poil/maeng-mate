@@ -1,11 +1,11 @@
 """상태·제목·서울 날짜 마감 범위의 순수 검색 조건이다."""
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from unicodedata import normalize
 
 from src.domain.models import Task
-from src.domain.work_dates import SEOUL
+from src.domain.work_dates import deadline_basis
 
 
 @dataclass(frozen=True)
@@ -37,12 +37,7 @@ class TaskCriteria:
             return True
         if task.due is None:
             return False
-        deadline = task.due.end or task.due.start
-        day = (
-            date.fromisoformat(deadline)
-            if task.due.kind == "date"
-            else datetime.fromisoformat(deadline).astimezone(SEOUL).date()
-        )
+        day, _ = deadline_basis(task.due)
         return (self.due_from is None or day >= self.due_from) and (
             self.due_to is None or day <= self.due_to
         )

@@ -17,7 +17,13 @@ from src.domain.display_columns import DisplayColumn, labelled_values
 from src.domain.main_list import ListSort
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
 from src.domain.policies import RelevancePolicy
-from src.domain.work_dates import SEOUL, canonical_identity, deadline_flags, meeting_on_day
+from src.domain.work_dates import (
+    SEOUL,
+    canonical_identity,
+    deadline_basis,
+    deadline_flags,
+    meeting_on_day,
+)
 
 
 def task_view(
@@ -172,12 +178,7 @@ def main_list_values(
                         values["completedQaAge"] = str((day - edited.astimezone(SEOUL).date()).days)
         elif completed and item.due is not None and "completedTaskAge" in fields:
             # 기간 기한은 마지막 날, 시각 기한은 서울 현지 날짜를 기준으로 센다.
-            deadline = item.due.end or item.due.start
-            deadline_day = (
-                date.fromisoformat(deadline)
-                if item.due.kind == "date"
-                else datetime.fromisoformat(deadline).astimezone(SEOUL).date()
-            )
+            deadline_day, _ = deadline_basis(item.due)
             values["completedTaskAge"] = str((day - deadline_day).days)
     return values
 

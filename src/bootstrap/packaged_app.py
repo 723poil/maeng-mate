@@ -161,10 +161,3 @@ def launch_action() -> str:
     except (OSError, ValueError):
         pass
     return action
-
-
-def launch() -> None:
-    """Finder 실행 요청을 직렬화하고 준비된 메뉴바에 패널 열기를 전달한다."""
-    from src.bootstrap.service import run_service
-
-    run_service("finder")

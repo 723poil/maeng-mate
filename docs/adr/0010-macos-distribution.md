@@ -78,4 +78,6 @@
 
 ## 결과와 검증
 
+Finder 진입점은 서비스 관리의 대기 잠금 안에서 설치 기록을 판독하고 준비가 끝나면 패널을 요청한다. 서비스 관리와 복원 도우미는 설정 검사·역할별 기동·인증 API 및 PID 확인을 service_startup.py에서 공유한다. 시작 전 복구는 서비스 관리자가, 복원 후 시험 기동과 확정은 복원 도우미가 각 잠금 안에서 조율한다.
+
 설치 후 Python·uv·mise 없이 실행한다. `src/bootstrap/service.py`, `packaged_app.py`, `packaging/app.spec`, `packaging/build.py`에서 구현한다. 배포 점검은 동봉 실행 파일의 `--check`와 DMG 읽기 전용 탑재를 사용한다. 임시 DB와 루프백 API·MCP·알림 번들을 점검한다. 스킬은 임시 홈에 Codex와 Claude Code 양쪽으로 설치한 뒤 지침과 UI 메타데이터가 동봉 파일과 일치하는지 확인한다.

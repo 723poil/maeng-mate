@@ -23,6 +23,7 @@ class CalendarController:
         self._target_day: date | None = None
         self._closed = False
         self._last_read = 0.0
+        self._invalidated = False
         self.data: CalendarMonth | None = None
         self._indexed_month: CalendarMonth | None = None
         self._indexed_preferences: CalendarPreferences | None = None
@@ -43,6 +44,8 @@ class CalendarController:
         self._target_day = target_day
         self.error = None
         self._pending = self._executor.submit(self._client.month, month)
+        # 조회 시작 전의 정정만 이번 요청에 포함된다. 이후 정정은 완료 뒤에도 남긴다.
+        self._invalidated = False
         if self._notify_loaded is not None:
             self._pending.add_done_callback(self._notify_completion)
 
@@ -95,7 +98,7 @@ class CalendarController:
 
     def invalidate(self) -> None:
         """근무 정정 뒤 보이는 달력의 다음 읽기를 앞당긴다."""
-        self._last_read = 0
+        self._invalidated = True
 
     def apply_completed(self) -> bool:
         """완료 신호와 주기 타이머 중 먼저 도착한 쪽에서만 결과를 반영한다."""
@@ -124,7 +127,11 @@ class CalendarController:
         if self._closed:
             return
         self.apply_completed()
-        if visible and not self.busy and time.monotonic() - self._last_read >= 60:
+        if (
+            visible
+            and not self.busy
+            and (self._invalidated or time.monotonic() - self._last_read >= 60)
+        ):
             self.refresh()
 
     @property

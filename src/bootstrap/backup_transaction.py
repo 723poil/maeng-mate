@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from src.bootstrap.backup_retention import register_copy
 from src.bootstrap.environment import ConfigError
 from src.infrastructure.data_backup import create_backup, preserve_device_access
 from src.infrastructure.private_files import read_private_file, write_private_file
@@ -86,6 +87,7 @@ def begin_restore(home: Path, database: Path, staged: Path) -> None:
     create_backup(database, rules, recovery)
     _sync(recovery)
     _sync(backups)
+    register_copy(recovery, "pre-restore")
 
     new_rules = _rules_bytes(staged / _RULES)
     preserve_device_access(database, staged / _DATABASE)

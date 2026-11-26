@@ -169,7 +169,11 @@ class CategoryConfigurationSheet:
             self._pages.append(page)
         columns, main_list, calendar, alerts = self._pages
         self._main_editor = MainListEditor(
-            main_list, self._original.columns, self._original.main_list, self.clear_status
+            main_list,
+            self._original.columns,
+            self._original.main_list,
+            self.clear_status,
+            display_filter_fields=frozenset(key for source in sources for key in source.columns),
         )
         label(columns, "카테고리 이름", 10, 387, 128)
         self.name = field(columns, category.name, 141, 383, 483, "카테고리 이름")

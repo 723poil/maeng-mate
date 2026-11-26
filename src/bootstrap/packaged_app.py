@@ -55,8 +55,18 @@ def backup_database(path: str) -> None:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     target = directory / ("pre-install-" + stamp + ".sqlite3")
     try:
-        copy_database(source, target)
-        register_copy(target, "pre-install")
+        # SQLite가 경로를 다시 여는 작업은 비공개 준비 폴더 안에서 마친다.
+        with tempfile.TemporaryDirectory(dir=directory) as temporary:
+            staged = Path(temporary) / "copy"
+
+            def publish(descriptor: int) -> None:
+                """기존 이름을 덮지 않고 게시한 뒤 생성 때부터 열린 핸들로 등록한다."""
+                before = os.fstat(descriptor)
+                os.link(staged, target)
+                staged.unlink()
+                register_copy(target, "pre-install", before, os.fstat(descriptor))
+
+            copy_database(source, staged, on_created=publish)
     except (OSError, sqlite3.Error):
         raise ConfigError("기존 DB를 백업하지 못했습니다. 설치를 중단합니다.") from None
 

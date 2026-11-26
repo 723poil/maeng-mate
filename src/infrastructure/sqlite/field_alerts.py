@@ -3,7 +3,7 @@
 import json
 import sqlite3
 from collections.abc import Iterator, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 
 from src.application.models import SyncRun
 from src.application.notion_links import notion_link
@@ -19,7 +19,7 @@ from src.domain.source_alerts import (
     alert_body_token,
     alert_value_key,
 )
-from src.domain.work_dates import SEOUL, canonical_identity
+from src.domain.work_dates import canonical_identity, seoul_clock, seoul_datetime
 from src.infrastructure.sqlite.decoding import decode_item
 from src.infrastructure.sqlite.notification_deliveries import logical_completed
 from src.infrastructure.sqlite.notification_keys import failure_rule_scope, notification_key
@@ -288,8 +288,9 @@ def record_field_alerts(
                 # 일정의 최종 분류는 숨긴 칼럼과 무관하게 스냅샷에 저장된다.
                 if EVENT_CLASSIFICATION in kinds and isinstance(item, CalendarEvent):
                     values[EVENT_CLASSIFICATION] = item.category or ""
+                local = seoul_datetime(basis)
                 if values.keys() != kinds.keys() or not rule.scope.includes(
-                    values, kinds, basis.astimezone(SEOUL).date()
+                    values, kinds, local.date() if local else None
                 ):
                     continue
             expires = now + 86400
@@ -416,8 +417,8 @@ def enqueue_field_alert(
     elif token == MEETING_BODY and rule.schedule:
         # 사전 예약의 기준 칼럼을 변경하면 본문 시각도 같은 칼럼의 원본 시작값을 쓴다.
         if rule.schedule.mode == "before_start":
-            event_start = datetime.fromtimestamp(due + int(rule.schedule.value) * 60, SEOUL)
-            body = f"{event_start:%H:%M} · {body}"
+            event_start = datetime.fromtimestamp(due + int(rule.schedule.value) * 60, UTC)
+            body = f"{seoul_clock(event_start)} · {body}"
         elif run.source is not None:
             period = next(
                 (
@@ -428,7 +429,7 @@ def enqueue_field_alert(
                 None,
             )
             if period and period.kind == "instant":
-                body = f"{datetime.fromisoformat(period.start).astimezone(SEOUL):%H:%M} · {body}"
+                body = f"{seoul_clock(datetime.fromisoformat(period.start))} · {body}"
     origin = run.source.origin if run.source is not None else run.source_id
     # 규칙별 관측과 취소는 뷰에 남기고, 실제로 같은 원본 변경을 본 채널만 전달을 공유한다.
     logical = fingerprint(

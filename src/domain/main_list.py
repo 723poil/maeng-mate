@@ -148,7 +148,7 @@ class ListFilter:
                 raise ValueError("비교할 숫자를 입력하세요.")
             raise ValueError("비교할 값을 입력하세요.")
 
-    def matches(self, raw: str, kind: str, day: date) -> bool:
+    def matches(self, raw: str, kind: str, day: date | None) -> bool:
         """누락값은 비어 있음 조건으로만 선택하고 날짜는 서울 기준일과 비교한다."""
         if self.operator == "exact":
             # QA 상태·차시처럼 원천 이름 자체를 지정한 조건은 공백과 대소문자도 구분한다.
@@ -161,6 +161,9 @@ class ListFilter:
         if self.operator == "not_empty":
             return True
         if self.operator in ("today", *RELATIVE_DAY_OPERATORS) and isinstance(actual, str):
+            # 서울 기준일을 표현할 수 없어도 다른 종류의 조건은 그대로 평가한다.
+            if day is None:
+                return False
             distance = (date.fromisoformat(actual) - day).days
             if self.operator == "today":
                 return distance == 0
@@ -262,7 +265,9 @@ class MainListRules:
                 raise ValueError("같은 칼럼은 정렬 기준에 한 번만 추가하세요.")
             sorted_fields.add(sort.field)
 
-    def includes(self, values: Mapping[str, str], kinds: Mapping[str, str], day: date) -> bool:
+    def includes(
+        self, values: Mapping[str, str], kinds: Mapping[str, str], day: date | None
+    ) -> bool:
         """제외 조건 중 하나라도 맞으면 숨기고 나머지 행에 포함 조건을 적용한다."""
         return self.accepts(
             lambda condition: condition.matches(

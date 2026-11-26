@@ -13,6 +13,20 @@ if TYPE_CHECKING:
 SEOUL = ZoneInfo("Asia/Seoul")
 
 
+def seoul_datetime(instant: datetime) -> datetime | None:
+    """시점의 서울 연도가 날짜 표현 범위를 벗어나면 현지 날짜를 만들지 않는다."""
+    try:
+        return instant.astimezone(SEOUL)
+    except OverflowError:
+        return None
+
+
+def seoul_clock(instant: datetime) -> str:
+    """서울 시·분을 표시하고 현지 날짜를 표현할 수 없으면 시간대를 명시한다."""
+    local = seoul_datetime(instant)
+    return local.strftime("%H:%M") if local else instant.strftime("%H:%M%z")
+
+
 def canonical_identity(value: str) -> str:
     """UUID 표기만 통일하고 가상 사용자 ID는 그대로 보존한다."""
     try:

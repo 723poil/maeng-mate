@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from src.domain.main_list import MainListRules
 from src.domain.source_scope import SourceScope
+from src.domain.work_dates import seoul_datetime
 
 MAX_SOURCE_ALERT_RULES = 24
 COLLECTION_STATE = "$collection"
@@ -183,7 +184,10 @@ def normalize_alert_date(value: str) -> str:
     except ValueError:
         return value
     if stamp.tzinfo is not None:
-        stamp = stamp.astimezone(ZoneInfo("Asia/Seoul")).replace(tzinfo=None)
+        local = seoul_datetime(stamp)
+        if local is None:
+            return value
+        stamp = local.replace(tzinfo=None)
     return stamp.isoformat(sep=" ")
 
 

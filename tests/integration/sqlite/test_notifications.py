@@ -477,6 +477,21 @@ async def test_column_reminders_follow_source_dates_and_survive_restart(db: Data
     assert set(await due_times()) == {"당일"}
     await publish("0001-01-02")
     assert set(await due_times()) == {"전날", "당일"}
+    # 양 끝에서도 실제 UTC 시점과 표현 가능한 분 단위 예약을 별도로 보존한다.
+    await publish("0001-01-01T01:10:00+01:00")
+    assert set(await due_times()) == {"당일"}
+    await publish("0001-01-01T01:30:00+01:00")
+    assert (await due_times())["시작 전"] == datetime(1, 1, 1, 0, 5, tzinfo=UTC)
+    await publish("9999-12-30T23:00:00-01:00")
+    assert set(await due_times()) == {"전날", "시작 전"}
+    await publish("9999-12-31T16:00:00Z")
+    assert await due_times() == {"시작 전": datetime(9999, 12, 31, 15, 35, tzinfo=UTC)}
+    assert await db.fetch(
+        "SELECT json_extract(payload, '$.due.start') AS start FROM item_snapshots"
+    ) == [{"start": "9999-12-31T16:00:00.000Z"}]
+    assert await db.fetch("SELECT expires_at FROM notification_jobs WHERE state='pending'") == [
+        {"expires_at": datetime(9999, 12, 31, 16, tzinfo=UTC).timestamp()}
+    ]
     clock.value = datetime(2026, 12, 31, tzinfo=UTC).timestamp()
     # 이미 지난 예약을 뒤늦게 추가하지 않는다.
     await publish("2026-12-29")

@@ -15,11 +15,18 @@ class Reader:
         """상태 조회 계약을 유지한다."""
         return {"runtime": "python"}
 
-    async def read_today(self, requested_date: str | None = None) -> dict[str, object]:
-        """명시한 날짜를 그대로 조회 포트에 전달했는지 확인한다."""
+    async def read_today(
+        self, requested_date: str | None = None, event_classification: str | None = None
+    ) -> dict[str, object]:
+        """날짜와 일정 분류를 그대로 조회 포트에 전달했는지 확인한다."""
         if requested_date == "2026-11-14":
             raise StatusReadError("원본은 전송하지 않는다")
-        return {"date": requested_date, "tasks": [], "meetings": []}
+        return {
+            "date": requested_date,
+            "classification": event_classification,
+            "tasks": [],
+            "meetings": [],
+        }
 
     async def read_workday(self) -> dict[str, object]:
         """실제 근무 데이터 없이 근무 조회 호출을 확인한다."""
@@ -45,18 +52,25 @@ async def test_today_tool_lists_and_calls_read_only_port() -> None:
     filters = {"source_id": "fixture", "statuses": ["검토 중"], "include_unset": True, "limit": 37}
     _, search = await server.call_tool("search_my_tasks", filters)
     assert all(search[key] == value for key, value in filters.items())
-    result = await server.call_tool("get_my_today", {"date": "2026-11-13"})
-    assert "2026-11-13" in str(result)
-    result = await server.call_tool("get_my_today", {})
-    assert "date" in str(result)
+    _, today = await server.call_tool(
+        "get_my_today", {"date": "2026-11-13", "event_classification": "검토"}
+    )
+    assert today["date"] == "2026-11-13"
+    assert today["classification"] == "검토"
+    _, default = await server.call_tool("get_my_today", {})
+    assert default["date"] is None
+    assert default["classification"] is None
 
 
 async def test_today_tool_errors_are_safe() -> None:
     """잘못된 날짜와 로컬 API 실패를 원문 없이 알린다."""
     reader = Reader()
     server = create_server(reader)
-    for date in ["private-invalid-date", "2026-11-14"]:
-        with pytest.raises(ToolError) as error:
+    for date, message in [
+        ("private-invalid-date", "유효한 YYYY-MM-DD"),
+        ("2026-11-14", "개인 업무 조회에 실패"),
+    ]:
+        with pytest.raises(ToolError, match=message) as error:
             await server.call_tool("get_my_today", {"date": date})
         assert "원본은" not in str(error.value)
         assert "private-invalid-date" not in str(error.value)

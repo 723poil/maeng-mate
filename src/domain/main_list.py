@@ -52,6 +52,14 @@ def operators_for(kind: str) -> tuple[str, ...]:
     return _OPERATORS.get(kind, ())
 
 
+def _date_start(raw: str) -> datetime | None:
+    """구간 시작값이 유효한 날짜인지 시간대 변환 없이 판정한다."""
+    try:
+        return datetime.fromisoformat(raw.strip().partition(" ~ ")[0])
+    except ValueError:
+        return None
+
+
 def _read_value(raw: object, kind: str, *, date_only: bool = False) -> str | Decimal | None:
     """기록값을 같은 종류끼리 비교할 수 있게 바꾸고 누락·해석 실패를 구분 없이 처리한다."""
     value = raw.strip() if isinstance(raw, str) else ""
@@ -68,12 +76,13 @@ def _read_value(raw: object, kind: str, *, date_only: bool = False) -> str | Dec
             number = Decimal(value)
             return number if number.is_finite() else None
         # 저장된 구간은 시작값으로 비교한다. 시간대가 없는 표시는 이미 서울 시각이다.
-        start = value.partition(" ~ ")[0]
         if kind == "time":
-            clock = time.fromisoformat(start)
+            clock = time.fromisoformat(value.partition(" ~ ")[0])
             return clock.isoformat() if clock.tzinfo is None else None
         if kind == "date":
-            stamp = datetime.fromisoformat(start)
+            stamp = _date_start(value)
+            if stamp is None:
+                return None
             if stamp.tzinfo is not None:
                 stamp = stamp.astimezone(SEOUL).replace(tzinfo=None)
             return stamp.date().isoformat() if date_only else stamp.isoformat()
@@ -153,6 +162,10 @@ class ListFilter:
         if self.operator == "exact":
             # QA 상태·차시처럼 원천 이름 자체를 지정한 조건은 공백과 대소문자도 구분한다.
             return raw == self.value
+        if kind == "date" and self.operator in _PRESENCE:
+            # 값의 존재는 서울 날짜로 바꿀 수 있는지와 독립적이다.
+            present = _date_start(raw) is not None
+            return present if self.operator == "not_empty" else not present
         actual = _read_value(raw, kind, date_only=True)
         if self.operator == "empty":
             return actual is None

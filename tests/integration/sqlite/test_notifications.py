@@ -620,3 +620,63 @@ async def test_overnight_rules_and_subscription_rescheduling_cancel_pending(
     with store.apply_today_rules(DEFAULT_WORK_RULES):
         pass
     assert len(await db.fetch("SELECT id FROM notification_jobs WHERE state='pending'")) == 1
+
+
+@pytest.mark.parametrize(
+    ("start", "expected_rule"),
+    (
+        (None, "empty"),
+        ("2027-01-01", "not_empty"),
+        ("2027-01-02T01:00:00+09:00", "not_empty"),
+        ("9999-12-31T16:00:00Z", "not_empty"),
+    ),
+)
+async def test_reminder_scope_uses_period_presence(
+    db: Database, start: str | None, expected_rule: str
+) -> None:
+    """필터 칼럼이 비었는지에 따라 실제 저장되는 사전 예약을 구분한다."""
+    from uuid import uuid4
+
+    from src.domain.main_list import ListFilter, MainListRules
+    from src.domain.source_alerts import AlertSchedule, SourceAlertRule
+    from src.domain.source_scope import SourceScope
+    from src.infrastructure.notion.normalization import normalize_page
+    from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
+    from tests.fixtures.notion import OBSERVED, SOURCE, page
+
+    # 예약 기준은 고정해 필터 칼럼이 빈 경우에도 반대 규칙의 예약을 확인한다.
+    rules = tuple(
+        SourceAlertRule(
+            str(uuid4()),
+            operator,
+            "reminder",
+            "date",
+            schedule=AlertSchedule("before_start", "25"),
+            source_scopes=(
+                SourceScope(
+                    SOURCE.source_id, MainListRules(filters=(ListFilter("period:d", operator),))
+                ),
+            ),
+        )
+        for operator in ("empty", "not_empty")
+    )
+    source = replace(SOURCE, alert_rules=rules)
+    raw = page()
+    props = raw["properties"]
+    assert isinstance(props, dict)
+    props["Date"] = {
+        "id": "d",
+        "type": "date",
+        "date": {"start": start, "end": None} if start else None,
+    }
+    props["Reminder"] = {
+        "id": "reminder",
+        "type": "date",
+        "date": {"start": "9999-12-31T16:00:00Z", "end": None},
+    }
+    item = normalize_page(raw, source, OBSERVED)
+    snapshots = SQLiteSnapshots(db, notification_user_id="me")
+    await snapshots.complete_run(await snapshots.begin_run(source, OBSERVED), [item], OBSERVED)
+    assert await db.fetch("SELECT title, due_at FROM notification_jobs WHERE state='pending'") == [
+        {"title": expected_rule, "due_at": datetime(9999, 12, 31, 15, 35, tzinfo=UTC).timestamp()}
+    ]

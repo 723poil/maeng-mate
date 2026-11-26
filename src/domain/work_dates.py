@@ -35,24 +35,31 @@ def canonical_identity(value: str) -> str:
         return value
 
 
+def deadline_basis(period: Period) -> tuple[date, datetime | None]:
+    """기한의 서울 날짜와 시각 단위 연체 비교에 필요한 시점을 반환한다."""
+    deadline = period.end or period.start
+    if period.kind == "date":
+        return date.fromisoformat(deadline), None
+    timestamp = datetime.fromisoformat(deadline).astimezone(SEOUL)
+    return timestamp.date(), timestamp
+
+
 def deadline_flags(
     period: Period | None, requested_day: date, observed_now: datetime
 ) -> tuple[bool, bool]:
     """날짜 마감은 다음 날부터, 시각 마감은 기준 시점부터 경과로 판단한다."""
     if period is None:
         return False, False
-    deadline = period.end or period.start
-    if period.kind == "date":
-        day = date.fromisoformat(deadline)
+    day, timestamp = deadline_basis(period)
+    if timestamp is None:
         return day == requested_day, day < requested_day
-    timestamp = datetime.fromisoformat(deadline).astimezone(SEOUL)
     local_now = observed_now.astimezone(SEOUL)
     reference = (
         local_now
         if requested_day == local_now.date()
         else datetime.combine(requested_day, time.min, SEOUL)
     )
-    return timestamp.date() == requested_day, timestamp < reference
+    return day == requested_day, timestamp < reference
 
 
 def meeting_on_day(period: Period | None, requested_day: date) -> bool:

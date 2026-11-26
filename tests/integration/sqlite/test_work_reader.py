@@ -179,7 +179,7 @@ async def test_search_pages_keep_global_order_and_count_without_completion_setti
     reader = SQLiteWorkReader(db, active_sources=context.sources)
     # 마감이 같으면 소스와 항목의 키를 사용해 페이지가 겹치지 않게 한다.
     expected = sorted((mapping.source_id, f"item-{i}") for mapping in (tasks, qa) for i in range(4))
-    for offset in (0, 2, 4, 6, 8, 100000):
+    for offset in (0, 2, 4, 6, 8, 100000, 100001):
         result = await search_my_tasks(
             TaskSearch.parse({"limit": 2, "offset": offset}),
             reader,

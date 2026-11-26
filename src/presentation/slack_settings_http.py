@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from src.application.credentials import CredentialError, validated_secret
 from src.application.errors import SnapshotError
 from src.application.slack_settings import SlackSettingsClient, SlackTestError, slack_state_payload
+from src.presentation.credential_errors_http import credential_http_error
 from src.presentation.request_body import read_limited_body
 
 
@@ -42,7 +43,7 @@ def create_slack_settings_router(service: SlackSettingsClient | None) -> APIRout
         try:
             return slack_state_payload(await asyncio.to_thread(service.read))
         except CredentialError as error:
-            raise HTTPException(503, {"code": error.code}) from None
+            raise credential_http_error(error) from None
         except SnapshotError:
             raise HTTPException(503, {"code": "unavailable"}) from None
 
@@ -83,11 +84,11 @@ def create_slack_settings_router(service: SlackSettingsClient | None) -> APIRout
             else:
                 raise CredentialError("invalid")
             return slack_state_payload(state)
-        except (CredentialError, SlackTestError) as error:
-            raise HTTPException(
-                409 if error.code == "conflict" else 422 if error.code == "invalid" else 503,
-                {"code": error.code},
-            ) from None
+        except CredentialError as error:
+            raise credential_http_error(error) from None
+        except SlackTestError as error:
+            # 발송 전용 오류는 자격 정보 오류와 섞지 않고 기존 공개 계약을 유지한다.
+            raise HTTPException(503, {"code": error.code}) from None
         except SnapshotError:
             raise HTTPException(503, {"code": "unavailable"}) from None
 

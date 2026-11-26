@@ -4,6 +4,7 @@ from uuid import UUID
 
 import httpx
 
+from src.application.category_settings_codec import parse_categories
 from src.application.errors import SettingsInputRejected
 from src.application.source_settings import (
     CollectionDraft,
@@ -17,7 +18,6 @@ from src.application.source_settings import (
     parse_source_draft,
     parse_tables,
 )
-from src.application.work_settings import parse_categories
 from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.infrastructure.api_decoding import json_object, strings
 from src.infrastructure.local_http import local_client, response_json

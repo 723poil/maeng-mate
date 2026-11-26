@@ -3,9 +3,9 @@
 from dataclasses import dataclass
 from urllib.parse import unquote
 
+from src.application.category_settings_codec import column_bindings_payload
 from src.application.notion_page_links import PageLinksError, page_url
 from src.application.source_settings import SourceDraft, SourceSettingsError
-from src.application.work_settings import column_bindings_payload
 from src.domain.category_configuration import ColumnBinding
 from src.domain.models import SourceKind
 from src.domain.source_roles import ColumnRole, roles_payload

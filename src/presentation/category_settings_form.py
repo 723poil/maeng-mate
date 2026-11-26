@@ -20,13 +20,13 @@ from AppKit import (
 )
 from Foundation import NSObject
 
-from src.application.source_settings import CategoryDraft, SourceSettingsClient
-from src.application.work_settings import (
+from src.application.category_settings_codec import (
     category_bindings,
     category_documents,
     parse_categories,
-    parse_source,
 )
+from src.application.source_settings import CategoryDraft, SourceSettingsClient
+from src.application.source_settings_codec import parse_source
 from src.domain.category_configuration import CategoryConfiguration
 from src.domain.event_classification import EVENT_CLASSIFICATION
 from src.domain.source_display import SourceCategory

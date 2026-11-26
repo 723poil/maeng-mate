@@ -14,6 +14,8 @@ Notion과 Slack 관리 API는 공통 자격 정보 오류를 `src/presentation/c
 
 파일 가져오기와 SQLite 읽기·편집은 application의 `parse_settings`로 같은 설정 검증을 수행한다. 수집 소스 화면과 서비스 시작 시에는 같은 읽기에서 얻은 원본 문서와 검증된 매핑을 함께 사용한다. 업무 문서 저장 시 현재 버전을 쓰기 트랜잭션 안에서 다시 확인한다. 이때 읽은 기존 문서와 새로 저장한 문서의 검증 결과를 규칙·구독 비교에 재사용하고, 저장 응답의 재시작 필요 여부는 실제로 확정한 매핑으로 판정한다. 최상위 키·버전과 하위 항목은 Python 타입으로 확인하고, 잘못된 문서는 원문 없이 `WorkSettingsError`로 반환한다.
 
+업무 문서의 조립과 최상위 검증은 `src/application/work_settings.py`의 `parse_settings`가 맡는다. 소스 매핑, 알림 예약·전달, 카테고리, 목록 필터의 파서와 직렬화는 각각 `source_settings_codec.py`, `alert_settings_codec.py`, `category_settings_codec.py`, `list_settings_codec.py`에서 함께 관리한다. 화면과 기존 문서 이전 코드도 같은 변환을 사용해 빈 선택, 생략된 값, 기존 ID의 해석을 일치시킨다.
+
 | 저장 위치 | 값 |
 | --- | --- |
 | Application Support의 `bootstrap.json` v2 | SQLite 위치, 로컬 포트. 파일 권한 600 |

@@ -5,9 +5,9 @@ import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from src.application.category_settings_codec import read_category
 from src.application.notifications import NotificationJob
 from src.application.notion_links import notion_link
-from src.application.work_settings import read_category
 from src.domain.category_event_alerts import EVENT_ALERT_TRIGGERS, CategoryEventAlert
 from src.domain.source_alerts import SourceAlertRule
 from src.domain.source_display import SourceCategory

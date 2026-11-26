@@ -10,23 +10,25 @@ from uuid import UUID
 
 from src.application.category_column_types import scope_property_kinds
 from src.application.category_configuration_upgrade import move_unassigned_settings
-from src.application.models import CollectedWork
-from src.application.notion_links import notion_link
-from src.application.periodic import utc_now
-from src.application.ports import SharedOriginReader, WorkSource
-from src.application.work_settings import (
-    Settings,
-    WorkSettingsDocument,
-    WorkSettingsError,
+from src.application.category_settings_codec import (
     canonical_sources,
     category_bindings,
     category_documents,
     column_bindings_payload,
-    empty_work_settings,
-    nonblank,
     parse_categories,
-    parse_settings,
     read_category,
+)
+from src.application.models import CollectedWork
+from src.application.notion_links import notion_link
+from src.application.periodic import utc_now
+from src.application.ports import SharedOriginReader, WorkSource
+from src.application.settings_validation import nonblank
+from src.application.work_settings import (
+    Settings,
+    WorkSettingsDocument,
+    WorkSettingsError,
+    empty_work_settings,
+    parse_settings,
     source_documents,
 )
 from src.domain.category_event_alerts import EVENT_ALERT_TRIGGERS, EventAlertSelection

@@ -74,6 +74,14 @@ class NotificationSender(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class NotificationRunResult:
+    """처리 여부와 실패 여부를 구별해 작업자의 대기를 판단한다."""
+
+    processed: bool
+    failed: bool
+
+
 class NotificationRunner:
     """재시작 때도 불명확한 OS 요청을 무조건 재발송하지 않는다."""
 
@@ -82,10 +90,11 @@ class NotificationRunner:
         self._queue = queue
         self._senders = dict(senders)
 
-    def run_once(self) -> bool:
+    def run_once(self) -> NotificationRunResult:
         """발송 직전 승인을 확인하고 결과를 명시적으로 기록한다."""
+        jobs = self._queue.claim()
         failed = False
-        for job in self._queue.claim():
+        for job in jobs:
             if not self._queue.authorize(job):
                 self._queue.ack(job, "cancelled")
                 continue
@@ -97,4 +106,5 @@ class NotificationRunner:
                 result = "unknown"
             self._queue.ack(job, result)
             failed = failed or result not in {"requested", "cancelled"}
-        return failed
+        # 승인 거부도 ACK를 마친 처리다. 빈 큐와 구별해야 다음 전달을 바로 확인한다.
+        return NotificationRunResult(processed=bool(jobs), failed=failed)

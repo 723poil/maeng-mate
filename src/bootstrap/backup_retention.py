@@ -81,79 +81,115 @@ def register_copy(
         _LOG.warning("자동 백업을 정리 대상으로 등록하지 못했습니다.")
 
 
-def _move_exclusive(directory: int, source: str, target: str) -> None:
+def _move_exclusive(directory: int, source: str, destination: int, target: str) -> None:
     """열린 macOS 디렉터리 안에서 목적지가 비어 있을 때만 이름을 옮긴다."""
     if sys.platform != "darwin":
         raise OSError("독점 이름 변경을 지원하지 않습니다.")
     rename = ctypes.CDLL(None, use_errno=True).renameatx_np
     rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
     rename.restype = ctypes.c_int
-    if rename(directory, os.fsencode(source), directory, os.fsencode(target), 0x00000004):
+    if rename(directory, os.fsencode(source), destination, os.fsencode(target), 0x00000004):
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
 
 
-def _retire(directory: int, name: str, identity: str) -> None:
-    """이름을 독점 이동한 뒤 처음 연 파일의 핸들로만 백업 내용을 비운다."""
-    fd = os.open(name, os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory)
+@contextmanager
+def _open_directory(path: Path) -> Iterator[int]:
+    """열어 둔 디렉터리 안에서만 후속 항목 이동과 제거를 수행한다."""
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        before = os.fstat(fd)
-        if _identity(before) != identity:
-            return
-        retired = f".retired-{name}.entry"
-        _move_exclusive(directory, name, retired)
-        claimed = os.stat(retired, dir_fd=directory, follow_symlinks=False)
-        # 이름 변경은 ctime을 바꾸므로 열린 원본의 inode와 자료 수정 시각을 대조한다.
-        if (
-            not os.path.samestat(before, claimed)
-            or claimed.st_nlink != 1
-            or claimed.st_mtime_ns != before.st_mtime_ns
-            or claimed.st_size != before.st_size
-        ):
-            # 원래 이름도 다시 사용됐으면 양쪽을 보존하고 사용자에게 충돌을 알린다.
-            try:
-                _move_exclusive(directory, retired, name)
-            except OSError:
-                _LOG.warning("이름이 겹친 파일을 backups의 .retired- 이름으로 보존했습니다.")
-                raise
-            return
-        # 이름으로 삭제하면 마지막 순간의 교체 파일까지 지울 수 있다. 열린 사본만
-        # 비우고 숨김 항목을 남겨 같은 이름에 새로 놓인 파일에는 쓰지 않는다.
-        os.ftruncate(fd, 0)
+        yield descriptor
     finally:
-        os.close(fd)
+        os.close(descriptor)
+
+
+def _birthtime(info: os.stat_result) -> str:
+    """macOS의 파일 생성 시각을 확인할 수 있을 때만 정리한다."""
+    value: object = getattr(info, "st_birthtime", None)
+    if not isinstance(value, float):
+        raise ValueError("파일 생성 시각을 확인할 수 없습니다.")
+    return value.hex()
+
+
+def _finish_claim(directory: int, queue: int, entry: str, lines: list[str]) -> None:
+    """등록 기록과 이동된 항목을 대조해 재시작 후에도 같은 정리를 완료한다."""
+    fields = entry.split(" ")
+    if len(fields) != 4 or " ".join(fields[:2]) not in lines:
+        raise ValueError("자동 백업 정리 폴더에 확인할 수 없는 항목이 있습니다.")
+    name, identity, birth, modified = fields
+    if not re.fullmatch(r"-?0x[01]\.[0-9a-f]{1,13}p[+-][0-9]{1,4}", birth) or not re.fullmatch(
+        r"-?[0-9]{1,20}", modified
+    ):
+        raise ValueError("자동 백업 이동 기록을 확인하세요.")
+    device, inode, _, size = identity.split("-")
+    claimed = os.stat(entry, dir_fd=queue, follow_symlinks=False)
+    if (
+        stat.S_ISREG(claimed.st_mode)
+        and claimed.st_uid == os.getuid()
+        and str(claimed.st_dev) == device
+        and str(claimed.st_ino) == inode
+        and str(claimed.st_size) == size
+        and _birthtime(claimed) == birth
+        and str(claimed.st_mtime_ns) == modified
+    ):
+        # 잠금으로 직렬화한 앱 전용 폴더의 링크 하나만 제거한다.
+        # 다른 이름으로 보존된 같은 inode의 내용과 공개 경로는 건드리지 않는다.
+        os.unlink(entry, dir_fd=queue)
+    else:
+        # 교체 항목은 공개 이름이 비어 있을 때만 되돌린다. 충돌하면 다음 성공 때 재시도한다.
+        _move_exclusive(queue, entry, directory, name)
+        os.fsync(directory)
+    os.fsync(queue)
+
+
+def _prune(home: Path, kind: BackupKind, directory: int, lines: list[str]) -> None:
+    """종류별 단일 대기 항목을 먼저 처리하고 새 만료 사본을 한 개씩 이동한다."""
+    pending = home / f".{kind}-retiring"
+    pending.mkdir(mode=0o700, exist_ok=True)
+    # 이동 전에 대기 폴더 이름까지 확정해야 중단 후 같은 복구 기록을 찾을 수 있다.
+    with _open_directory(home) as parent:
+        os.fsync(parent)
+    with _open_directory(pending) as queue:
+        info = os.fstat(queue)
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("자동 백업 정리 폴더의 권한을 확인하세요.")
+        entries = os.listdir(queue)
+        if len(entries) > 1:
+            raise ValueError("자동 백업 정리 폴더의 항목을 확인하세요.")
+        if entries:
+            _finish_claim(directory, queue, entries[0], lines)
+
+        kept: list[str] = []
+        for line in reversed(lines):
+            name, identity = line.split()
+            try:
+                before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if _identity(before) != identity:
+                continue
+            if len(kept) < _KEEP:
+                kept.append(line)
+                continue
+            # 이동 자체가 복구 기록이다. 원래 이름과 생성 기록을 함께 옮겨 별도 표식과
+            # 이동 사이에 생기는 중단 구간을 없앤다. 공개 이름에는 unlink를 호출하지 않는다.
+            entry = f"{line} {_birthtime(before)} {before.st_mtime_ns}"
+            _move_exclusive(directory, name, queue, entry)
+            os.fsync(queue)
+            os.fsync(directory)
+            _finish_claim(directory, queue, entry, lines)
+        lines[:] = reversed(kept)
 
 
 def prune_copies(home: Path, kind: BackupKind) -> None:
-    """성공 확정 후 같은 종류의 최근 세 사본을 보존하고 오류 때는 자료를 남긴다."""
+    """성공 확정 후 최근 세 사본을 보존하고 중단된 정리는 다음 성공 때 이어간다."""
     try:
-        with _records(home, kind, create=False) as lines:
-            directory = os.open(home / "backups", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                kept: list[str] = []
-                recent = 0
-                for line in reversed(lines):
-                    name, identity = line.split()
-                    try:
-                        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
-                    except FileNotFoundError:
-                        continue
-                    if _identity(info) != identity:
-                        continue
-                    if recent < _KEEP:
-                        recent += 1
-                        kept.append(line)
-                        continue
-                    try:
-                        _retire(directory, name, identity)
-                    except OSError:
-                        # 한 사본의 이름 충돌 때문에 다른 사본의 용량 회수가 막히지 않는다.
-                        kept.append(line)
-                        _LOG.warning("자동 백업 하나를 정리하지 못해 보존했습니다.")
-                lines[:] = reversed(kept)
-            finally:
-                os.close(directory)
+        with (
+            _records(home, kind, create=False) as lines,
+            _open_directory(home / "backups") as directory,
+        ):
+            _prune(home, kind, directory, lines)
     except FileNotFoundError:
         return
     except (OSError, ValueError):
-        _LOG.warning("자동 백업 정리를 완료하지 못했습니다.")
+        _LOG.warning("자동 백업 정리를 완료하지 못해 자료를 보존했습니다.")

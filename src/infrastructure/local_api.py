@@ -3,7 +3,7 @@
 import httpx
 
 from src.application.errors import StatusReadError
-from src.application.task_search import TaskSearch
+from src.application.task_search import TaskSearch, TaskSearchInputError
 from src.application.workday import workday_summary
 from src.infrastructure.api_decoding import json_object
 from src.infrastructure.day_response import day_view
@@ -62,5 +62,10 @@ class LocalStatusReader:
             response.raise_for_status()
             response_payload = response_json(response, max_bytes=1024 * 1024)
             return json_object(response_payload)
+        except httpx.HTTPStatusError as error:
+            # 검색 본문의 상한은 라우터가 실제 전송 바이트로 판정한다.
+            if payload is not None and error.response.status_code == 413:
+                raise TaskSearchInputError("상태 이름의 길이나 목록 개수를 줄여 주세요.") from None
+            raise StatusReadError("로컬 업무 앱 조회에 실패했습니다.") from None
         except (httpx.HTTPError, ValueError):
             raise StatusReadError("로컬 업무 앱 조회에 실패했습니다.") from None

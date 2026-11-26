@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from src.bootstrap.backup_retention import register_copy
 from src.bootstrap.environment import ConfigError
 from src.infrastructure.data_backup import create_backup, preserve_device_access
 from src.infrastructure.private_files import read_private_file, write_private_file
@@ -83,9 +84,14 @@ def begin_restore(home: Path, database: Path, staged: Path) -> None:
     backups.mkdir(mode=0o700, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     recovery = backups / f"pre-restore-{stamp}.maengbackup"
-    create_backup(database, rules, recovery)
-    _sync(recovery)
-    _sync(backups)
+
+    def register_recovery(descriptor: int, before: os.stat_result) -> None:
+        """복구 파일과 폴더의 동기화를 마치고 생성 핸들의 식별값을 남긴다."""
+        os.fsync(descriptor)
+        _sync(backups)
+        register_copy(recovery, "pre-restore", before, os.fstat(descriptor))
+
+    create_backup(database, rules, recovery, on_created=register_recovery)
 
     new_rules = _rules_bytes(staged / _RULES)
     preserve_device_access(database, staged / _DATABASE)

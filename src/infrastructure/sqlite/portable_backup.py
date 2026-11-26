@@ -5,13 +5,8 @@ from contextlib import closing
 from pathlib import Path
 
 from src.infrastructure.sqlite.runtime_settings import read_settings
-from src.infrastructure.sqlite.schema import (
-    INDEXES,
-    MCP_LIST_TOKENS_TABLE,
-    SCHEMA_VERSION,
-    SOURCE_STATUS_OPTIONS_TABLE,
-    TABLES,
-)
+from src.infrastructure.sqlite.schema import INDEXES, SCHEMA_VERSION, TABLES
+from src.infrastructure.sqlite.schema_versions import PORTABLE_SCHEMAS, PORTABLE_UPGRADES
 from src.infrastructure.sqlite.work_settings import read_document
 
 _DEVICE_TABLES = ("mcp_preferences", "mcp_access_tokens", "mcp_list_tokens")
@@ -70,26 +65,18 @@ def build_portable_database(snapshot: Path, target: Path) -> None:
 
 def validate_portable_database(path: Path) -> int:
     """허용된 스키마와 버전·제약·설정·기기 권한 부재를 읽기 전용 연결에서 검사한다."""
-    with (
-        closing(sqlite3.connect(":memory:")) as reference,
-        closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as source,
-    ):
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as source:
         source.execute("PRAGMA trusted_schema=OFF")
-        _create_schema(reference)
-        # 원본 DDL을 실행하지 않고 표준 사본과 대조한 뒤에만 업무 테이블에 접근한다.
-        expected = reference.execute(_SCHEMA_QUERY).fetchall()
-        actual = source.execute(_SCHEMA_QUERY).fetchmany(len(expected) + 1)
-        version = SCHEMA_VERSION
-        if actual != expected:
-            # 목록 접근 권한은 기기별로 새로 부여하며 v18 백업의 업무는 보존한다.
-            reference.execute("DROP TABLE mcp_list_tokens")
-            version = 18
-        if actual != reference.execute(_SCHEMA_QUERY).fetchall():
-            # v17의 전체 DDL도 이름·정의까지 대조한다. 알 수 없는 테이블이나 트리거는 거부한다.
-            reference.execute("DROP TABLE source_status_options")
-            if actual != reference.execute(_SCHEMA_QUERY).fetchall():
-                raise ValueError("현재 앱에서 불러올 수 없는 DB 스키마입니다.")
-            version = 17
+        # 원본 DDL은 실행하지 않고 출시한 기준의 전체 카탈로그가 일치해야 행을 읽는다.
+        for version in reversed(PORTABLE_SCHEMAS):
+            with closing(sqlite3.connect(":memory:")) as reference:
+                for statement in PORTABLE_SCHEMAS[version]:
+                    reference.execute(statement)
+                expected = reference.execute(_SCHEMA_QUERY).fetchall()
+            if source.execute(_SCHEMA_QUERY).fetchmany(len(expected) + 1) == expected:
+                break
+        else:
+            raise ValueError("현재 앱에서 불러올 수 없는 DB 스키마입니다.")
         versions = source.execute("SELECT version FROM schema_versions ORDER BY version").fetchmany(
             SCHEMA_VERSION + 1
         )
@@ -119,11 +106,13 @@ def prepare_portable_restore(path: Path) -> None:
     if version < SCHEMA_VERSION:
         with closing(sqlite3.connect(path.as_uri() + "?mode=rw", uri=True)) as connection:
             connection.execute("BEGIN")
-            if version == 17:
-                connection.execute(SOURCE_STATUS_OPTIONS_TABLE)
-                connection.execute("INSERT INTO schema_versions(version) VALUES(18)")
-            connection.execute(MCP_LIST_TOKENS_TABLE)
-            connection.execute("INSERT INTO schema_versions(version) VALUES(19)")
+            # 모든 중간 단계와 버전 이력을 함께 커밋해 부분 변환을 막는다.
+            for next_version in range(version + 1, SCHEMA_VERSION + 1):
+                for statement in PORTABLE_UPGRADES[next_version]:
+                    connection.execute(statement)
+                connection.execute(
+                    "INSERT INTO schema_versions(version) VALUES(?)", (next_version,)
+                )
             connection.commit()
 
 

@@ -63,6 +63,7 @@ OPERATOR_NAMES = {
     "today": "오늘",
     "not_ended": "기간이 끝나지 않음",
     "past_days": "최근 N일 (오늘 포함)",
+    "past_days_and_future": "최근 N일과 미래 일정",
     "next_days": "오늘부터 N일",
     "since_days_ago": "N일 전부터",
 }
@@ -285,10 +286,12 @@ class MainListEditor:
         *,
         alert_scope: bool = False,
         source_fields: bool = False,
+        display_filter_fields: frozenset[str] | None = None,
     ) -> None:
         """저장 전까지 시트에만 남는 별도 편집 상태를 만든다."""
         self._alert_scope = alert_scope
         self._source_fields = source_fields
+        self._display_filter_fields = display_filter_fields
         self._observed: dict[str, tuple[str, ...]] = {}
         self._options: Mapping[str, OptionValues] = {}
         self.clear_status = clear_status
@@ -361,6 +364,16 @@ class MainListEditor:
                 for item in self._columns
                 if item.name or not self._source_fields
             },
+        }
+
+    def _condition_names(self, *, exclude: bool) -> dict[str, str]:
+        """표시 필터에는 현재 카테고리의 수집 소스가 연결한 칼럼만 제시한다."""
+        if exclude or self._display_filter_fields is None:
+            return self._field_names()
+        return {
+            column.id: column.name
+            for column in self._columns
+            if column.id in self._display_filter_fields
         }
 
     def _field_choice(
@@ -514,10 +527,10 @@ class MainListEditor:
         self._capture()
         conditions = self._rules.exclusions if exclude else self._rules.filters
         kinds = self._kinds()
-        names = self._field_names()
+        names = self._condition_names(exclude=exclude)
         if not names:
             return
-        field = next(iter(names)) if self._alert_scope else "title"
+        field = next(iter(names))
         operator = (
             "exact"
             if field in self._options
@@ -703,7 +716,7 @@ class MainListEditor:
             111,
             self._actions,
             "addFilter:",
-        ).setEnabled_(bool(self._field_names()))
+        ).setEnabled_(bool(self._condition_names(exclude=False)))
         if not self._rules.filters:
             label(
                 view,
@@ -744,14 +757,20 @@ class MainListEditor:
 
     def _condition_rows(self, view: NSView, top: float, *, exclude: bool) -> None:
         """표시 필터와 숨김 조건에 같은 종류별 입력을 제공한다."""
-        names, kinds = self._field_names(), self._kinds()
+        names, kinds = self._condition_names(exclude=exclude), self._kinds()
         conditions = self._rules.exclusions if exclude else self._rules.filters
         rows = self._exclusion_rows if exclude else self._filter_rows
         title = "숨김 조건" if exclude else "필터"
         for index, rule in enumerate(conditions):
             y = top - 78 - index * ROW_HEIGHT
             prefix = f"{title} {index + 1}"
-            column = self._field_choice(view, 13, y, 177, names, rule.field, f"{prefix} 칼럼")
+            available = names
+            if rule.field not in names and rule.field in kinds:
+                # 연결 해제·이전 형식의 조건은 해당 행에서만 유지하거나 교체한다.
+                previous = self._field_names().get(rule.field)
+                if previous is not None:
+                    available = {rule.field: f"기존 조건 · {previous}", **names}
+            column = self._field_choice(view, 13, y, 177, available, rule.field, f"{prefix} 칼럼")
             self._listen(column.control, "exclusionField:" if exclude else "filterField:", index)
             kind = kinds.get(rule.field)
             ops = operators_for(kind) if kind is not None else ()

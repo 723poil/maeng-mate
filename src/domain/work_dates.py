@@ -13,6 +13,20 @@ if TYPE_CHECKING:
 SEOUL = ZoneInfo("Asia/Seoul")
 
 
+def seoul_datetime(instant: datetime) -> datetime | None:
+    """시점의 서울 연도가 날짜 표현 범위를 벗어나면 현지 날짜를 만들지 않는다."""
+    try:
+        return instant.astimezone(SEOUL)
+    except OverflowError:
+        return None
+
+
+def seoul_clock(instant: datetime) -> str:
+    """서울 시·분을 표시하고 현지 날짜를 표현할 수 없으면 시간대를 명시한다."""
+    local = seoul_datetime(instant)
+    return local.strftime("%H:%M") if local else instant.strftime("%H:%M%z")
+
+
 def canonical_identity(value: str) -> str:
     """UUID 표기만 통일하고 가상 사용자 ID는 그대로 보존한다."""
     try:
@@ -21,24 +35,31 @@ def canonical_identity(value: str) -> str:
         return value
 
 
+def deadline_basis(period: Period) -> tuple[date, datetime | None]:
+    """기한의 서울 날짜와 시각 단위 연체 비교에 필요한 시점을 반환한다."""
+    deadline = period.end or period.start
+    if period.kind == "date":
+        return date.fromisoformat(deadline), None
+    timestamp = datetime.fromisoformat(deadline).astimezone(SEOUL)
+    return timestamp.date(), timestamp
+
+
 def deadline_flags(
     period: Period | None, requested_day: date, observed_now: datetime
 ) -> tuple[bool, bool]:
     """날짜 마감은 다음 날부터, 시각 마감은 기준 시점부터 경과로 판단한다."""
     if period is None:
         return False, False
-    deadline = period.end or period.start
-    if period.kind == "date":
-        day = date.fromisoformat(deadline)
+    day, timestamp = deadline_basis(period)
+    if timestamp is None:
         return day == requested_day, day < requested_day
-    timestamp = datetime.fromisoformat(deadline).astimezone(SEOUL)
     local_now = observed_now.astimezone(SEOUL)
     reference = (
         local_now
         if requested_day == local_now.date()
         else datetime.combine(requested_day, time.min, SEOUL)
     )
-    return timestamp.date() == requested_day, timestamp < reference
+    return day == requested_day, timestamp < reference
 
 
 def meeting_on_day(period: Period | None, requested_day: date) -> bool:

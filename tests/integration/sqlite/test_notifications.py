@@ -466,6 +466,33 @@ async def test_column_reminders_follow_source_dates_and_survive_restart(db: Data
     await queue.ack(old.id, old.token, "cancelled")
     await publish(None)
     assert await due_times() == {}
+    # 마지막 날에는 만료 자정이 범위를 넘는 당일 규칙만 빠지고 전날 예약은 남는다.
+    await publish("9999-12-30")
+    assert set(await due_times()) == {"전날", "당일"}
+    await publish("9999-12-31")
+    assert await due_times() == {"전날": datetime(9999, 12, 30, 0, 15, tzinfo=UTC)}
+    # 첫날의 전날은 없지만 인접 날짜부터는 전날 예약도 저장할 수 있다.
+    clock.value = datetime(1, 1, 1, tzinfo=UTC).timestamp()
+    await publish("0001-01-01")
+    assert set(await due_times()) == {"당일"}
+    await publish("0001-01-02")
+    assert set(await due_times()) == {"전날", "당일"}
+    # 양 끝에서도 실제 UTC 시점과 표현 가능한 분 단위 예약을 별도로 보존한다.
+    await publish("0001-01-01T01:10:00+01:00")
+    assert set(await due_times()) == {"당일"}
+    await publish("0001-01-01T01:30:00+01:00")
+    assert (await due_times())["시작 전"] == datetime(1, 1, 1, 0, 5, tzinfo=UTC)
+    await publish("9999-12-30T23:00:00-01:00")
+    assert set(await due_times()) == {"전날", "시작 전"}
+    await publish("9999-12-31T16:00:00Z")
+    assert await due_times() == {"시작 전": datetime(9999, 12, 31, 15, 35, tzinfo=UTC)}
+    assert await db.fetch(
+        "SELECT json_extract(payload, '$.due.start') AS start FROM item_snapshots"
+    ) == [{"start": "9999-12-31T16:00:00.000Z"}]
+    assert await db.fetch("SELECT expires_at FROM notification_jobs WHERE state='pending'") == [
+        {"expires_at": datetime(9999, 12, 31, 16, tzinfo=UTC).timestamp()}
+    ]
+    clock.value = datetime(2026, 12, 31, tzinfo=UTC).timestamp()
     # 이미 지난 예약을 뒤늦게 추가하지 않는다.
     await publish("2026-12-29")
     assert await due_times() == {} and await queue.claim() == ()
@@ -593,3 +620,63 @@ async def test_overnight_rules_and_subscription_rescheduling_cancel_pending(
     with store.apply_today_rules(DEFAULT_WORK_RULES):
         pass
     assert len(await db.fetch("SELECT id FROM notification_jobs WHERE state='pending'")) == 1
+
+
+@pytest.mark.parametrize(
+    ("start", "expected_rule"),
+    (
+        (None, "empty"),
+        ("2027-01-01", "not_empty"),
+        ("2027-01-02T01:00:00+09:00", "not_empty"),
+        ("9999-12-31T16:00:00Z", "not_empty"),
+    ),
+)
+async def test_reminder_scope_uses_period_presence(
+    db: Database, start: str | None, expected_rule: str
+) -> None:
+    """필터 칼럼이 비었는지에 따라 실제 저장되는 사전 예약을 구분한다."""
+    from uuid import uuid4
+
+    from src.domain.main_list import ListFilter, MainListRules
+    from src.domain.source_alerts import AlertSchedule, SourceAlertRule
+    from src.domain.source_scope import SourceScope
+    from src.infrastructure.notion.normalization import normalize_page
+    from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
+    from tests.fixtures.notion import OBSERVED, SOURCE, page
+
+    # 예약 기준은 고정해 필터 칼럼이 빈 경우에도 반대 규칙의 예약을 확인한다.
+    rules = tuple(
+        SourceAlertRule(
+            str(uuid4()),
+            operator,
+            "reminder",
+            "date",
+            schedule=AlertSchedule("before_start", "25"),
+            source_scopes=(
+                SourceScope(
+                    SOURCE.source_id, MainListRules(filters=(ListFilter("period:d", operator),))
+                ),
+            ),
+        )
+        for operator in ("empty", "not_empty")
+    )
+    source = replace(SOURCE, alert_rules=rules)
+    raw = page()
+    props = raw["properties"]
+    assert isinstance(props, dict)
+    props["Date"] = {
+        "id": "d",
+        "type": "date",
+        "date": {"start": start, "end": None} if start else None,
+    }
+    props["Reminder"] = {
+        "id": "reminder",
+        "type": "date",
+        "date": {"start": "9999-12-31T16:00:00Z", "end": None},
+    }
+    item = normalize_page(raw, source, OBSERVED)
+    snapshots = SQLiteSnapshots(db, notification_user_id="me")
+    await snapshots.complete_run(await snapshots.begin_run(source, OBSERVED), [item], OBSERVED)
+    assert await db.fetch("SELECT title, due_at FROM notification_jobs WHERE state='pending'") == [
+        {"title": expected_rule, "due_at": datetime(9999, 12, 31, 15, 35, tzinfo=UTC).timestamp()}
+    ]

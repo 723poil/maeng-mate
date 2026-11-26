@@ -37,7 +37,7 @@ from src.bootstrap.instance import (
 )
 from src.bootstrap.notification_channels import CHANNELS, build_senders
 from src.bootstrap.notification_worker import NotificationWorker
-from src.bootstrap.service import LABELS
+from src.bootstrap.service_startup import LABELS
 from src.domain.daily_work import FlexibleDeparturePolicy
 from src.infrastructure.ai_skills import UserSkillInstaller
 from src.infrastructure.calendar_api import CalendarApi

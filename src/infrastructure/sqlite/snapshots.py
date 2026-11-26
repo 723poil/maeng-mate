@@ -12,13 +12,14 @@ from src.application.models import SyncRun
 from src.domain.meeting_reminders import MeetingReminderPolicy
 from src.domain.models import SourceMapping, WorkItem
 from src.domain.retry import RetryPolicy
+from src.domain.source_fingerprints import source_fingerprint
 from src.domain.task_changes import TaskChangePolicy
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.field_alerts import record_field_alerts, seed_converted_baselines
 from src.infrastructure.sqlite.meeting_reminders import enqueue_meeting_reminders
 from src.infrastructure.sqlite.notifications import enqueue_calendar
 from src.infrastructure.sqlite.schedules import advance_schedule, fail_schedule
-from src.infrastructure.sqlite.serialization import source_fingerprint, staging_rows
+from src.infrastructure.sqlite.serialization import staging_rows
 from src.infrastructure.sqlite.sync_alerts import (
     enqueue_sync_failure,
     resolve_sync_failure,

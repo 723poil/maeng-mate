@@ -8,6 +8,7 @@ import shutil
 import stat
 import sys
 import tempfile
+from collections.abc import Callable
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from io import BufferedReader, FileIO
@@ -85,13 +86,19 @@ def _publish_new_file(temporary: Path, target: Path) -> None:
     os.link(temporary, target)
 
 
-def create_backup(database: Path, rules: Path, target: Path) -> None:
+def create_backup(
+    database: Path,
+    rules: Path,
+    target: Path,
+    *,
+    on_created: Callable[[int, os.stat_result], None] | None = None,
+) -> None:
     """같은 시점의 DB·근무 규칙을 검증한 다음 완성된 파일을 새 이름으로만 게시한다."""
     if target.exists() or target.is_symlink():
         raise FileExistsError("같은 이름의 파일이 있습니다. 새 이름으로 저장하세요.")
     published = False
     try:
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as files:
             staging = Path(temporary)
             snapshot = staging / "snapshot.sqlite3"
             portable = staging / _DATABASE
@@ -114,24 +121,25 @@ def create_backup(database: Path, rules: Path, target: Path) -> None:
                 dir=target.parent, prefix=".maeng-mate-"
             ) as publication:
                 output = Path(publication) / "backup"
-                output.touch(mode=0o600, exist_ok=False)
-                with output.open("wb") as stream:
-                    with ZipFile(stream, "w") as archive:
-                        archive.writestr(_MANIFEST, json.dumps(manifest))
-                        archive.write(portable, _DATABASE)
-                        if saved_rules is not None:
-                            archive.writestr(
-                                _RULES,
-                                json.dumps(
-                                    document_payload(saved_rules), ensure_ascii=False
-                                ).encode(),
-                            )
-                    stream.flush()
-                    os.fsync(stream.fileno())
+                descriptor = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                stream = files.enter_context(os.fdopen(descriptor, "wb"))
+                with ZipFile(stream, "w") as archive:
+                    archive.writestr(_MANIFEST, json.dumps(manifest))
+                    archive.write(portable, _DATABASE)
+                    if saved_rules is not None:
+                        archive.writestr(
+                            _RULES,
+                            json.dumps(document_payload(saved_rules), ensure_ascii=False).encode(),
+                        )
+                stream.flush()
+                os.fsync(stream.fileno())
+                before = os.fstat(stream.fileno())
                 _publish_new_file(output, target)
                 published = True
             # 임시 게시 폴더 정리까지 마친 뒤 최종 이름이 속한 디렉터리를 확정한다.
             _sync_directory(target.parent)
+            if on_created is not None:
+                on_created(stream.fileno(), before)
     except OSError as error:
         # 게시 뒤에는 완성된 파일을 지우지 않고 호출자가 재시도 여부를 판단하게 한다.
         if published:

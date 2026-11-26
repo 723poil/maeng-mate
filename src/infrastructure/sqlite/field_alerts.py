@@ -3,12 +3,13 @@
 import json
 import sqlite3
 from collections.abc import Iterator, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 
 from src.application.models import SyncRun
 from src.application.notion_links import notion_link
 from src.application.work_settings import Settings, parse_settings
 from src.domain.event_classification import EVENT_CLASSIFICATION
+from src.domain.field_alerts import field_alert_scopes, includes_item
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
 from src.domain.notification_timing import calendar_alert_expiry
 from src.domain.source_alerts import (
@@ -19,44 +20,16 @@ from src.domain.source_alerts import (
     alert_body_token,
     alert_value_key,
 )
-from src.domain.work_dates import SEOUL, canonical_identity
-from src.infrastructure.sqlite.decoding import decode_item
-from src.infrastructure.sqlite.notification_deliveries import logical_completed
-from src.infrastructure.sqlite.notification_keys import failure_rule_scope, notification_key
-from src.infrastructure.sqlite.serialization import (
+from src.domain.source_fingerprints import (
     alert_scope_fingerprint,
     fingerprint,
     source_fingerprint,
 )
+from src.domain.work_dates import canonical_identity, seoul_clock, seoul_datetime
+from src.infrastructure.sqlite.decoding import decode_item
+from src.infrastructure.sqlite.notification_deliveries import logical_completed
+from src.infrastructure.sqlite.notification_keys import failure_rule_scope, notification_key
 from src.infrastructure.sqlite.task_changes import notification_body
-
-
-def field_alert_scopes(source: SourceMapping, user: str | None) -> dict[str, SourceAlertRule]:
-    """규칙, 원본 매핑, 본인 범위를 한 발송 범위로 묶는다."""
-    identity = canonical_identity(user) if user else None
-    mapping = source_fingerprint(source)
-    return {
-        fingerprint(
-            (
-                source.source_id,
-                mapping,
-                identity if source.has_person_scope or rule.member == "self" else None,
-                rule.id,
-                rule.column_id,
-                rule.comparison_kind,
-                rule.target,
-                *((rule.member, rule.item_filter) if rule.member or rule.item_filter else ()),
-                *((rule.schedule.mode, rule.schedule.value) if rule.schedule else ()),
-                *((digest,) if (digest := alert_scope_fingerprint(rule)) else ()),
-            )
-        ): rule
-        for rule in source.alert_rules
-        if rule.enabled
-        and (
-            user is not None
-            or (rule.member != "self" and (rule.member is not None or not source.has_person_scope))
-        )
-    }
 
 
 def saved_rule_bindings(
@@ -130,22 +103,6 @@ def currently_saved_scopes(
     if current is None:
         return {}
     return {key: rule for key, rule in field_alert_scopes(current, user).items() if key in running}
-
-
-def includes_item(source: SourceMapping, item: WorkItem, user: str | None) -> bool:
-    """기존 본인 범위를 따라 취소 항목은 알림 기준에서 제외한다."""
-    if isinstance(item, CalendarEvent) and item.cancelled:
-        return False
-    if not source.has_person_scope:
-        return True
-    people = (
-        item.assignee_ids
-        if isinstance(item, Task)
-        else item.participant_ids
-        if isinstance(item, CalendarEvent)
-        else item.person_ids
-    )
-    return user is not None and canonical_identity(user) in map(canonical_identity, people)
 
 
 def seed_converted_baselines(
@@ -288,8 +245,9 @@ def record_field_alerts(
                 # 일정의 최종 분류는 숨긴 칼럼과 무관하게 스냅샷에 저장된다.
                 if EVENT_CLASSIFICATION in kinds and isinstance(item, CalendarEvent):
                     values[EVENT_CLASSIFICATION] = item.category or ""
+                local = seoul_datetime(basis)
                 if values.keys() != kinds.keys() or not rule.scope.includes(
-                    values, kinds, basis.astimezone(SEOUL).date()
+                    values, kinds, local.date() if local else None
                 ):
                     continue
             expires = now + 86400
@@ -315,13 +273,12 @@ def record_field_alerts(
             if rule.schedule is not None:
                 # 처음 본 미래 시각과 누락 후 다시 나타난 미래 시각도 한 번만 예약한다.
                 due = item.alert_due_at.get(rule.id)
-                if due is not None and (
-                    due.timestamp() >= now
-                    or (
-                        rule.item_filter == "meeting"
-                        and rule.schedule.mode == "before_start"
-                        and rule.schedule.expires_at(due) > observed
-                    )
+                if due is None or (expiry := rule.schedule.expires_at(due)) is None:
+                    continue
+                if due.timestamp() >= now or (
+                    rule.item_filter == "meeting"
+                    and rule.schedule.mode == "before_start"
+                    and expiry > observed
                 ):
                     enqueue_field_alert(
                         connection,
@@ -331,7 +288,7 @@ def record_field_alerts(
                         rule,
                         digest,
                         due.timestamp(),
-                        rule.schedule.expires_at(due).timestamp(),
+                        expiry.timestamp(),
                         scheduled=True,
                     )
             elif (
@@ -417,8 +374,8 @@ def enqueue_field_alert(
     elif token == MEETING_BODY and rule.schedule:
         # 사전 예약의 기준 칼럼을 변경하면 본문 시각도 같은 칼럼의 원본 시작값을 쓴다.
         if rule.schedule.mode == "before_start":
-            event_start = datetime.fromtimestamp(due + int(rule.schedule.value) * 60, SEOUL)
-            body = f"{event_start:%H:%M} · {body}"
+            event_start = datetime.fromtimestamp(due + int(rule.schedule.value) * 60, UTC)
+            body = f"{seoul_clock(event_start)} · {body}"
         elif run.source is not None:
             period = next(
                 (
@@ -429,7 +386,7 @@ def enqueue_field_alert(
                 None,
             )
             if period and period.kind == "instant":
-                body = f"{datetime.fromisoformat(period.start).astimezone(SEOUL):%H:%M} · {body}"
+                body = f"{seoul_clock(datetime.fromisoformat(period.start))} · {body}"
     origin = run.source.origin if run.source is not None else run.source_id
     # 규칙별 관측과 취소는 뷰에 남기고, 실제로 같은 원본 변경을 본 채널만 전달을 공유한다.
     logical = fingerprint(

@@ -9,7 +9,7 @@ from Foundation import NSObject
 
 from src.application.category_column_types import accepts_column_type
 from src.application.source_settings import SourceColumn, SourceSettingsError
-from src.application.work_settings import parse_classification_rules
+from src.application.source_settings_codec import parse_classification_rules
 from src.domain.models import ClassificationCondition, ClassificationRule
 from src.presentation.category_sheet_controls import (
     field,

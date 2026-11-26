@@ -2,7 +2,10 @@
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.fastmcp.tools import Tool
+from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
 from mcp.types import ToolAnnotations
+from pydantic import ValidationError
 
 from src.application.date_inputs import parse_day
 from src.application.errors import InvalidDateError, StatusReadError
@@ -10,19 +13,32 @@ from src.application.ports import McpQueryReader
 from src.application.task_search import TaskSearch, TaskSearchInputError
 
 
+class SearchArguments(FuncMetadata):
+    """SDK가 문자열을 JSON으로 다시 해석하기 전에 원본 검색 필드를 검사한다."""
+
+    def pre_parse_json(self, data: dict[str, object]) -> dict[str, object]:
+        """도구 시그니처로 타입과 키를 검사하고 의미 검증에는 원래 값을 넘긴다."""
+        try:
+            self.arg_model.model_validate(data, strict=True, extra="forbid")
+        except ValidationError:
+            raise ToolError(str(TaskSearchInputError())) from None
+        return data
+
+
 def create_server(reader: McpQueryReader) -> FastMCP:
     """stdio와 상주 HTTP에 같은 조회 도구와 입력 계약을 제공한다."""
+    read_only = ToolAnnotations(
+        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
+    )
+
     server = FastMCP(
         "maeng-mate",
+        tools=[create_task_search_tool(reader, read_only)],
         host="127.0.0.1",
         stateless_http=True,
         json_response=True,
         streamable_http_path="/",
         log_level="WARNING",
-    )
-
-    read_only = ToolAnnotations(
-        readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
     )
 
     @server.tool(annotations=read_only)
@@ -69,7 +85,12 @@ def create_server(reader: McpQueryReader) -> FastMCP:
                 "업무 상태 목록을 조회할 수 없습니다. 로컬 앱 연결과 수집 상태를 확인하세요."
             ) from None
 
-    @server.tool(annotations=read_only)
+    return server
+
+
+def create_task_search_tool(reader: McpQueryReader, read_only: ToolAnnotations) -> Tool:
+    """공통 파서가 HTTP와 같은 JSON 타입을 받도록 개인 검색 도구를 조립한다."""
+
     async def search_my_tasks(
         query: str | None = None,
         status: str | None = None,
@@ -108,4 +129,7 @@ def create_server(reader: McpQueryReader) -> FastMCP:
                 "업무 검색에 실패했습니다. 로컬 앱 연결과 수집 상태를 확인하세요."
             ) from None
 
-    return server
+    # 검색만 원본 JSON 타입을 강제하고 다른 도구의 SDK 입력 계약은 유지한다.
+    search_tool = Tool.from_function(search_my_tasks, annotations=read_only)
+    search_tool.fn_metadata = SearchArguments.model_validate(search_tool.fn_metadata.model_dump())
+    return search_tool

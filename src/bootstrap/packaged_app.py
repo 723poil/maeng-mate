@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.bootstrap.app_settings import application_environment, save_bootstrap
+from src.bootstrap.backup_retention import prune_copies, register_copy
 from src.bootstrap.environment import ConfigError, required
 from src.bootstrap.executable import bundle_contents
 from src.bootstrap.instance import application_directory
@@ -54,7 +55,18 @@ def backup_database(path: str) -> None:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     target = directory / ("pre-install-" + stamp + ".sqlite3")
     try:
-        copy_database(source, target)
+        # SQLite가 경로를 다시 여는 작업은 비공개 준비 폴더 안에서 마친다.
+        with tempfile.TemporaryDirectory(dir=directory) as temporary:
+            staged = Path(temporary) / "copy"
+
+            def publish(descriptor: int) -> None:
+                """기존 이름을 덮지 않고 게시한 뒤 생성 때부터 열린 핸들로 등록한다."""
+                before = os.fstat(descriptor)
+                os.link(staged, target)
+                staged.unlink()
+                register_copy(target, "pre-install", before, os.fstat(descriptor))
+
+            copy_database(source, staged, on_created=publish)
     except (OSError, sqlite3.Error):
         raise ConfigError("기존 DB를 백업하지 못했습니다. 설치를 중단합니다.") from None
 
@@ -123,6 +135,7 @@ def record_installation() -> None:
         bundleRoot=str(contents), bundleBuild=(contents / "Resources/build-info.json").read_text()
     )
     write_private_file(manifest, json.dumps(value).encode())
+    prune_copies(support, "pre-install")
 
 
 def launch_action() -> str:
@@ -148,10 +161,3 @@ def launch_action() -> str:
     except (OSError, ValueError):
         pass
     return action
-
-
-def launch() -> None:
-    """Finder 실행 요청을 직렬화하고 준비된 메뉴바에 패널 열기를 전달한다."""
-    from src.bootstrap.service import run_service
-
-    run_service("finder")

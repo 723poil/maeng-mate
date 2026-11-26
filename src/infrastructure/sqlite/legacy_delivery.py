@@ -4,10 +4,11 @@ import sqlite3
 from dataclasses import dataclass
 
 from src.application.work_settings import Settings
+from src.domain.field_alerts import field_alert_scopes
 from src.domain.source_alerts import SourceAlertRule
 from src.domain.source_display import SOURCE_CHANNELS
+from src.domain.source_fingerprints import source_fingerprint
 from src.domain.work_dates import canonical_identity
-from src.infrastructure.sqlite.field_alerts import field_alert_scopes
 from src.infrastructure.sqlite.notification_keys import (
     failure_rule_scope,
     meeting_scope,
@@ -16,7 +17,6 @@ from src.infrastructure.sqlite.notification_keys import (
     task_scope,
 )
 from src.infrastructure.sqlite.rule_delivery import RuleRoute, category_rules
-from src.infrastructure.sqlite.serialization import source_fingerprint
 
 
 @dataclass(frozen=True)

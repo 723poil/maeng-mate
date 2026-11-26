@@ -10,9 +10,9 @@ from datetime import UTC, datetime
 from src.application.errors import QueryReadError, SnapshotError
 from src.application.today_models import SourceSnapshot
 from src.domain.models import SourceMapping
+from src.domain.source_fingerprints import fingerprint, source_fingerprint
 from src.infrastructure.sqlite.connection import Database
 from src.infrastructure.sqlite.decoding import decode_item
-from src.infrastructure.sqlite.serialization import fingerprint, source_fingerprint
 
 ITEMS_QUERY = """
 SELECT item_id, payload FROM item_snapshots

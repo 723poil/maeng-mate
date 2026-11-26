@@ -26,11 +26,11 @@ from AppKit import (
 )
 from Foundation import NSObject
 
-from src.application.source_settings import SourceSettingsClient, SourceSettingsError
-from src.application.work_settings import (
+from src.application.category_settings_codec import (
     category_configuration_payload,
     parse_category_configuration,
 )
+from src.application.source_settings import SourceSettingsClient, SourceSettingsError
 from src.domain.category_configuration import (
     CATEGORY_COLUMN_TYPES,
     CategoryAlert,
@@ -169,7 +169,11 @@ class CategoryConfigurationSheet:
             self._pages.append(page)
         columns, main_list, calendar, alerts = self._pages
         self._main_editor = MainListEditor(
-            main_list, self._original.columns, self._original.main_list, self.clear_status
+            main_list,
+            self._original.columns,
+            self._original.main_list,
+            self.clear_status,
+            display_filter_fields=frozenset(key for source in sources for key in source.columns),
         )
         label(columns, "카테고리 이름", 10, 387, 128)
         self.name = field(columns, category.name, 141, 383, 483, "카테고리 이름")

@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 
+from src.application.category_settings_codec import category_documents
 from src.application.errors import SnapshotError
 from src.application.source_settings import (
     SourceSettingsClient,
@@ -17,7 +18,7 @@ from src.application.source_settings import (
     schema_payload,
     tables_payload,
 )
-from src.application.work_settings import WorkSettingsError, category_documents
+from src.application.work_settings import WorkSettingsError
 from src.presentation.request_body import read_limited_body
 
 

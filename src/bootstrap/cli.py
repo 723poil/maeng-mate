@@ -118,6 +118,7 @@ def main() -> None:
 
             from src.bootstrap.app_settings import application_environment
             from src.bootstrap.environment import app_environment, required
+            from src.bootstrap.local_listener import local_listener
             from src.bootstrap.notion_credentials import load_notion_environment
             from src.bootstrap.runtime_settings import load_runtime_environment
             from src.bootstrap.wiring import build_api
@@ -132,7 +133,8 @@ def main() -> None:
             environment = app_environment(environment_values)
             from src.bootstrap.instance import instance_lock
 
-            with instance_lock("resident"):
+            # 포트 충돌로 실행할 수 없으면 설정·오늘 기록·알림 예약을 보정하지 않는다.
+            with instance_lock("resident"), local_listener(environment.port) as listener:
                 database = Database(required(environment_values, "DATABASE_PATH"))
                 settings = load_work_settings(database, prepare_categories=True)
                 app = build_api(
@@ -141,7 +143,11 @@ def main() -> None:
                     work_rules_service=build_work_rules(settings, database),
                     notion_legacy_token=os.environ.get("NOTION_TOKEN") or None,
                 )
-                uvicorn.run(app, host="127.0.0.1", port=environment.port, access_log=False)
+                server = uvicorn.Server(
+                    uvicorn.Config(app, host="127.0.0.1", port=environment.port, access_log=False)
+                )
+                # 확보한 소켓을 유지한 채 단독 API의 기존 Uvicorn 신호 처리를 사용한다.
+                server.run(sockets=[listener])
         else:
             from src.bootstrap.commands import run_storage
 

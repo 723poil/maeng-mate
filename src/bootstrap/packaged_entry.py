@@ -18,10 +18,12 @@ def main() -> None:
         command_main()
         return
     from src.bootstrap.environment import ConfigError
-    from src.bootstrap.packaged_app import launch
 
     try:
-        launch()
+        # 서비스 모듈을 불러올 때 발생하는 번들 프로필 오류도 Finder에 표시한다.
+        from src.bootstrap.service import run_service
+
+        run_service("finder")
     except Exception as error:
         from AppKit import NSAlert, NSApplication, NSApplicationActivationPolicyAccessory
 

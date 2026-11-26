@@ -17,7 +17,13 @@ from src.domain.display_columns import DisplayColumn, labelled_values
 from src.domain.main_list import ListSort
 from src.domain.models import CalendarEvent, Leave, SourceMapping, Task, WorkItem
 from src.domain.policies import RelevancePolicy
-from src.domain.work_dates import SEOUL, canonical_identity, deadline_flags, meeting_on_day
+from src.domain.work_dates import (
+    SEOUL,
+    canonical_identity,
+    deadline_basis,
+    deadline_flags,
+    meeting_on_day,
+)
 
 
 def task_view(
@@ -172,12 +178,7 @@ def main_list_values(
                         values["completedQaAge"] = str((day - edited.astimezone(SEOUL).date()).days)
         elif completed and item.due is not None and "completedTaskAge" in fields:
             # 기간 기한은 마지막 날, 시각 기한은 서울 현지 날짜를 기준으로 센다.
-            deadline = item.due.end or item.due.start
-            deadline_day = (
-                date.fromisoformat(deadline)
-                if item.due.kind == "date"
-                else datetime.fromisoformat(deadline).astimezone(SEOUL).date()
-            )
+            deadline_day, _ = deadline_basis(item.due)
             values["completedTaskAge"] = str((day - deadline_day).days)
     return values
 
@@ -410,7 +411,8 @@ def desktop_preview(
         values = preview_values.get((source_id, str(item["id"])))
         if values is not None:
             item.update(desktop_fields(context.display_columns[source_id], values))
-        used += len(json.dumps(item, ensure_ascii=True)) + 2
+        # 첫 행에는 배열 괄호 두 바이트를, 다음 행에는 쉼표 한 바이트를 더한다.
+        used += query_json_size(item) + (1 if selected else 2)
         if selected and used > budget:
             break
         selected.append(item)
@@ -436,9 +438,15 @@ class PersonalWorkRows:
     category_areas: dict[str, dict[str, object]]
 
 
+def query_json_size(payload: dict[str, object]) -> int:
+    """개인 조회 HTTP 응답의 공백 없는 UTF-8 JSON 바이트 수를 구한다."""
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return len(encoded.encode("utf-8"))
+
+
 def checked_query_result(payload: dict[str, object]) -> dict[str, object]:
     """실제로 반환할 개인 조회 응답의 JSON 크기를 확인한다."""
-    if len(json.dumps(payload, ensure_ascii=True)) > 1024 * 1024:
+    if query_json_size(payload) > 1024 * 1024:
         raise QueryReadError()
     return payload
 

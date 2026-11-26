@@ -9,23 +9,34 @@ from src.presentation.http import create_app
 TOKEN = "fake-local-api-token-" * 3
 
 
-async def today(date: str | None) -> dict[str, object]:
-    """요청 날짜가 조회 계약에 전달되는지 확인할 값을 반환한다."""
-    return {"date": date, "tasks": [], "meetings": [], "stale": True}
+async def today(date: str | None, event_classification: str | None) -> dict[str, object]:
+    """요청 날짜와 일정 분류가 조회 계약에 전달되는지 확인할 값을 반환한다."""
+    return {
+        "date": date,
+        "classification": event_classification,
+        "tasks": [],
+        "meetings": [],
+        "stale": True,
+    }
 
 
-async def test_today_is_authenticated_and_forwards_date() -> None:
-    """본인 인증 뒤 날짜만 조회에 전달한다."""
+@pytest.mark.parametrize("classification", [None, "검토"])
+async def test_today_is_authenticated_and_forwards_date(classification: str | None) -> None:
+    """본인 인증 뒤 날짜와 선택한 분류를 조회에 전달한다."""
     app = create_app(TOKEN, lambda: {}, today)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://local"
     ) as client:
         assert (await client.get("/v1/today")).status_code == 401
+        params = {"date": "2026-11-13"}
+        if classification is not None:
+            params["event_classification"] = classification
         response = await client.get(
-            "/v1/today?date=2026-11-13", headers={"Authorization": f"Bearer {TOKEN}"}
+            "/v1/today", params=params, headers={"Authorization": f"Bearer {TOKEN}"}
         )
         assert response.status_code == 200
         assert response.json()["date"] == "2026-11-13"
+        assert response.json()["classification"] == classification
         assert response.headers["Cache-Control"] == "no-store"
         assert TOKEN not in response.text
 
@@ -47,7 +58,7 @@ async def test_invalid_date_has_safe_error(date: str) -> None:
 async def test_unconfigured_query_and_storage_failure_are_explicit() -> None:
     """설정 누락과 읽기 실패를 정상적인 빈 업무로 표현하지 않는다."""
 
-    async def failed(date: str | None) -> dict[str, object]:
+    async def failed(date: str | None, event_classification: str | None) -> dict[str, object]:
         """저장 경계가 변환한 안전한 오류를 발생시킨다."""
         raise QueryReadError()
 

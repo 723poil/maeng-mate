@@ -3,13 +3,8 @@
 from dataclasses import replace
 from uuid import uuid4
 
-from src.application.work_settings import (
-    Settings,
-    canonical_sources,
-    category_documents,
-    parse_settings,
-    source_documents,
-)
+from src.application.category_settings_codec import canonical_sources, category_documents
+from src.application.work_settings import Settings, parse_settings, source_documents
 from src.domain.calendar import CalendarKind
 from src.domain.preferences import LEGACY_SECTIONS, Preferences, SectionPreference
 from src.domain.source_display import SourceCategory

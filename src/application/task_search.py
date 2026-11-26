@@ -14,11 +14,12 @@ from src.domain.work_dates import canonical_identity
 class TaskSearchInputError(ValueError):
     """검색 원문을 노출하지 않는 입력 오류다."""
 
-    def __init__(self) -> None:
-        """허용 형식만 짧게 안내한다."""
-        super().__init__(
-            "검색어·카테고리·표·원본 상태·마감 날짜(YYYY-MM-DD)·개수·offset을 확인하세요. status와 statuses 중 하나만 지정하세요."
-        )
+    def __init__(
+        self,
+        message: str = "검색어·카테고리·표·원본 상태·마감 날짜(YYYY-MM-DD)·개수·offset을 확인하세요. status와 statuses 중 하나만 지정하세요.",
+    ) -> None:
+        """호출자가 수정할 수 있는 검색 조건을 안내한다."""
+        super().__init__(message)
 
 
 def optional_text(value: object) -> str | None:
@@ -103,11 +104,12 @@ class TaskSearch:
         ):
             raise TaskSearchInputError()
         section = payload.get("section", "all")
+        # 검색이 반환한 다음 위치는 전체 일치 건수와 관계없이 다시 요청할 수 있어야 한다.
         if (
             type(limit) is not int
             or not 1 <= limit <= 100
             or type(offset) is not int
-            or not 0 <= offset <= 100000
+            or offset < 0
             or section not in ("tasks", "qa", "all")
             or (start is not None and end is not None and start > end)
         ):

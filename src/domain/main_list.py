@@ -32,7 +32,7 @@ FIELD_KINDS = {
     "sourceOrder": "number",
     "sourceRowOrder": "number",
 }
-RELATIVE_DAY_OPERATORS = ("past_days", "next_days", "since_days_ago")
+RELATIVE_DAY_OPERATORS = ("past_days", "past_days_and_future", "next_days", "since_days_ago")
 _PRESENCE = ("empty", "not_empty")
 _ORDERED = ("eq", "ne", "lt", "lte", "gt", "gte", *_PRESENCE)
 _OPERATORS = {
@@ -52,6 +52,14 @@ def operators_for(kind: str) -> tuple[str, ...]:
     return _OPERATORS.get(kind, ())
 
 
+def _date_start(raw: str) -> datetime | None:
+    """구간 시작값이 유효한 날짜인지 시간대 변환 없이 판정한다."""
+    try:
+        return datetime.fromisoformat(raw.strip().partition(" ~ ")[0])
+    except ValueError:
+        return None
+
+
 def _read_value(raw: object, kind: str, *, date_only: bool = False) -> str | Decimal | None:
     """기록값을 같은 종류끼리 비교할 수 있게 바꾸고 누락·해석 실패를 구분 없이 처리한다."""
     value = raw.strip() if isinstance(raw, str) else ""
@@ -68,12 +76,13 @@ def _read_value(raw: object, kind: str, *, date_only: bool = False) -> str | Dec
             number = Decimal(value)
             return number if number.is_finite() else None
         # 저장된 구간은 시작값으로 비교한다. 시간대가 없는 표시는 이미 서울 시각이다.
-        start = value.partition(" ~ ")[0]
         if kind == "time":
-            clock = time.fromisoformat(start)
+            clock = time.fromisoformat(value.partition(" ~ ")[0])
             return clock.isoformat() if clock.tzinfo is None else None
         if kind == "date":
-            stamp = datetime.fromisoformat(start)
+            stamp = _date_start(value)
+            if stamp is None:
+                return None
             if stamp.tzinfo is not None:
                 stamp = stamp.astimezone(SEOUL).replace(tzinfo=None)
             return stamp.date().isoformat() if date_only else stamp.isoformat()
@@ -148,11 +157,15 @@ class ListFilter:
                 raise ValueError("비교할 숫자를 입력하세요.")
             raise ValueError("비교할 값을 입력하세요.")
 
-    def matches(self, raw: str, kind: str, day: date) -> bool:
+    def matches(self, raw: str, kind: str, day: date | None) -> bool:
         """누락값은 비어 있음 조건으로만 선택하고 날짜는 서울 기준일과 비교한다."""
         if self.operator == "exact":
             # QA 상태·차시처럼 원천 이름 자체를 지정한 조건은 공백과 대소문자도 구분한다.
             return raw == self.value
+        if kind == "date" and self.operator in _PRESENCE:
+            # 값의 존재는 서울 날짜로 바꿀 수 있는지와 독립적이다.
+            present = _date_start(raw) is not None
+            return present if self.operator == "not_empty" else not present
         actual = _read_value(raw, kind, date_only=True)
         if self.operator == "empty":
             return actual is None
@@ -161,11 +174,17 @@ class ListFilter:
         if self.operator == "not_empty":
             return True
         if self.operator in ("today", *RELATIVE_DAY_OPERATORS) and isinstance(actual, str):
+            # 서울 기준일을 표현할 수 없어도 다른 종류의 조건은 그대로 평가한다.
+            if day is None:
+                return False
             distance = (date.fromisoformat(actual) - day).days
             if self.operator == "today":
                 return distance == 0
             if self.operator == "since_days_ago":
                 return distance >= -Decimal(self.value)
+            if self.operator == "past_days_and_future":
+                # 오늘이 첫 번째 날이므로 N일 전은 두 최근 N일 조건에서 모두 제외한다.
+                return -distance < Decimal(self.value)
             # 오늘부터 양쪽 방향으로 각각 N개의 날짜를 센다.
             elapsed = -distance if self.operator == "past_days" else distance
             return 0 <= elapsed < Decimal(self.value)
@@ -262,7 +281,9 @@ class MainListRules:
                 raise ValueError("같은 칼럼은 정렬 기준에 한 번만 추가하세요.")
             sorted_fields.add(sort.field)
 
-    def includes(self, values: Mapping[str, str], kinds: Mapping[str, str], day: date) -> bool:
+    def includes(
+        self, values: Mapping[str, str], kinds: Mapping[str, str], day: date | None
+    ) -> bool:
         """제외 조건 중 하나라도 맞으면 숨기고 나머지 행에 포함 조건을 적용한다."""
         return self.accepts(
             lambda condition: condition.matches(

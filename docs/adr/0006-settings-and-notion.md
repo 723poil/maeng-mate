@@ -10,7 +10,11 @@
 
 비밀값과 형식 검증, 버전이 있는 저장 레코드, 저장소 포트와 공개 오류 분류는 `src/application/credentials.py`에서 공유한다. Notion의 환경값 복귀, Slack 앱 토큰의 형식, MCP 토큰 발급은 각 유스케이스에서 결정한다.
 
+Notion과 Slack 관리 API는 공통 자격 정보 오류를 `src/presentation/credential_errors_http.py`에서 HTTP 상태로 변환하고 공개 오류 코드를 유지한다. 미등록·토큰 거부는 422, 버전 충돌은 409, 키체인·일시 장애는 503이다. Slack 테스트 발송 오류는 발송 전용 코드와 503을 유지한다.
+
 파일 가져오기와 SQLite 읽기·편집은 application의 `parse_settings`로 같은 설정 검증을 수행한다. 수집 소스 화면과 서비스 시작 시에는 같은 읽기에서 얻은 원본 문서와 검증된 매핑을 함께 사용한다. 업무 문서 저장 시 현재 버전을 쓰기 트랜잭션 안에서 다시 확인한다. 이때 읽은 기존 문서와 새로 저장한 문서의 검증 결과를 규칙·구독 비교에 재사용하고, 저장 응답의 재시작 필요 여부는 실제로 확정한 매핑으로 판정한다. 최상위 키·버전과 하위 항목은 Python 타입으로 확인하고, 잘못된 문서는 원문 없이 `WorkSettingsError`로 반환한다.
+
+업무 문서의 조립과 최상위 검증은 `src/application/work_settings.py`의 `parse_settings`가 맡는다. 소스 매핑, 알림 예약·전달, 카테고리, 목록 필터의 파서와 직렬화는 각각 `source_settings_codec.py`, `alert_settings_codec.py`, `category_settings_codec.py`, `list_settings_codec.py`에서 함께 관리한다. 화면과 기존 문서 이전 코드도 같은 변환을 사용해 빈 선택, 생략된 값, 기존 ID의 해석을 일치시킨다.
 
 | 저장 위치 | 값 |
 | --- | --- |
@@ -39,6 +43,10 @@
 - 페이지 링크는 기존 업무·QA·회의 소스의 `pageUrl`만 바꾼다. 빈 값은 링크를 제거한다. 수집 매핑·해시·근무 규칙은 보존한다. 메뉴바 조회 때마다 SQLite에서 현재 버전과 원문을 확인한다. 버전·저장 타입·원문 해시가 모두 같으면 직전에 검증한 링크 목록을 재사용한다. 달라진 문서는 전체 설정을 다시 검증한다. 페이지 링크 버전으로 늦은 조회가 링크를 되돌리는 것을 막는다. 소스 라벨의 팝오버는 현재 속성 매핑과 쓰임새를 설명한다.
 - 공통 `notion_link`로 Notion HTTPS 주소를 검증한다. 페이지 ID가 포함된 웹 경로는 앱 페이지 주소로 정규화하며 쿼리·앵커를 보존한다. 캘린더·메뉴바·알림이 이를 재사용한다.
 
+- 소스 폼은 편집값을 읽고, `src/application/source_edit.py`가 읽었던 revision으로 저장 초안을 만든다. 같은 표와 차시 모드에서만 기존 매핑을 재사용한다. 표를 바꿔도 논리 소스 ID는 유지하며, 이전 차시 제목 키는 저장할 때 부모 제목 키로 옮긴다. 삭제는 편집값 검증 없이 선택한 소스만 제거한다.
+
 ## 결과와 검증
 
 서비스는 시작 파일·DB·Keychain으로 조립된다. 직접 실행하는 CLI에는 환경변수를 명시적으로 주입할 수 있다. `src/bootstrap/app_settings.py`, `work_settings.py`, `src/application/runtime_settings_service.py`, `notion_credentials.py`, `notion_page_links.py`에서 구현한다. 임시 자료로 기존 값 보존, 연결 실패, 충돌, 토큰 삭제와 링크 즉시 반영을 확인한다.
+
+`tests/fixtures/source_edit_pdd.py`는 AppKit 폼과 임시 SQLite에서 레거시 부모 제목 이전, 같은 표 재편집, 다른 표 선택, 삭제 후의 문서와 revision을 확인한다.

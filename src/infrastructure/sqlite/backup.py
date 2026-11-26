@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
@@ -12,12 +13,13 @@ def discard_database_copy(path: Path) -> None:
         Path(str(path) + suffix).unlink(missing_ok=True)
 
 
-def copy_database(source: Path, destination: Path) -> None:
+def copy_database(
+    source: Path, destination: Path, *, on_created: Callable[[int], None] | None = None
+) -> None:
     """읽기 전용 원본에서 WAL까지 반영한 권한 600의 검증된 사본을 만든다."""
     # 독점 생성에 성공한 경우에만 실패한 목적지를 정리할 수 있다.
     descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
-        os.close(descriptor)
         with (
             closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as original,
             closing(sqlite3.connect(destination.as_uri() + "?mode=rw", uri=True)) as copied,
@@ -25,6 +27,10 @@ def copy_database(source: Path, destination: Path) -> None:
             original.backup(copied)
             if copied.execute("PRAGMA quick_check").fetchone() != ("ok",):
                 raise sqlite3.DatabaseError("DB 사본의 무결성을 확인하지 못했습니다.")
+        if on_created is not None:
+            on_created(descriptor)
     except BaseException:
         discard_database_copy(destination)
         raise
+    finally:
+        os.close(descriptor)

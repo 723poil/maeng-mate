@@ -4,7 +4,6 @@ from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
-from urllib.parse import unquote
 from uuid import uuid4
 
 from AppKit import (
@@ -21,7 +20,16 @@ from AppKit import (
 )
 from Foundation import NSObject
 
-from src.application.notion_page_links import PageLinksError, page_url
+from src.application.source_edit import (
+    EVENT_CHOICES,
+    SourceEdit,
+    TableEdit,
+    matches_property,
+    selected_properties,
+    source_draft,
+    uses_saved_layout,
+    validate_roles,
+)
 from src.application.source_settings import (
     CollectionDraft,
     SourceColumn,
@@ -32,12 +40,12 @@ from src.application.source_settings import (
     SourceSettingsState,
     SourceTable,
 )
-from src.application.work_settings import category_bindings, column_bindings_payload
+from src.application.work_settings import category_bindings
 from src.domain.category_configuration import ColumnBinding
 from src.domain.display_columns import DISPLAY_COLUMN_TYPES
 from src.domain.models import SourceKind
 from src.domain.source_display import SOURCE_SORTS, SourceCategory
-from src.domain.source_roles import ROLE_TEMPLATES, ColumnRole, roles_payload, source_roles
+from src.domain.source_roles import ROLE_TEMPLATES, ColumnRole, source_roles
 from src.domain.work_dates import canonical_identity
 from src.presentation.column_setup_sheet import ColumnSetupSheet
 from src.presentation.native_views import (
@@ -73,7 +81,6 @@ AUTO_ROLES = frozenset({"title", "status", "dueDate", "period"})
 # 고급 카드를 접었을 때는 제목 줄만 남는다.
 COLLAPSED_OPTIONS = CARD_PADDING + CARD_TITLE + CARD_PADDING
 PAGE_TOP = 8.0
-EVENT_CHOICES = ("other", "meeting", "leave")
 COLLECTION_MODES: tuple[SourceKind, ...] = ("task", "meeting", "leave")
 
 
@@ -680,14 +687,6 @@ class SourceSettingsForm:
         self.mark_edited()
         self._summary()
 
-    def _assign_category(self, value: dict[str, object]) -> None:
-        """이름을 복제하지 않고 선택한 카테고리 ID만 저장한다."""
-        value.pop("categoryId", None)
-        index = self.category.indexOfSelectedItem() - 1
-        if not 0 <= index < len(self._categories):
-            raise SourceSettingsError("수집 소스의 카테고리를 선택하세요.")
-        value["categoryId"] = self._categories[index].id
-
     def new_source(self) -> None:
         """저장 대기 중인 소스가 있을 때는 초안을 덮어쓰지 않는다."""
         state = self.editor.state
@@ -885,15 +884,12 @@ class SourceSettingsForm:
 
     def _uses_saved_layout(self) -> bool:
         """저장한 표와 차시 모드가 같을 때만 이전 속성 연결을 복원한다."""
-        original = self._original.get("dataSourceId")
-        if not isinstance(original, str) or self._uses_rounds() != (
-            "parentTitleProperty" in self._original or "roundTitleProperty" in self._original
-        ):
-            return False
-        # 아직 조회하지 않은 기존 표는 그대로 편집할 수 있고, 조회 후에는 선택이 필요하다.
-        if self._schema is None:
-            return not self._profiles
-        return canonical_identity(self._schema.id) == canonical_identity(original)
+        return uses_saved_layout(
+            self._original,
+            self._schema.id if self._schema else None,
+            bool(self._profiles),
+            self._uses_rounds(),
+        )
 
     def _chosen(self, key: str) -> SourceColumn | None:
         """선택하지 않은 역할은 None으로 둔다."""
@@ -906,20 +902,13 @@ class SourceSettingsForm:
 
     def _selected_columns(self) -> dict[str, str]:
         """역할마다 실제로 선택한 값만 모은다."""
-        original = self._original.get("properties")
-        same_source = self._uses_saved_layout()
-        result: dict[str, str] = {}
-        for key in self._mapping:
-            column = self._chosen(key)
-            if column is None:
-                continue
-            previous = original.get(key) if same_source and isinstance(original, dict) else None
-            result[key] = (
-                previous
-                if isinstance(previous, str) and self._same_value(column, previous)
-                else self._column_value(column)
-            )
-        return result
+        selected = {
+            key: self._column_value(column)
+            for key in self._mapping
+            if (column := self._chosen(key)) is not None
+        }
+        original = self._original.get("properties") if self._uses_saved_layout() else None
+        return selected_properties(selected, original, self._uses_rounds())
 
     def _default_choices(self) -> dict[str, int]:
         """이미 저장된 일정 분류와 휴가 승인 값을 같은 이름으로 복원한다."""
@@ -1242,17 +1231,12 @@ class SourceSettingsForm:
     def _validate_roles(self, values: dict[str, str]) -> None:
         """켜 둔 동작에 필요한 칼럼만 요구한다."""
         self._read_role_names()
-        if any(not 0 < len(role.title) <= 80 for role in self._roles):
-            raise SourceSettingsError("역할 이름은 1~80자로 입력하세요.")
-        optional = {"assignees", "participants", "status"}
-        for role in self._roles:
-            if role.required and role.key not in optional and role.key not in values:
-                raise SourceSettingsError(f"'{role.title}'에 사용할 원본 칼럼을 선택하세요.")
+        validate_roles(self._roles, values)
 
     def _same_value(self, column: SourceColumn, value: str) -> bool:
         """이전 Notion 속성 ID의 인코딩 표기도 함께 인식한다."""
         candidate = self._column_value(column)
-        return candidate == value if self._uses_rounds() else unquote(candidate) == unquote(value)
+        return matches_property(candidate, value, self._uses_rounds())
 
     def _draw_role(
         self,
@@ -1432,122 +1416,51 @@ class SourceSettingsForm:
                 )
 
     def draft(self) -> SourceDraft:
-        """수집 타입과 필수 매핑을 검사하고 선택한 소스만 바꾼다."""
+        """현재 편집값 또는 삭제 선택을 조회한 버전의 초안으로 전달한다."""
         state = self.editor.state
         if state is None:
             raise SourceSettingsError("수집 설정을 다시 불러오세요.")
-        sources = list(state.settings.sources)
-        if self._remove_pending:
-            sources.pop(self._selected)
-            return SourceDraft(state.settings.revision, tuple(sources))
-        assignment: dict[str, object] = {}
-        self._assign_category(assignment)
-        schema = self._schema
-        reference = self.reference.stringValue().strip()
-        if (schema is not None and reference != self._lookup_reference) or (
-            schema is None and reference != self._original.get("dataSourceId", "")
-        ):
-            raise SourceSettingsError("바뀐 주소로 칼럼을 조회하고 수집할 표를 선택하세요.")
-        kind, section = self._mode(), self._section()
-        if schema is None:
-            if not self._uses_saved_layout() or self._original.get("kind") != kind:
-                raise SourceSettingsError("Notion 칼럼을 조회하고 수집할 표를 선택하세요.")
-            value = dict(self._original)
-        else:
+        return source_draft(
+            state.settings, self._selected, None if self._remove_pending else self._read_edit()
+        )
+
+    def _read_edit(self) -> SourceEdit:
+        """선택한 컨트롤을 화면과 독립적인 값으로 읽는다."""
+        category = self.selected_category()
+        table = None
+        if self._schema is not None:
             values = self._selected_columns()
-            self._validate_roles(values)
-            value = {
-                "provider": "notion",
-                "kind": kind,
-                "dataSourceId": schema.id,
-                "properties": values,
-                "columnRoles": roles_payload(self._roles),
-                "columnLabels": {
-                    key: column.name[:250]
-                    for key in values
-                    if (column := self._chosen(key)) is not None
-                },
-            }
-            if self._round_title is not None:
-                value["parentTitleProperty"] = schema.round_titles[
-                    self._round_title.indexOfSelectedItem()
-                ]
-            # 새 표에는 이전 표의 완료·일정 분류나 레거시 필수 역할을 넘기지 않는다.
-            old = self._original if self._uses_saved_layout() else {}
-            stays_legacy = (
-                old.get("kind") == kind
-                and old.get("flexible") is not True
-                and all(role.key in values for role in self._roles if role.required)
-                and (self._round_title is None or section == "qa")
+            self._read_role_names()
+            table = TableEdit(
+                self._schema.id,
+                values,
+                {key: col.name[:250] for key in values if (col := self._chosen(key)) is not None},
+                self._roles,
+                self._schema.round_titles[self._round_title.indexOfSelectedItem()]
+                if self._round_title is not None
+                else None,
+                self._selected_options(),
             )
-            if not stays_legacy:
-                value["flexible"] = True
-            if kind == "meeting":
-                # 기존 표의 기본 유형을 보존하고 새 표는 명시적으로 연결한 값만 회의로 본다.
-                value["defaultEventType"] = old.get(
-                    "defaultEventType", "meeting" if old.get("kind") == "meeting" else "other"
-                )
-            choices = self._selected_options()
-            if kind == "meeting" and "category" in values:
-                value["eventTypes"] = {
-                    name: EVENT_CHOICES[index] for name, index in choices.items() if index
-                }
-            if kind == "leave":
-                selected = [name for name, index in choices.items() if index == 1]
-                if not selected:
-                    raise SourceSettingsError("승인된 휴가에 쓰는 상태를 하나 이상 선택하세요.")
-                value["approvedValues"] = selected
-            if kind == "task" and "status" in values:
-                completed = [name for name, index in choices.items() if index]
-                if completed or "completedStatuses" in old:
-                    value["completedStatuses"] = completed
-        if section == "qa":
-            value["section"] = section
-        else:
-            value.pop("section", None)
-        if self._uses_rounds():
-            if "roundTitleProperty" in value:
-                value["parentTitleProperty"] = value.pop("roundTitleProperty")
-            mode, number = self._parent_orders[self.parent_sort.indexOfSelectedItem()]
-            value["parentOrder"] = mode
-            value["parentLabel"] = bool(self.parent_display.state())
-            value.pop("parentNumberProperty", None)
-            if number is not None:
-                value["parentNumberProperty"] = number
-        value.pop("classification", None)
-        if self._classification:
-            value["classification"] = dict(self._classification)
-        value.pop("columnMappings", None)
-        if self._category_links:
-            value["columnMappings"] = column_bindings_payload(self._category_links)
-        name = self.name.stringValue().strip()
-        if len(name) > 120:
-            raise SourceSettingsError("이름은 120자 이내로 입력하세요.")
-        value.pop("name", None)
-        if name:
-            value["name"] = name
-        value.update(assignment)
-        try:
-            url = page_url(self.url.stringValue())
-        except PageLinksError:
-            raise SourceSettingsError("열려는 Notion 페이지의 주소를 입력하세요.") from None
-        value.pop("pageUrl", None)
-        if url:
-            value["pageUrl"] = url
-        # 편집은 기존 논리 ID를 유지하고 같은 원본을 새로 등록하면 다른 ID를 부여한다.
-        value["sourceId"] = self._source_id
-        value.pop("sortDirection", None)
-        value.pop("sort", None)
-        sort = self._sort_keys[self.sort.indexOfSelectedItem()]
-        if sort != "default":
-            value["sort"] = sort
-            if self.sort_direction.indexOfSelectedItem() == 1:
-                value["sortDirection"] = "desc"
-        if self._selected == len(sources):
-            sources.append(value)
-        else:
-            sources[self._selected] = value
-        return SourceDraft(state.settings.revision, tuple(sources))
+        return SourceEdit(
+            category_id=category.id if category else None,
+            reference=self.reference.stringValue().strip(),
+            lookup_reference=self._lookup_reference,
+            has_profiles=bool(self._profiles),
+            kind=self._mode(),
+            section=self._section(),
+            table=table,
+            parent_order=self._parent_orders[self.parent_sort.indexOfSelectedItem()]
+            if self._uses_rounds()
+            else None,
+            parent_label=bool(self.parent_display.state()),
+            classification=self._classification,
+            links=self._category_links,
+            name=self.name.stringValue().strip(),
+            url=self.url.stringValue(),
+            source_id=self._source_id,
+            sort=self._sort_keys[self.sort.indexOfSelectedItem()],
+            descending=self.sort_direction.indexOfSelectedItem() == 1,
+        )
 
     def render(self) -> None:
         """확정 조회·저장 때만 폼을 재구성하고 나머지 입력을 보존한다."""

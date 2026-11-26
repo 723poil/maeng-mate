@@ -41,6 +41,10 @@ Notion과 Slack 관리 API는 공통 자격 정보 오류를 `src/presentation/c
 - 페이지 링크는 기존 업무·QA·회의 소스의 `pageUrl`만 바꾼다. 빈 값은 링크를 제거한다. 수집 매핑·해시·근무 규칙은 보존한다. 메뉴바 조회 때마다 SQLite에서 현재 버전과 원문을 확인한다. 버전·저장 타입·원문 해시가 모두 같으면 직전에 검증한 링크 목록을 재사용한다. 달라진 문서는 전체 설정을 다시 검증한다. 페이지 링크 버전으로 늦은 조회가 링크를 되돌리는 것을 막는다. 소스 라벨의 팝오버는 현재 속성 매핑과 쓰임새를 설명한다.
 - 공통 `notion_link`로 Notion HTTPS 주소를 검증한다. 페이지 ID가 포함된 웹 경로는 앱 페이지 주소로 정규화하며 쿼리·앵커를 보존한다. 캘린더·메뉴바·알림이 이를 재사용한다.
 
+- 소스 폼은 편집값을 읽고, `src/application/source_edit.py`가 읽었던 revision으로 저장 초안을 만든다. 같은 표와 차시 모드에서만 기존 매핑을 재사용한다. 표를 바꿔도 논리 소스 ID는 유지하며, 이전 차시 제목 키는 저장할 때 부모 제목 키로 옮긴다. 삭제는 편집값 검증 없이 선택한 소스만 제거한다.
+
 ## 결과와 검증
 
 서비스는 시작 파일·DB·Keychain으로 조립된다. 직접 실행하는 CLI에는 환경변수를 명시적으로 주입할 수 있다. `src/bootstrap/app_settings.py`, `work_settings.py`, `src/application/runtime_settings_service.py`, `notion_credentials.py`, `notion_page_links.py`에서 구현한다. 임시 자료로 기존 값 보존, 연결 실패, 충돌, 토큰 삭제와 링크 즉시 반영을 확인한다.
+
+`tests/fixtures/source_edit_pdd.py`는 AppKit 폼과 임시 SQLite에서 레거시 부모 제목 이전, 같은 표 재편집, 다른 표 선택, 삭제 후의 문서와 revision을 확인한다.

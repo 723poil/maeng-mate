@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from src.domain.models import Period, Task
-from src.domain.work_dates import SEOUL, canonical_identity
+from src.domain.work_dates import canonical_identity, seoul_datetime
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,9 @@ def due_description(period: Period | None) -> str:
         """보통은 분까지만 쓰고 초나 소수초가 있으면 그 값까지 표시한다."""
         if period.kind == "date":
             return value.replace("-", ".")
-        local = datetime.fromisoformat(value).astimezone(SEOUL)
+        local = seoul_datetime(datetime.fromisoformat(value))
+        if local is None:
+            return value
         if local.microsecond:
             return local.strftime("%Y.%m.%d %H:%M:%S.%f").rstrip("0")
         return local.strftime("%Y.%m.%d %H:%M:%S" if local.second else "%Y.%m.%d %H:%M")

@@ -11,7 +11,7 @@ from src.application.models import SyncRun
 from src.application.notion_links import notion_link
 from src.domain.meeting_reminders import MeetingReminderPolicy
 from src.domain.models import CalendarEvent, SourceMapping, WorkItem
-from src.domain.work_dates import SEOUL, canonical_identity
+from src.domain.work_dates import canonical_identity, seoul_clock
 from src.infrastructure.sqlite.decoding import decode_item
 from src.infrastructure.sqlite.notification_deliveries import logical_completed
 from src.infrastructure.sqlite.notification_keys import meeting_scope, notification_key
@@ -81,7 +81,7 @@ def enqueue_meeting_reminders(
                 existing = job
         if timing is None or (existing is not None and existing["state"] == "delivering"):
             continue
-        body = f"{timing.start.astimezone(SEOUL):%H:%M} · {item.title[:160]}"
+        body = f"{seoul_clock(timing.start)} · {item.title[:160]}"
         url = notion_link(item.url)
         if existing is not None and body == existing["body"] and url == existing["notion_url"]:
             continue

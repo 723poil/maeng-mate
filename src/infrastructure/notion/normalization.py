@@ -14,7 +14,7 @@ from src.domain.notification_timing import calendar_alert_expiry
 from src.domain.raw_fields import checked_raw_field
 from src.domain.source_alerts import SourceAlertRule, alert_value_key
 from src.domain.source_scope import SourceScope, field_parts
-from src.domain.work_dates import SEOUL, canonical_identity
+from src.domain.work_dates import canonical_identity, seoul_clock, seoul_datetime
 from src.infrastructure.notion.errors import SourceError
 from src.infrastructure.notion.values import array, record, text
 
@@ -71,7 +71,7 @@ def instant(value: str, zone_name: str | None = None) -> str:
             ):
                 raise ValueError
         return resolved.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, OverflowError):
         raise SourceError("mapping_invalid") from None
 
 
@@ -134,11 +134,10 @@ def read_checkbox(prop: dict[str, object]) -> bool:
 
 def local_date(value: str) -> str:
     """시각은 화면과 같은 서울 시간대로 표시한다."""
-    return (
-        datetime.fromisoformat(value).astimezone(SEOUL).strftime("%Y-%m-%d %H:%M")
-        if "T" in value
-        else value
-    )
+    if "T" not in value:
+        return value
+    local = seoul_datetime(datetime.fromisoformat(value))
+    return local.strftime("%Y-%m-%d %H:%M") if local else value
 
 
 def column_text(prop: dict[str, object], kind: str) -> str:
@@ -234,7 +233,7 @@ def clock_text(period: Period | None) -> str:
     if period is None or period.kind != "instant":
         return ""
     return " ~ ".join(
-        datetime.fromisoformat(value).astimezone(SEOUL).strftime("%H:%M")
+        seoul_clock(datetime.fromisoformat(value))
         for value in (period.start, period.end)
         if value is not None
     )
@@ -270,8 +269,9 @@ def matches_source_scope(
             )
         if condition.operator == "not_ended":
             return calendar_alert_expiry(column_period(prop, origin_kind), observed) is not None
+        local = seoul_datetime(basis)
         return condition.matches(
-            column_text(prop, origin_kind), value_kind, basis.astimezone(SEOUL).date()
+            column_text(prop, origin_kind), value_kind, local.date() if local else None
         )
 
     return scope.conditions.accepts(matches)

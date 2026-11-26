@@ -34,7 +34,7 @@ async def _run_storage(command: str, env: Mapping[str, str]) -> int:
     settings = load_work_settings(database, prepare_categories=True)
     if not settings.active_sources:
         raise ConfigError("수집할 소스에 카테고리를 먼저 지정하세요.")
-    summary = {"succeeded": 0, "failed": 0, "skipped": 0}
+    summary = {"succeeded": 0, "failed": 0, "source_busy": 0, "newer_observation": 0}
     async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:
         reader, store = build_collection(
             database, client, token, env.get("NOTION_USER_ID") or None, scheduled=False
@@ -43,11 +43,14 @@ async def _run_storage(command: str, env: Mapping[str, str]) -> int:
             settings.active_sources, reader, now
         ):
             result = await synchronize(source, source_reader, store, now, started_at=started)
-            summary[result["status"]] += 1
+            # 수동 수집은 예약 기한을 검사하지 않아 실행권과 관측 시각만 건너뜀 사유가 된다.
+            key = result["reason"] if result["status"] == "skipped" else result["status"]
+            summary[key] += 1
     print(
-        f"수집 결과: 성공 {summary['succeeded']}, 실패 {summary['failed']}, 실행 중 {summary['skipped']}"
+        f"수집 결과: 성공 {summary['succeeded']}, 실패 {summary['failed']}, "
+        f"실행 중 {summary['source_busy']}, 더 최신 관측으로 건너뜀 {summary['newer_observation']}"
     )
-    return int(summary["failed"] > 0 or summary["skipped"] > 0)
+    return int(bool(summary["failed"] or summary["source_busy"] or summary["newer_observation"]))
 
 
 async def run_storage(command: str, env: Mapping[str, str]) -> int:

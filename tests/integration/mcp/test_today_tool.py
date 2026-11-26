@@ -60,3 +60,23 @@ async def test_today_tool_errors_are_safe() -> None:
             await server.call_tool("get_my_today", {"date": date})
         assert "원본은" not in str(error.value)
         assert "private-invalid-date" not in str(error.value)
+
+
+async def test_task_search_preserves_http_json_types() -> None:
+    """SDK 호출이 공통 파서와 같은 원본 타입과 기본값을 조회 포트로 전달한다."""
+    server = create_server(Reader())
+    for invalid in (
+        {"limit": True},
+        {"limit": 1.0},
+        {"offset": "2"},
+        {"include_unset": "false"},
+        {"statuses": '["검토"]'},
+        {"unexpected": "private-invalid-value"},
+    ):
+        with pytest.raises(ToolError, match="검색어·카테고리") as error:
+            await server.call_tool("search_my_tasks", invalid)
+        assert "private-invalid-value" not in str(error.value)
+
+    for valid in ({}, {"query": "null"}, {"limit": 2, "offset": 1, "include_unset": False}):
+        _, result = await server.call_tool("search_my_tasks", valid)
+        assert result == TaskSearch.parse(valid).payload()

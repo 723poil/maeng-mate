@@ -34,6 +34,10 @@
 
 - 퇴근 예정이 서울 기준 기록일의 자정 이상이면 자동 퇴근 알림을 예약하지 않는다. 사전 알림 시각이 기록 당일이어도 같으며, 기록 저장·근무 규칙 변경·알림 설정 변경·시작 시 보완은 공통 예약 함수의 당일 판정을 사용한다. 기존 미전달 예약은 무효화하고 접수 이력은 보존한다. 규칙을 바꿔 다시 당일 예정이 되면 미래 예약만 복구한다.
 
+- 알림 실행기는 처리 여부와 채널 실패 여부를 별도로 반환한다. 메뉴바 작업자는 정상 요청·취소를 확정한 뒤 다음 한 건을 즉시 확인하고, 빈 큐·채널 실패·연결 예외·복원 확정 대기에는 종료 신호로 중단할 수 있는 5초 대기를 둔다. 매 반복에서 종료와 복원 상태를 다시 확인하며 외부 발송을 병렬화하거나 실패한 실행권을 자동 재전송하지 않는다. 채널이 없는 논리 예약은 각기 짧은 트랜잭션에서 정리한 뒤 다음 예약을 확인해 빈 큐로 오인하지 않는다. 구현은 `src/application/notifications.py`, `src/bootstrap/notification_worker.py`, `src/infrastructure/sqlite/notifications.py`다.
+
 ## 결과와 검증
+
+임시 DB·인증 루프백 API와 격리 개발 앱에서 동시 도래 전달의 간격, 발송 직전 구독 변경, 실패·응답 유실·재시작·종료·복원 대기를 확인한다. 외부 채널의 응답 시간과 진행 중 요청의 종료 제한은 그대로 따른다.
 
 채널별 실패가 다른 채널의 결과를 덮지 않는다. `src/infrastructure/sqlite/notifications.py`, `notification_deliveries.py`, `src/infrastructure/notification_app/agent.py`, `src/bootstrap/notification_channels.py`에서 구현한다. 임시 큐에서 실행권 충돌·정정·재시작을 확인하고 macOS에서 실제 배너 클릭을 확인한다.

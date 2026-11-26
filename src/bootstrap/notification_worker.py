@@ -29,10 +29,14 @@ class NotificationWorker:
             try:
                 # 시험 기동이 실패하면 원래 DB로 돌아가므로 복원 확정 후 발송을 시작한다.
                 if not pending_restore(application_directory()):
-                    failed = self._runner.run_once()
-                    self._error = "알림 요청 확인 필요" if failed else None
+                    result = self._runner.run_once()
+                    self._error = "알림 요청 확인 필요" if result.failed else None
+                    if result.processed and not result.failed:
+                        # 한 건씩 승인·확정한 뒤 종료·복원 여부를 다시 확인하며 대기열을 소진한다.
+                        continue
             except Exception:
                 self._error = "알림 연결 확인 필요"
+            # 빈 큐·채널 실패·연결 예외·복원 대기에는 재시도 폭주를 막고 즉시 종료를 허용한다.
             self._stop.wait(5)
 
     def status(self) -> str | None:

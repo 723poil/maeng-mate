@@ -231,6 +231,13 @@ class SQLiteNotifications:
         return await asyncio.to_thread(self._claim)
 
     def _claim(self) -> tuple[NotificationJob, ...]:
+        """채널 없는 예약을 정리한 경우에는 다음 예약도 짧은 트랜잭션으로 확인한다."""
+        while True:
+            jobs, prepared = self._claim_next()
+            if jobs or not prepared:
+                return jobs
+
+    def _claim_next(self) -> tuple[tuple[NotificationJob, ...], bool]:
         """멈춘 요청은 unknown으로 두고 같은 논리 알림의 재전송을 막는다."""
         now = self._now().timestamp()
         with self._database.transaction() as connection:
@@ -274,9 +281,11 @@ class SQLiteNotifications:
                     self._rules_for(connection, row["source_key"]),
                     self._legacy_aliases.get(row["source_key"]),
                 )
-            return claim_delivery(
+            jobs = claim_delivery(
                 connection, now, self._source_keys, self._channels, self._delivery_job
             )
+            # 예약 하나의 채널 준비가 끝났어도 전달이 없을 수 있으므로 실제 빈 큐와 구별한다.
+            return jobs, row is not None
 
     async def authorize(self, identifier: str, token: str) -> bool:
         """실행권·현재 사실·최신 설정을 발송 직전에 같은 읽기로 확인한다."""

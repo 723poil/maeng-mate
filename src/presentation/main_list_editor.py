@@ -63,6 +63,7 @@ OPERATOR_NAMES = {
     "today": "오늘",
     "not_ended": "기간이 끝나지 않음",
     "past_days": "최근 N일 (오늘 포함)",
+    "past_days_and_future": "최근 N일과 미래 일정",
     "next_days": "오늘부터 N일",
     "since_days_ago": "N일 전부터",
 }

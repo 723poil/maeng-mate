@@ -32,7 +32,7 @@ FIELD_KINDS = {
     "sourceOrder": "number",
     "sourceRowOrder": "number",
 }
-RELATIVE_DAY_OPERATORS = ("past_days", "next_days", "since_days_ago")
+RELATIVE_DAY_OPERATORS = ("past_days", "past_days_and_future", "next_days", "since_days_ago")
 _PRESENCE = ("empty", "not_empty")
 _ORDERED = ("eq", "ne", "lt", "lte", "gt", "gte", *_PRESENCE)
 _OPERATORS = {
@@ -182,6 +182,9 @@ class ListFilter:
                 return distance == 0
             if self.operator == "since_days_ago":
                 return distance >= -Decimal(self.value)
+            if self.operator == "past_days_and_future":
+                # 오늘이 첫 번째 날이므로 N일 전은 두 최근 N일 조건에서 모두 제외한다.
+                return -distance < Decimal(self.value)
             # 오늘부터 양쪽 방향으로 각각 N개의 날짜를 센다.
             elapsed = -distance if self.operator == "past_days" else distance
             return 0 <= elapsed < Decimal(self.value)

@@ -48,7 +48,7 @@ def test_install_retention(tmp_path: Path) -> None:
         packaged_app.record_installation()
         assert copies[0].read_bytes() == b"replacement"
         assert not copies[1].exists()
-        assert next(backups.glob(".retired-*.entry")).stat().st_size == 0
+        assert not list((tmp_path / ".pre-install-retiring").iterdir())
         assert len(list(backups.glob("*.sqlite3"))) == 4
 
 
@@ -138,78 +138,106 @@ def test_register_created_artifact(tmp_path: Path, kind: backup_retention.Backup
     assert (tmp_path / "saved-original").stat().st_size > 0
 
 
-@pytest.mark.parametrize("occupy_original", [False, True])
-def test_replacement_during_retirement(tmp_path: Path, occupy_original: bool) -> None:
-    """이동 시점의 교체 파일을 되돌리고 원래 이름까지 사용 중이면 양쪽을 보존한다."""
+def test_interrupted_retirement_preserves_other_links(tmp_path: Path) -> None:
+    """정리 실패 뒤 공개 이름을 다시 쓰거나 보관 링크를 만들어도 다음 성공 때 보존한다."""
     database = tmp_path / "data.sqlite3"
     packaged_app.initialize_database(str(database))
     backups = tmp_path / "backups"
+    queue = tmp_path / ".pre-install-retiring"
     with patch.object(packaged_app, "application_directory", return_value=tmp_path):
-        for _ in range(4):
+        for _ in range(8):
             packaged_app.backup_database(str(database))
-    oldest = min(backups.glob("*.sqlite3"))
-    moved = tmp_path / "saved-original"
-    move = backup_retention._move_exclusive
+    with patch.object(backup_retention, "_finish_claim", side_effect=OSError("interrupted")):
+        for _ in range(3):
+            backup_retention.prune_copies(tmp_path, "pre-install")
+            assert len(list(queue.iterdir())) == 1
 
-    def switch_during_move(directory: int, source: str, target: str) -> None:
-        """정리 대상의 공개 이름이 이동 직전에 교체되는 순서를 재현한다."""
-        if source == oldest.name:
-            oldest.rename(moved)
-            oldest.write_bytes(b"first replacement")
-        move(directory, source, target)
-        if source == oldest.name and occupy_original:
-            oldest.write_bytes(b"second replacement")
-
-    with patch.object(backup_retention, "_move_exclusive", side_effect=switch_during_move):
-        backup_retention.prune_copies(tmp_path, "pre-install")
-    assert moved.stat().st_size > 0
-    if occupy_original:
-        assert oldest.read_bytes() == b"second replacement"
-        assert next(backups.glob(".retired-*.entry")).read_bytes() == b"first replacement"
-    else:
-        assert oldest.read_bytes() == b"first replacement"
-        assert not list(backups.glob(".retired-*.entry"))
+    (claimed,) = queue.iterdir()
+    original = backups / claimed.name.split(" ")[0]
+    original.write_bytes(b"manual replacement")
+    saved = backups / "my-recovery.sqlite3"
+    saved.hardlink_to(claimed)
+    expected = saved.read_bytes()
+    assert expected.startswith(b"SQLite format 3")
+    backup_retention.prune_copies(tmp_path, "pre-install")
+    assert original.read_bytes() == b"manual replacement"
+    assert saved.read_bytes() == expected
+    assert not list(queue.iterdir())
+    assert len(list(backups.glob("pre-install-*.sqlite3"))) == 4
+    assert not list(backups.glob(".retired-*"))
 
 
-def test_replacement_after_claim(tmp_path: Path) -> None:
-    """내용 회수 직전에 공개 이름을 재사용해도 열린 이전 사본만 비운다."""
+@pytest.mark.parametrize("occupied", [False, True])
+def test_retry_preserves_changed_claim(tmp_path: Path, occupied: bool) -> None:
+    """중단 중 바뀐 항목은 원래 이름으로 복구하고 양쪽 이름이 쓰이면 그대로 보존한다."""
     database = tmp_path / "data.sqlite3"
     packaged_app.initialize_database(str(database))
     backups = tmp_path / "backups"
-    with patch.object(packaged_app, "application_directory", return_value=tmp_path):
-        for _ in range(4):
-            packaged_app.backup_database(str(database))
-    oldest = min(backups.glob("*.sqlite3"))
-    truncate = os.ftruncate
-
-    def reuse_name(descriptor: int, length: int) -> None:
-        """원래 이름에 새 파일을 놓은 뒤 실제 핸들의 내용만 회수한다."""
-        oldest.write_bytes(b"new document")
-        retired = next(backups.glob(".retired-*.entry"))
-        new_file = tmp_path / "second-document"
-        new_file.write_bytes(b"retired name reused")
-        new_file.replace(retired)
-        truncate(descriptor, length)
-
-    with patch.object(os, "ftruncate", side_effect=reuse_name):
-        backup_retention.prune_copies(tmp_path, "pre-install")
-    assert oldest.read_bytes() == b"new document"
-    assert next(backups.glob(".retired-*.entry")).read_bytes() == b"retired name reused"
-
-
-def test_retirement_name_in_use(tmp_path: Path) -> None:
-    """숨김 이름을 이미 사용하는 파일과 해당 사본을 보존하고 다른 만료 사본을 정리한다."""
-    database = tmp_path / "data.sqlite3"
-    packaged_app.initialize_database(str(database))
-    backups = tmp_path / "backups"
+    queue = tmp_path / ".pre-install-retiring"
     with patch.object(packaged_app, "application_directory", return_value=tmp_path):
         for _ in range(5):
             packaged_app.backup_database(str(database))
-    oldest, blocked, *recent = sorted(backups.glob("*.sqlite3"))
-    occupied = backups / f".retired-{blocked.name}.entry"
-    occupied.write_bytes(b"existing document")
+    with patch.object(backup_retention, "_finish_claim", side_effect=OSError("interrupted")):
+        backup_retention.prune_copies(tmp_path, "pre-install")
+    (claimed,) = queue.iterdir()
+    original = backups / claimed.name.split(" ")[0]
+    replacement = tmp_path / "manual"
+    replacement.write_bytes(b"changed during interruption")
+    replacement.replace(claimed)
+    if occupied:
+        original.write_bytes(b"another manual file")
+        backup_retention.prune_copies(tmp_path, "pre-install")
+        assert original.read_bytes() == b"another manual file"
+        assert claimed.read_bytes() == b"changed during interruption"
+        original.rename(tmp_path / "saved")
     backup_retention.prune_copies(tmp_path, "pre-install")
-    assert occupied.read_bytes() == b"existing document"
-    assert blocked.stat().st_size > 0
-    assert not oldest.exists()
-    assert all(path.stat().st_size > 0 for path in recent)
+    assert original.read_bytes() == b"changed during interruption"
+    assert not list(queue.iterdir())
+
+
+def test_unknown_queue_entry(tmp_path: Path) -> None:
+    """소유 기록과 맞지 않는 기존 항목을 보존하고 새 대기 항목을 추가하지 않는다."""
+    database = tmp_path / "data.sqlite3"
+    packaged_app.initialize_database(str(database))
+    backups = tmp_path / "backups"
+    queue = tmp_path / ".pre-install-retiring"
+    queue.mkdir(mode=0o700)
+    unknown = queue / "unknown"
+    unknown.write_bytes(b"keep")
+    with patch.object(packaged_app, "application_directory", return_value=tmp_path):
+        for _ in range(5):
+            packaged_app.backup_database(str(database))
+    backup_retention.prune_copies(tmp_path, "pre-install")
+    assert unknown.read_bytes() == b"keep"
+    assert list(queue.iterdir()) == [unknown]
+    assert len(list(backups.glob("pre-install-*.sqlite3"))) == 5
+    unknown.rename(tmp_path / "saved")
+    backup_retention.prune_copies(tmp_path, "pre-install")
+    assert not list(queue.iterdir())
+    assert len(list(backups.glob("pre-install-*.sqlite3"))) == 3
+
+
+def test_retry_after_removing_claim(tmp_path: Path) -> None:
+    """대기 항목 제거 후 생성 기록 갱신이 중단돼도 남은 사본부터 정리를 이어간다."""
+    database = tmp_path / "data.sqlite3"
+    packaged_app.initialize_database(str(database))
+    backups = tmp_path / "backups"
+    queue = tmp_path / ".pre-install-retiring"
+    with patch.object(packaged_app, "application_directory", return_value=tmp_path):
+        for _ in range(6):
+            packaged_app.backup_database(str(database))
+    recent = sorted(backups.glob("*.sqlite3"))[-3:]
+    finish = backup_retention._finish_claim
+
+    def interrupt(directory: int, pending: int, entry: str, lines: list[str]) -> None:
+        """항목 제거가 끝난 시점에 오류를 발생시켜 이전 생성 기록을 유지한다."""
+        finish(directory, pending, entry, lines)
+        raise OSError("interrupted")
+
+    with patch.object(backup_retention, "_finish_claim", side_effect=interrupt):
+        backup_retention.prune_copies(tmp_path, "pre-install")
+    assert not list(queue.iterdir())
+    assert len(list(backups.glob("*.sqlite3"))) == 5
+    backup_retention.prune_copies(tmp_path, "pre-install")
+    assert sorted(backups.glob("*.sqlite3")) == recent
+    assert not list(queue.iterdir())

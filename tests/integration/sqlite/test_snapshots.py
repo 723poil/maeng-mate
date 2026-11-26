@@ -11,10 +11,10 @@ import pytest
 from src.application.errors import SnapshotError
 from src.application.use_cases.synchronize import synchronize
 from src.domain.models import CalendarEvent, Leave, Period, SourceMapping, Task, WorkItem
+from src.domain.source_fingerprints import fingerprint
 from src.domain.task_changes import AssignedTaskChangePolicy
 from src.infrastructure.notion.normalization import normalize_page
 from src.infrastructure.sqlite.connection import Database
-from src.infrastructure.sqlite.serialization import fingerprint
 from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
 from tests.fixtures.notion import OBSERVED, SOURCE, page, task_schema
 

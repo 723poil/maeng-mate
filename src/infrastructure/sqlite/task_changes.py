@@ -11,11 +11,11 @@ from src.application.errors import QueryReadError, SnapshotError
 from src.application.models import SyncRun
 from src.application.notion_links import notion_link
 from src.domain.models import SourceMapping, Task, WorkItem
+from src.domain.source_fingerprints import fingerprint
 from src.domain.task_changes import TaskChangePolicy, TaskFacts, task_facts
 from src.domain.work_dates import canonical_identity
 from src.infrastructure.sqlite.decoding import decode_item
 from src.infrastructure.sqlite.notification_keys import notification_key, task_scope
-from src.infrastructure.sqlite.serialization import fingerprint
 
 
 def facts_hash(facts: TaskFacts) -> str:

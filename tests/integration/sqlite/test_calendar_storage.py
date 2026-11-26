@@ -11,8 +11,8 @@ from src.application.today_models import TodayContext
 from src.application.use_cases.get_my_today import get_my_today
 from src.domain.models import CalendarEvent, Period, SourceMapping
 from src.domain.policies import ParticipationPolicy
+from src.domain.source_fingerprints import fingerprint, source_fingerprint
 from src.infrastructure.sqlite.connection import Database
-from src.infrastructure.sqlite.serialization import fingerprint, source_fingerprint
 from src.infrastructure.sqlite.snapshots import SQLiteSnapshots
 from src.infrastructure.sqlite.work_reader import SQLiteWorkReader
 

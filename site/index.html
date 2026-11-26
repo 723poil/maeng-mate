@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#ffffff">
   <meta name="description" content="Mac 메뉴바에서 Notion 업무와 회의를 확인하고 출퇴근을 기록하세요. Apple Silicon Mac용 다운로드와 설치 안내.">
-  <title>Catch — 메뉴바 업무 수첩</title>
+  <title>Catch — Mac용 Notion 업무 앱</title>
   <link rel="icon" href="assets/app-icon.svg">
   <link rel="preload" href="assets/fonts/PretendardVariable.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
@@ -13,7 +13,6 @@
 </head>
 <body id="top">
   <svg class="symbols" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-    <symbol id="book" viewBox="0 0 24 24"><path d="M2.5 5.3c3-.4 6.2.2 9.5 2.1 3.3-1.9 6.5-2.5 9.5-2.1v13.1c-3.2-.3-6.1.3-9.5 2.2-3.4-1.9-6.3-2.5-9.5-2.2zM12 7.4v13" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="download" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-4-4 4 4 4-4M4 16v4h16v-4"/></g></symbol>
     <symbol id="zoom" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5m-13-10.5h5m-2.5-2.5v5"/></g></symbol>
     <symbol id="wifi" viewBox="0 0 24 24"><path d="M2 8q10-8 20 0M6 12q6-5 12 0m-8 4q2-2 4 0" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></symbol>
@@ -23,7 +22,7 @@
   </svg>
   <a class="skip" href="#main">본문으로 이동</a>
   <header class="topbar">
-    <div class="wrap nav-inner"><a class="brand" href="#top"><svg aria-hidden="true"><use href="#book"/></svg>Catch</a>
+    <div class="wrap nav-inner"><a class="brand" href="#top"><img src="assets/app-icon.svg" width="36" height="36" alt="">Catch</a>
       <nav aria-label="주 메뉴">
         <a class="section-link" href="#features">사용 화면</a>
         <a class="section-link" href="#install">설치 안내</a>
@@ -38,16 +37,19 @@
   <main id="main">
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <h1 id="hero-title">오늘의 업무를<br>Mac 메뉴바에서</h1>
-        <p>Notion 업무와 회의, 출퇴근 기록을 한곳에.</p>
+        <h1 id="hero-title">내가 고른 업무를<br>Mac에서 한눈에</h1>
+        <p>메뉴바에서 퇴근까지 남은 시간을 확인하고,<br>Dock에서 홈을 열어 내 카테고리와 일정을 살펴보세요.</p>
         <a class="button" data-release-download href="https://github.com/723poil/maeng-mate/releases/latest"><svg aria-hidden="true"><use href="#download"/></svg> Mac용 다운로드</a>
         <small>Apple Silicon · macOS 26 이상</small>
       </div>
       <div class="hero-preview"><div class="desktop">
           <div class="menubar"><strong>Finder</strong><span>파일</span><span>편집</span><span>보기</span><i></i><svg aria-hidden="true"><use href="#wifi"/></svg><svg aria-hidden="true"><use href="#battery"/></svg><b>목 오후 2:30</b></div>
-          <button class="behind-window" popovertarget="zoom-calendar" aria-label="뒤에 열린 캘린더 확대"><img class="glass-window" src="assets/calendar-ui.webp" width="1080" height="700" alt=""></button>
+          <div class="settings-preview" aria-label="Catch 설정의 앱 정보 예시">
+            <div class="settings-sidebar"><span class="traffic" aria-hidden="true"></span><strong>설정</strong><span>앱 정보</span></div>
+            <div class="settings-info"><img src="assets/app-icon.svg" width="88" height="88" alt=""><strong>Catch</strong><small>버전 0.13.0</small><span>업데이트 확인…</span></div>
+          </div>
           <details class="demo" open>
-            <summary aria-label="메뉴바 패널 열기 또는 닫기"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M2 4q0-1 1-.7l7 1.8q1 .3 1 1.5V20l-8-2q-1-.3-1-1.4Zm11 2.6q0-1.2 1-1.5l7-1.8Q22 3 22 4v12.6q0 1.1-1 1.4l-8 2Z"/><path d="m15 10.5 1.8 1.8 3-3.8" stroke="#5d6e9e" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></summary>
+            <summary aria-label="메뉴바 패널 열기 또는 닫기"><img src="assets/menu-mark.svg" width="21" height="18" alt=""></summary>
             <button class="window menu-window" popovertarget="zoom-menu" aria-label="메뉴바 실제 화면 확대"><img class="glass-window" src="assets/menu-ui.webp" width="520" height="760" alt="수집 주기, 출근 시각과 퇴근 예정, 업무·QA·회의 목록이 표시된 메뉴바 패널"></button>
           </details>
           <span class="screen-caption">예시 화면</span>
@@ -90,15 +92,14 @@
       <section class="install wrap" id="install" aria-labelledby="install-title">
         <div class="section-heading"><h2 id="install-title">설치 안내</h2><a href="https://github.com/723poil/maeng-mate/blob/main/docs/usage.md">사용 가이드 보기</a></div>
         <details name="install-steps" open><summary>어떤 Mac에 설치할 수 있나요?</summary><p>Apple Silicon을 탑재한 macOS 26 이상에서 사용할 수 있습니다.</p></details>
-        <details name="install-steps"><summary>앱을 어떻게 설치하나요?</summary><p>DMG를 열고 <strong>Catch.app</strong>을 응용 프로그램 폴더로 옮기세요. 앱을 실행하고 메뉴바의 수첩 아이콘을 누르세요.</p></details>
-        <details name="install-steps"><summary>내 Notion 표는 어떻게 연결하나요?</summary><p><strong>설정 → 연동 → Notion</strong>에 토큰과 사용자 ID를 입력하세요. ‘카테고리’에서 카드를 만든 뒤 ‘수집 소스’에서 표와 메뉴바에 표시할 열을 고르세요.</p></details>
-        <details name="install-steps"><summary>처음 실행할 때 보안 경고가 뜬다면?</summary><p>현재 버전은 Apple 공증을 받지 않았습니다. DMG와 체크섬은 <a data-release-notes href="https://github.com/723poil/maeng-mate/releases/latest">공식 릴리스</a>에서 확인하세요. <a href="https://support.apple.com/ko-kr/102445">Apple의 보안 경고 안내</a></p></details>
+        <details name="install-steps"><summary>앱을 어떻게 설치하나요?</summary><p>DMG를 열고 <strong>Catch.app</strong>을 응용 프로그램 폴더로 옮기세요. 앱을 실행하고 메뉴바의 고양이 아이콘을 누르면 패널이 열립니다. Dock에서 Catch를 누르면 홈이 열립니다.</p></details>
+        <details name="install-steps"><summary>내 Notion 표는 어떻게 연결하나요?</summary><p><strong>설정 → 연동 → Notion</strong>에서 Notion 토큰을 복사해 연결을 확인하고 사용자를 이름으로 선택하세요. ‘카테고리’에서 카드를 만든 뒤 ‘수집 소스’에서 ‘찾기…’를 눌러 공유된 표와 표시할 열을 고르세요.</p></details>
       </section>
     </div>
   </main>
   <footer>
     <div class="footer-cta"><h2>Mac에 설치하기</h2><a class="button" data-release-download href="https://github.com/723poil/maeng-mate/releases/latest"><svg aria-hidden="true"><use href="#download"/></svg> <span data-release-label>DMG 다운로드</span></a></div>
-    <div class="footer-links wrap"><a class="brand" href="#top"><svg aria-hidden="true"><use href="#book"/></svg>Catch</a><nav aria-label="관련 링크"><a href="https://github.com/723poil/maeng-mate/blob/main/docs/usage.md">사용 가이드</a><a href="https://github.com/723poil/maeng-mate/releases/latest">최신 릴리스</a><a href="https://github.com/723poil/maeng-mate">GitHub</a></nav></div>
+    <div class="footer-links wrap"><a class="brand" href="#top"><img src="assets/app-icon.svg" width="36" height="36" alt="">Catch</a><nav aria-label="관련 링크"><a href="https://github.com/723poil/maeng-mate/blob/main/docs/usage.md">사용 가이드</a><a data-release-notes href="https://github.com/723poil/maeng-mate/releases/latest">최신 릴리스</a><a href="https://github.com/723poil/maeng-mate">GitHub</a></nav></div>
   </footer>
   <section class="lightbox" id="zoom-menu" popover aria-labelledby="menu-title"><div class="lightbox-head"><h2 id="menu-title">메뉴바</h2><span>예시 데이터</span><button popovertarget="zoom-menu" popovertargetaction="hide" aria-label="닫기">×</button></div><div class="lightbox-stage menu-stage"><img width="520" height="760" class="glass-window" src="assets/menu-ui.webp" alt="가상 데이터로 실행한 Catch 메뉴바의 전체 화면"></div><a href="assets/menu.webp">원본 크기로 보기</a></section>
   <section class="lightbox" id="zoom-calendar" popover aria-labelledby="calendar-title"><div class="lightbox-head"><h2 id="calendar-title">캘린더</h2><span>예시 데이터</span><button popovertarget="zoom-calendar" popovertargetaction="hide" aria-label="닫기">×</button></div><div class="lightbox-stage calendar-stage"><img width="1080" height="700" class="glass-window" src="assets/calendar-ui.webp" alt="가상 일정과 출퇴근 기록을 표시한 월간 캘린더 전체 화면"></div><a href="assets/calendar.webp">원본 크기로 보기</a></section>

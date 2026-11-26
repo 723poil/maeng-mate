@@ -44,7 +44,7 @@ h3 { font-size: clamp(1.4rem, 2.1vw, 1.7rem); line-height: 1.3; }
 }
 .nav-inner { min-height: 4.75rem; justify-content: space-between; gap: 1rem; }
 .brand { gap: .45rem; font-size: 1.32rem; letter-spacing: -.06em; font-weight: 680; }
-.brand svg { height: 1.7rem; width: 1.7rem; }
+.brand img { display: block; }
 nav { gap: 1.45rem; font-size: 1.05rem; font-weight: 520; }
 nav a:hover, .section-heading a:hover { text-decoration: underline; text-underline-offset: .25em; }
 .button {
@@ -74,8 +74,15 @@ nav a:hover, .section-heading a:hover { text-decoration: underline; text-underli
 .menubar { position: relative; height: 1.85rem; padding-inline: 1rem; gap: .9rem; font-size: .74rem; color: #19273e; background: #ffffff66; -webkit-backdrop-filter: saturate(125%) blur(14px); backdrop-filter: saturate(125%) blur(14px); }
 .menubar i { flex: 1; }
 .menubar svg { width: 1rem; height: 1rem; }
-.behind-window { position: absolute; top: 24%; left: 4%; width: 71%; border: 0; border-radius: .7rem; background: transparent; box-shadow: 0 .65rem 1.8rem #26335b35; overflow: hidden; cursor: zoom-in; }
-.behind-window img { display: block; width: 100%; height: auto; }
+.settings-preview { position: absolute; top: 18%; left: 4%; width: 72%; height: 71%; display: grid; grid-template-columns: minmax(5rem, 26%) 1fr; border: 1px solid #fffc; border-radius: 1rem; overflow: hidden; background: #ffffff85; backdrop-filter: blur(18px); box-shadow: 0 .65rem 1.8rem #26335b35; }
+.settings-sidebar { display: flex; align-items: flex-start; flex-direction: column; gap: .9rem; padding: .85rem; font-size: .85rem; }
+.settings-sidebar > span:last-child { align-self: stretch; padding: .4rem; border-radius: .4rem; background: #fff9; }
+.traffic { width: .55rem; height: .55rem; border-radius: 50%; background: #ff685f; box-shadow: .85rem 0 #ffbf44, 1.7rem 0 #55c75a; }
+.settings-info { display: grid; align-content: center; justify-items: center; gap: .35rem; background: #faf9fc; }
+.settings-info strong { font-size: 1.5rem; }
+.settings-info small { color: var(--muted); }
+.settings-info span { margin-top: .5rem; padding: .35rem .65rem; background: #ecebf0; border-radius: .5rem; font-size: .8rem; }
+.demo[open] summary img { filter: invert(1); }
 .demo { position: absolute; right: 4%; top: 0; width: min(75%, calc((clamp(24rem, 32vw, 30rem) - 3.1rem) * .684)); }
 .demo summary { list-style: none; display: grid; place-items: center; width: 2rem; height: 1.57rem; margin: .14rem 7.9rem .45rem auto; border-radius: .38rem; color: #23324c; }
 .demo[open] summary { background: #57688fb3; color: white; }
@@ -170,6 +177,8 @@ footer { background: linear-gradient(to bottom, #fff 0%, #eef4fc 100%); }
   .hero { padding-inline: .65rem; }
   .hero-preview { max-width: 32rem; border-radius: 1.1rem; padding: .2rem; }
   .desktop { height: clamp(18rem, 69vw, 22rem); border-radius: .95rem; }
+  .settings-preview { width: 84%; left: 2%; }
+  .settings-info img { width: 64px; height: 64px; }
   .menubar { gap: .5rem; padding-inline: .65rem; }
   .demo { width: min(65%, calc((clamp(18rem, 69vw, 22rem) - 2.6rem) * .684)); }
   .demo summary { margin-right: 6.5rem; }
